@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '**'
+      - '!**.md'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - '**'
+      - '!**.md'
+  workflow_dispatch:     # the "Run workflow" button
+
+# A new push cancels the run still going for the same branch or pull request.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.4.0' # the build uses its bundled atlas
+
+      - name: Fetch dependencies (Atlas)
+        run: atlas rep atlas.lock
+
+      # nimpretty has no check mode: format to a copy and fail on any diff.
+      - name: Verify code formatting
+        run: |
+          for f in src/*.nim tests/*.nim; do
+            out="$RUNNER_TEMP/fmt/$f"
+            mkdir -p "$(dirname "$out")"
+            nimpretty --indent:2 --out:"$out" "$f"
+            diff -u "$f" "$out"
+          done
+
+      - name: Run test suite
+        run: nim test
+
+      - name: Run test suite in release and danger builds
+        run: nim testRelease
+
+      - name: Build the API docs
+        run: nim docs
+
+  # The test suite on the other hosts.
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ windows-latest, macos-latest ]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.4.0' # the build uses its bundled atlas
+
+      - name: Fetch dependencies (Atlas)
+        run: atlas rep atlas.lock
+
+      - name: Run test suite
+        run: nim test

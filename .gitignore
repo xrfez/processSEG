@@ -1,0 +1,37 @@
+# Nim compiler artifacts
+nimcache/
+bin/
+htmldocs/
+*.exe
+*.out
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+
+# Tooling and dependencies
+.nimble-paths
+deps/*
+!deps/atlas.config
+.atlas/
+
+# The SEG sample data stays local: it is large and not redistributable.
+/exampleFiles/
+
+# Local development environment and agent workflow files (not published)
+/.agents/
+/.claude/
+/.devcontainer/
+/.mcp/
+/PLAN.md
+/AGENTS.md
+/CLAUDE.md
+
+# Editor and OS metadata
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db

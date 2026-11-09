@@ -1,0 +1,112 @@
+{
+  "items": {
+    "parseSEG": {
+      "dir": "$deps/parseSEG",
+      "url": "https://github.com/xrfez/parseSEG",
+      "commit": "22fb75c998555ac82feb18b5e1b4ff662f3cbe28",
+      "version": ""
+    },
+    "Arraymancer": {
+      "dir": "$deps/arraymancer",
+      "url": "https://github.com/mratsim/Arraymancer",
+      "commit": "873ac940bd5df50e1f7d587a91eeb7cf4ebf4a7e",
+      "version": ""
+    },
+    "nimblas": {
+      "dir": "$deps/nimblas",
+      "url": "https://github.com/andreaferretti/nimblas",
+      "commit": "93ffdd705496990983eefa0507d52f6a6c533ca7",
+      "version": ""
+    },
+    "nimlapack": {
+      "dir": "$deps/nimlapack",
+      "url": "https://github.com/andreaferretti/nimlapack",
+      "commit": "231430b3d2156f5cbe8fe16bb8967cd9a93964c5",
+      "version": ""
+    },
+    "nimcuda": {
+      "dir": "$deps/nimcuda",
+      "url": "https://github.com/andreaferretti/nimcuda",
+      "commit": "319b8deb31812fd9277c6232f0ae3fca31c6d55d",
+      "version": ""
+    },
+    "nimcl": {
+      "dir": "$deps/nimcl",
+      "url": "https://github.com/andreaferretti/nimcl",
+      "commit": "f2f963ff043a364386888f8a6cf91646cd583e99",
+      "version": ""
+    },
+    "nim-clblast": {
+      "dir": "$deps/clblast",
+      "url": "https://github.com/numforge/nim-clblast",
+      "commit": "cdadb10dd85b95c9e7248f0b9661ad1e7616efe6",
+      "version": ""
+    },
+    "stb_image-Nim": {
+      "dir": "$deps/stb_image",
+      "url": "https://gitlab.com/define-private-public/stb_image-Nim",
+      "commit": "ba5f45286bfa9bed93d8d6b941949cd6218ec888",
+      "version": ""
+    },
+    "zip": {
+      "dir": "$deps/zip",
+      "url": "https://github.com/nim-lang/zip",
+      "commit": "bdc5783fefc1afb8eb622ff13d464a832ce1d507",
+      "version": ""
+    },
+    "untar": {
+      "dir": "$deps/untar",
+      "url": "https://github.com/dom96/untar",
+      "commit": "955b98a54bb087d6b0c90d26377f261303425487",
+      "version": ""
+    },
+    "opencl": {
+      "dir": "$deps/opencl",
+      "url": "https://github.com/nim-lang/opencl",
+      "commit": "7b138ac19d7f5452a74742392ffadac3d26ee397",
+      "version": ""
+    }
+  },
+  "nimcfg": [
+    "############# begin Atlas config section ##########",
+    "--noNimblePath",
+    "--path:\"deps/arraymancer/src\"",
+    "--path:\"deps/clblast/src\"",
+    "--path:\"deps/nimblas\"",
+    "--path:\"deps/nimcl\"",
+    "--path:\"deps/nimcuda/src\"",
+    "--path:\"deps/nimlapack\"",
+    "--path:\"deps/opencl/src\"",
+    "--path:\"deps/parseSEG/src\"",
+    "--path:\"deps/stb_image\"",
+    "--path:\"deps/untar/src\"",
+    "--path:\"deps/zip\"",
+    "############# end Atlas config section   ##########",
+    ""
+  ],
+  "nimbleFile": {
+    "filename": "processSEG.nimble",
+    "content": [
+      "# Package",
+      "",
+      "version       = \"0.1.0\"",
+      "author        = \"Joshua Fenner\"",
+      "description   = \"Seismic SEG-Y / SEG-D processing built on parseSEG\"",
+      "license       = \"MIT\"",
+      "srcDir        = \"src\"",
+      "",
+      "",
+      "# Dependencies",
+      "",
+      "requires \"nim >= 2.4.0\"",
+      "requires \"https://github.com/xrfez/parseSEG >= 0.6.1\"",
+      "",
+      ""
+    ]
+  },
+  "hostOS": "linux",
+  "hostCPU": "amd64",
+  "nimVersion": "2.4.0",
+  "gccVersion": "12.2.0",
+  "clangVersion": ""
+}
