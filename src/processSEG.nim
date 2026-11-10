@@ -24,6 +24,7 @@
 ## - `processSEG/stack/nmo`: NMO correction with a stretch mute (`applyNmo`, `nmoInto`);
 ## - `processSEG/stack/binning`: CMP bins, 2D and 3D (`Binning`, `binsInto`);
 ## - `processSEG/stack/stack`: `StackAccumulator`, any order, per-sample fold;
+## - `processSEG/batch`: `bruteStack` of a file (prefetch transform, per-worker stacks);
 ## - `processSEG/pipeline`: `Op`, `Pipeline`, `compile` → `PipelinePlan`, `apply`;
 ## - `processSEG/core/pool`: `ProcessPool`, persistent workers that apply plans;
 ## - `processSEG/adapters`: `chunkMeta` from a prefetch chunk or a trace read.
@@ -32,11 +33,11 @@ import processSEG/core/[types, rows, workspace, basic, mute, shift]
 import processSEG/fft/[plan, spectrum]
 import processSEG/filter/[design, apply, iir]
 import processSEG/gain/[gain, curves, stats]
-import processSEG/[pipeline, adapters]
+import processSEG/[pipeline, adapters, batch]
 import processSEG/core/pool
 import processSEG/velocity/[model, formats, moveout]
 import processSEG/statics/elevation
 import processSEG/stack/[nmo, binning, stack]
 export types, rows, workspace, basic, mute, plan, spectrum, design,
     apply, iir, gain, curves, stats, pipeline, adapters, pool, shift, model,
-    formats, moveout, elevation, nmo, binning, stack
+    formats, moveout, elevation, nmo, binning, stack, batch

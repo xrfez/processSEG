@@ -3,7 +3,7 @@
 Status: **draft**, written before the viewer exists, revised for parseSEG 0.7.0 and for the
 Phase 5 API. It fixes who owns what, the data that crosses each boundary, and what
 processSEG needs from parseSEG. Update it whenever an API it describes changes. The names below are the real
-API as of Phase 6 (the pipeline, the pool, moveout ticks and velocity models); `tests/utils/viewersim.nim`
+API as of Phase 7 (the pipeline, the pool, moveout ticks, velocity models, statics, NMO and the brute stack); `tests/utils/viewersim.nim`
 acts out the viewer loop it describes, as a test.
 
 ## The three parts
@@ -52,7 +52,7 @@ on data from anywhere. Two thin layers sit on top of it:
   (`chunkMeta(c)`) rather than storing it. After `applySurvey` or a header edit, rebuild
   the views (`c.rows = f.rowsOf(c.first ..< c.first + c.count)` for range-mode chunks;
   selection-mode chunks map `first` through the selection) and keep the raw samples.
-- **Batch drivers** (`processSEG/batch`, *planned for Phase 7*): jobs over a whole file, such as a brute stack or
+- **Batch drivers** (`processSEG/batch`): jobs over a whole file, such as a brute stack or
   a first-break pass. They take a `SeismicFile` and run processing inside parseSEG's
   prefetcher, through its `transform` hook, with one `Workspace` per prefetch worker. They
   report progress through a `Progress`-style hook that can cancel, and return in-memory
@@ -407,19 +407,37 @@ the ticks drift from the first breaks across a spread, the geometry is suspect.
 processSEG's QC module can also score this fit automatically, with an offset-binned or
 two-segment fit, because land refractor velocities vary.
 
-## Batch results: brute stack (planned, Phase 7)
+## Batch results: brute stack
 
-`bruteStack(f, velocity, binning, flow, opts, progress)` reads the file through parseSEG.
-On each trace it runs the pre-stack flow (offset-variant mute, elevation statics, filter,
-gain) and NMO with a stretch mute. It accumulates the result into CMP bins in any order,
-because stacking is linear and needs no sort, keeping a live count per sample.
+`bruteStack(f, T, [traces,] binning, velocity, opts, progress)` (`processSEG/batch`) reads
+the file through parseSEG's prefetcher (`uniform = true`). On each chunk, in the
+prefetcher's `transform` hook on its decode worker, it runs datum statics (optional,
+`opts.useStatics` and `opts.statics = datumStatics(datumZ, vReplacement)`), the pre-stack
+flow (`opts.flow`, a `Pipeline`: mutes, filters, gain), NMO with a stretch mute
+(`opts.nmo = initNmoParams(interp, maxStretch, taperMs)`) onto the stack's time axis, and
+accumulates each live trace into its bin. Stacking is linear and needs no sort; the fold
+is counted per sample, between each trace's first and last non-zero samples, so muted
+zeros do not count.
 
-It runs inside the prefetcher's `transform` hook with `uniform = true`, one `Workspace`
-and one stack accumulator per worker, merged at the end.
+- **Bins:** `cdpBinning` (header CDP), `lineBinning` (midpoints projected onto a line),
+  `gridBinning` (a rotated 3D grid) or `inlineCrosslineBinning` (header numbers).
+- **Velocities:** a `VelocityFunction` for every bin, or a `VelocityField` read at each
+  bin's location: its CDP number in 2D, its inline and crossline in 3D
+  (`binning.location(bin)`).
+- **Threads:** `opts.workers` prefetch workers, each with its own `Workspace` and
+  `StackAccumulator`, merged at the end; everything is allocated on the calling thread
+  before the workers start.
+- **Progress and cancel:** `progress(done, total)` (parseSEG's `Progress`) after every
+  chunk, on the calling thread; returning false stops the workers and raises
+  `SegCancelledError`. A viewer runs `bruteStack` on a background thread of its own.
+- **Result:** a `StackResult`: `data` (`[bins, samples]`, normalized by fold, √fold or
+  not), `fold` (`[bins, samples]`, int32), `binning`, `dtMs`, `startMs`, `stacked` and
+  `skipped` (live traces outside every bin, with a NaN offset or t0, or non-finite).
+- **Memory:** `workers + 1` stacks of bins × samples × (sizeof(T) + 4) bytes, plus the
+  prefetch ring and the flow's scratch (`bruteStackMemory`). A float32 3D stack of
+  100 000 bins × 2001 samples is 1.6 GB per copy: use one or two workers for it.
 
-It returns a `StackResult`: a `[bins, samples]` tensor, the fold, and the bin geometry.
-It uses about bins × samples × 8 bytes, as float32 for the sum plus the live count. The
-viewer shows the result as an in-memory dataset. A stack of SEG-Y input can be written
+The viewer shows the result as an in-memory dataset. A stack of SEG-Y input can be written
 with `writeTrace(..., overrides = [headerOverride("trace.cdp", n), ...])` on a template
 trace; a stack of SEG-D or SEG-2 input needs patch F3 (below).
 
@@ -447,9 +465,9 @@ offered upstream as one pull request:
 | F3 | (Optional) a SEG-Y trace written from `TraceKeys` plus overrides, with no template trace | A stack of SEG-D or SEG-2 input cannot be written as SEG-Y otherwise |
 
 Checked again for the pipeline, the pool and the viewer loop (task 5.4): nothing else is
-missing. For the batch path (Phase 7), the `transform` hook is not given the
-prefetcher's `firstSample`; the batch driver passes it through `user`, with the
-workspaces.
+missing. The `transform` hook is not given the prefetcher's `firstSample`;
+`bruteStack` decodes whole traces (`firstSample = 0`), and a windowed batch driver would
+pass it through `user`, with the workspaces.
 
 ## Viewer checklist
 
@@ -477,13 +495,14 @@ workspaces.
 8. Before `applySurvey` or a header edit, stop the prefetcher and any processing; after
    it, rebuild views and metas, and recompute anything tagged with an older revision:
    ticks, bins and processed buffers (the raw samples stay valid).
-9. For a brute stack (Phase 7), run `bruteStack` on a background thread with a cancel
-   hook.
+9. For a brute stack, run `bruteStack` on a background thread, with a `progress` hook
+   that returns false to cancel.
 
 ## Open questions
 
 - Will 3D CMP binning come from the file (the keys' `inline` and `crossline`), from a
-  user-defined grid, or both? Both are planned. The viewer decides the UI.
+  user-defined grid, or both? Both exist (`inlineCrosslineBinning`, `gridBinning`). The
+  viewer decides the UI.
 - Does the viewer want an asynchronous `submit` / `wait` pair on the pool, so a frame can
   be abandoned before it finishes? It is added only if the viewer asks for it.
 
