@@ -8,9 +8,11 @@
 ## - `processSEG/core/mute`: top and bottom mutes (`MuteCurve`);
 ## - `processSEG/fft/plan`: `FftPlan`, real mixed-radix FFTs, batched across traces;
 ## - `processSEG/fft/spectrum`: `SpectrumPlan`, amplitude spectra and dB for display;
+## - `processSEG/filter/design`: `FilterSpec`, cos² trapezoid, Butterworth and notch responses;
 ## - `processSEG/adapters`: `chunkMeta` from a prefetch chunk or a trace read.
 
 import processSEG/core/[types, rows, workspace, basic, mute]
 import processSEG/fft/[plan, spectrum]
+import processSEG/filter/design
 import processSEG/adapters
-export types, rows, workspace, basic, mute, plan, spectrum, adapters
+export types, rows, workspace, basic, mute, plan, spectrum, design, adapters
