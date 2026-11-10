@@ -212,6 +212,11 @@ samples.applyFilter(meta, plan, ws)   # in place, live rows to their live length
 let m = plan.requiredMargin           # L samples: decode a zoom window with m each side
 ```
 
+Cost (bench/README "Filters", Ryzen 3950X): a band-pass of a 2000 × 2001 float32 panel
+takes about 6 ms on 4 workers and 23 ms on one thread; the IIR form costs the same. Budget
+one filter at ~6 ms per frame with the pool, and keep filtering off the draw thread
+without it.
+
 The impulse length `L` holds 99.9 % of the energy of the response or of its complement
 (a narrow low-cut ramp is long: 0.5–1 Hz at 2 ms is 881 samples, 1.8 s). A window decoded
 with `m` samples each side matches the whole trace filtered to about 1 % of the peak.

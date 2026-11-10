@@ -92,3 +92,28 @@ Forward only, ns per n·log₂n and trace, from a sweep (5 samples each):
   1000-trace spectrum average takes about 0.12 s on one thread.
 - Longer power-of-two records (131072 and up) would need a cache-blocked (four-step)
   FFT; it is in PLAN.md "Later".
+
+## Filters (task 3.4)
+
+`nim bench` (bench/bfilter.nim), same machine and flags as above. A panel is 2000 traces ×
+2001 samples of float32 at 2 ms, filtered in place (live rows, edge handling included).
+"4 workers" is 4 threads started once, 500 rows each, shared read-only plan, one
+`Workspace` each: the wall time per round. The pool's hand-off (5.2) is not included.
+
+| filter | L (pad) | nfft | 1 thread | 4 workers | speedup |
+|---|---|---|---|---|---|
+| FFT band-pass cos² 4-8-60-80 Hz | 67 | 2304 | 23.1 ms (11.6 µs/trace) | 6.0 ms | 3.85× |
+| FFT low-cut cos² 0.5–1 Hz | 881 | 5760 | 42.5 ms (21.3 µs/trace) | 11.1 ms | 3.83× |
+| IIR zero-phase Butterworth 4–60 Hz, 24 dB/oct (4 poles) | 45 | — | 24.3 ms (12.2 µs/trace) | 6.4 ms | 3.83× |
+
+Where the FFT band-pass goes (cachegrind, instructions): the FFT passes about 45 %, the
+strided pack/unpack (with its float64 conversions) about 30 %, the trend sums about 15 %
+(scalar float64: a float sum keeps its IEEE order), the gain multiply about 6 %. The
+pack and the trend are the next targets (an 8-accumulator sum and packing 8 rows at once),
+probably worth 1.2–1.3×; not done, as the panel already fits a frame (PLAN.md "Later").
+
+**Viewer budget** (set from these numbers): one filter over a 2000 × 2001 panel costs
+about **6 ms on 4 workers** (12 ms for a narrow 0.5 Hz low-cut ramp), so a filter plus AGC
+fits a 60 Hz frame (16.7 ms) with room for the draw; on one thread it takes 1.5–2.5 frames,
+so a viewer without the pool should filter off the draw thread. Cost scales with traces ×
+nfft·log(nfft): halve the panel, halve the time.
