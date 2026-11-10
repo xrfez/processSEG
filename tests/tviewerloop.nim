@@ -5,7 +5,7 @@
 ## and moveout ticks made stale by `applySurvey`.
 
 import std/[assertions, math, os]
-import processSEG
+import parseSEG, processSEG
 import utils/[allocs, demo, synth, viewersim]
 
 proc flow(): Pipeline =

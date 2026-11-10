@@ -18,7 +18,8 @@ Dependencies point one way: `viewer → processSEG → parseSEG`, and `viewer �
 directly. processSEG imports parseSEG for its tensor type (Arraymancer `Tensor[T]`, which
 parseSEG re-exports), for the per-trace data model (`TraceKeys` and the `TraceRows` view),
 and, in its adapter and batch modules only, for `SeismicFile` and the prefetcher. The
-`processSEG` umbrella re-exports parseSEG, so a viewer needs only `import processSEG`.
+`processSEG` umbrella does not re-export parseSEG: a viewer imports both
+(`import parseSEG, processSEG`), and parseSEG never imports processSEG.
 processSEG adds no C dependency: its FFT is pure Nim (mixed radix 2/3/4/5, batched across
 traces).
 

@@ -1,8 +1,8 @@
 ## processSEG: seismic processing on top of parseSEG.
 ##
-## This umbrella module re-exports the whole public API, and parseSEG too
-## (`Tensor`, `SeismicFile`, the prefetcher, `TraceRows`, ...), so a viewer
-## needs only `import processSEG`:
+## This umbrella module re-exports the whole public API of processSEG. It does
+## not re-export parseSEG: callers import it themselves for files, tensors and
+## views (`import parseSEG, processSEG`), so the two packages stay separate:
 ## - `processSEG/core/types`: `ChunkMeta`, the metadata of a block of rows;
 ## - `processSEG/core/rows`: `RowBlock`, zero-copy rows of a tensor or buffer;
 ## - `processSEG/core/workspace`: `Workspace`, grow-only per-thread scratch;
@@ -21,7 +21,6 @@
 ## - `processSEG/core/pool`: `ProcessPool`, persistent workers that apply plans;
 ## - `processSEG/adapters`: `chunkMeta` from a prefetch chunk or a trace read.
 
-import parseSEG
 import processSEG/core/[types, rows, workspace, basic, mute]
 import processSEG/fft/[plan, spectrum]
 import processSEG/filter/[design, apply, iir]
@@ -29,5 +28,5 @@ import processSEG/gain/[gain, curves, stats]
 import processSEG/[pipeline, adapters]
 import processSEG/core/pool
 import processSEG/velocity/moveout
-export parseSEG, types, rows, workspace, basic, mute, plan, spectrum, design,
+export types, rows, workspace, basic, mute, plan, spectrum, design,
     apply, iir, gain, curves, stats, pipeline, adapters, pool, moveout
