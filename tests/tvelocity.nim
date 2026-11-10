@@ -49,7 +49,8 @@ block constant_and_gradient:
   doAssert g.vrmsAt(0) == 1500 and g.vrmsAt(-5) == 1500
   let neg = gradientVelocity(1500, -1000)
   doAssert neg.vintAt(1000) == 500 and neg.vintAt(1500).isNaN
-  doAssert neg.vrmsAt(1500) > 0
+  doAssert neg.vrmsAt(1499) > 0 and neg.vrmsAt(1501).isNaN # past Vint = 0
+  doAssert neg.vrmsAt(6000).isNaN
   for v in [0.0, -1, NaN, Inf]:
     doAssertRaises ValueError: discard constantVelocity(v)
     doAssertRaises ValueError: discard gradientVelocity(v, 0)
@@ -77,15 +78,29 @@ block knots_at_and_between_nodes:
   let v12 = sqrt((2000.0 ^ 2 * 1000 - 1600.0 ^ 2 * 200) / 800)
   doAssert near(f.vintAt(500), v12) and near(f.vintAt(999), v12)
   doAssert f.vintAt(100) == 1600 and f.vintAt(2000) == 2200
-  # A knot at t = 0 sets only the value at 0 (module documentation).
-  let z = rmsVelocity([k(0, 1500), k(1000, 2000)])
-  doAssert z.vrmsAt(0) == 1500 and near(z.vrmsAt(500), 2000)
+  # A knot at t = 0: Vrms linear to the next knot (module documentation),
+  # and the instantaneous Vint = sqrt(dW/dt) there.
+  let z = rmsVelocity([k(0, 1500), k(1000, 2000), k(2000, 2200)])
+  doAssert z.vrmsAt(0) == 1500 and near(z.vrmsAt(500), 1750)
+  doAssert near(z.vrmsAt(1000), 2000) and z.vrmsAt(1e-9) < 1500.001
+  let wAt = proc (t: float64): float64 = z.vrmsAt(t) ^ 2 * t
+  for t in [1.0, 300, 700, 999]:
+    let dw = (wAt(t + 1e-4) - wAt(t - 1e-4)) / 2e-4
+    doAssert near(z.vintAt(t), sqrt(dw), 1e-7), $t
+  doAssert near(z.vintAt(0), 1500)
+  # Past the first segment, V²t as before; the layer's Dix velocity is V₁.
+  var dz = newSeq[float64](3)
+  dixIntervalInto([0.0, 1000, 2000], [1500.0, 2000, 2200], dz)
+  doAssert dz[1] == 2000 and near(z.vintAt(1500), dz[2])
+  # A steep drop from zero makes dW/dt negative: NaN.
+  let drop = rmsVelocity([k(0, 3000), k(1000, 1000)])
+  doAssert drop.vintAt(900).isNaN and drop.vrmsAt(900) > 0
   # One knot: constant.
   let one = rmsVelocity([k(800, 1700)])
   doAssert one.vrmsAt(0) == 1700 and one.vrmsAt(5000) == 1700
   var out1 = newSeq[float64](5)
   f.vrmsInto(startMs = 0, dtMs = 500, out1)
-  for j in 0..<5: doAssert out1[j] == f.vrmsAt(float64(j) * 500)
+  for j in 0..<5: doAssert near(out1[j], f.vrmsAt(float64(j) * 500), 1e-15)
   doAssert allocsIn(f.vrmsInto(0, 500, out1)) == 0
   doAssertRaises ValueError: f.vrmsInto(0, 0, out1)
 
@@ -151,9 +166,14 @@ block field_2d:
   # between grid times.
   let one = initVelocityField([500.0], [a], dtMs = 4, tMaxMs = 3000)
   doAssert one.kind == fk2D and one.len == 1 and one.samples == 751
-  for t in [0.0, 1, 4, 6, 999, 1000, 1002, 2001, 2999.5, 3000, 4000]:
+  for t in [0.0, 1000, 1002, 2001, 2999.5, 3000, 4000]:
     doAssert near(one.vrmsAt(500, t), a.vrmsAt(t), 1e-12), $t
-    doAssert near(one.vrmsAt(-1e9, t), a.vrmsAt(t), 1e-12)
+  # In the first segment from a knot at zero, W is not linear: within the
+  # documented 1e-3 (2.2e-4 at 6 ms, between the 2nd and 3rd grid times).
+  for t in [1.0, 4, 6, 10, 999]:
+    doAssert near(one.vrmsAt(500, t), a.vrmsAt(t), 5e-4), $t
+    doAssert one.vrmsAt(-1e9, t) == one.vrmsAt(500, t)
+  doAssert near(one.vrmsAt(500, 999), a.vrmsAt(999), 1e-5)
   # Two nodes: V² interpolated linearly in space; clamped outside.
   let f = initVelocityField([100.0, 300], [a, b], dtMs = 4, tMaxMs = 3000)
   doAssert f.locations == @[100.0, 300]
@@ -175,7 +195,7 @@ block field_2d:
   doAssert f.vrmsAt(200, 1, 100).isNaN # a 3D query on a 2D field
   var v = newSeq[float64](1001)
   f.vrmsInto(location = 220, startMs = 1, dtMs = 2, v)
-  for j in 0..<v.len: doAssert v[j] == f.vrmsAt(220, 1 + 2 * float64(j))
+  for j in 0..<v.len: doAssert near(v[j], f.vrmsAt(220, 1 + 2 * float64(j)), 1e-15)
   doAssert allocsIn(f.vrmsInto(220, 1, 2, v)) == 0
   f.vrmsInto(NaN, 0, 2, v)
   doAssert v[0].isNaN and v[^1].isNaN
@@ -186,6 +206,8 @@ block field_2d:
   raisesWith("functions 1"): discard initVelocityField([100.0, 200], [a], 4, 3000)
   raisesWith("dtMs"): discard initVelocityField([100.0], [a], 0, 3000)
   raisesWith("tMaxMs"): discard initVelocityField([100.0], [a], 4, NaN)
+  raisesWith("larger dtMs"): discard initVelocityField([1.0], [a], 1e-10, 1e10)
+  raisesWith("larger dtMs"): discard initVelocityField([1.0], [a], 5e-324, 1)
   var d: VelocityFunction
   raisesWith("not initialized"): discard initVelocityField([100.0], [d], 4, 100)
   var empty: VelocityField
@@ -235,10 +257,22 @@ block field_from_picks:
   doAssert f3.kind == fk3D and f3.locations == @[10.0, 20] and
     f3.crosslines == @[1.0, 5]
   doAssert near(f3.vrmsAt(20, 1, 0), 1201) and near(f3.vrmsAt(10, 5, 0), 1105)
-  raisesWith("is missing"): discard initVelocityField(p3[0..2], 4, 100)
+  raisesWith("3 picks for 2 inlines"): discard initVelocityField(p3[0..2], 4, 100)
+  # Sparse picks are rejected before the grid is allocated.
+  var diag: seq[VelocityPick]
+  for i in 0..<20000:
+    diag.add VelocityPick(cdp: NaN, inline: float64(i), crossline: float64(i),
+      velocity: constantVelocity(1500))
+  raisesWith("full inline × crossline grid"): discard initVelocityField(diag, 4, 100)
+  var gap = p3 & p3[0]
+  gap[1] = p3[0]
+  raisesWith("repeats"): discard initVelocityField(gap[0..3], 4, 100)
   raisesWith("repeats"): discard initVelocityField(p3 & p3[0], 4, 100)
   raisesWith("is 3D"): discard initVelocityField(@p2 & p3[0], 4, 100)
   raisesWith("location 1"): discard initVelocityField(@p2 & p2[0], 4, 100)
+  raisesWith("needs both an inline and a crossline"):
+    discard initVelocityField([VelocityPick(cdp: NaN, inline: 3, crossline: NaN,
+      velocity: constantVelocity(1500))], 4, 100)
   raisesWith("at least one pick"): discard initVelocityField(newSeq[
       VelocityPick](), 4, 100)
 
@@ -259,6 +293,15 @@ block sample_velf_parses:
     discard parseVelf("VELF 7 0 1500 1000 1800\nVELF 500 1600 1400 1700\n")
   raisesWith("line 1: a VELF continuation"): discard parseVelf("VELF 0 1500\n")
   raisesWith("line 1: 'x15' is not a number"): discard parseVelf("VELF 7 0 x15\n")
+  # A continuation card that lost a number reads as a new cdp: caught by
+  # the cdp order.
+  raisesWith("line 2: cdp 900 after cdp 1001"):
+    discard parseVelf("VELF 1001 0 1500 400 1650\nVELF 900 1900 1500\n")
+  raisesWith("line 2: cdp 7 after cdp 7"):
+    discard parseVelf("VELF 7 0 1500\nVELF 7 0 1500\n")
+  doAssert parseVelf("VELF\n").len == 0 # a bare card: no function
+  doAssert parseVelf("SPNT 1 2\nLINE x\n").len == 0
+  raisesWith("line 1: cdp 7: a velocity"): discard parseVelf("VELF 7 0 nan\n")
 
 block handvel:
   let text = """
@@ -285,6 +328,11 @@ END
   raisesWith("line 1: cdp 5 has no time-velocity pairs"):
     discard parseHandvel("HANDVEL 5\nHANDVEL 6\n0 1500\n")
   raisesWith("line 1: a location"): discard parseHandvel("HANDVEL 1 2 3\n")
+  # nan and inf are numbers, not cards: reported, never a silent end.
+  raisesWith("line 3: cdp 5: a time"): discard parseHandvel("HANDVEL 5\n0 1500\nnan 1600\n")
+  raisesWith("line 3: cdp 5: a time"):
+    discard parseHandvel("HANDVEL 5\n0 1500\ninf 1600\n2000 2500\n")
+  raisesWith("line 1: a location"): discard parseHandvel("HANDVEL\n0 1500\n")
 
 block csv:
   let text = "cdp,tMs,vrms\n100,0,1500\n200,0,1600\n100,1000,2000\n200, 900 ,2100\n"
@@ -302,3 +350,6 @@ block csv:
   raisesWith("line 1: a velocity CSV"): discard parseVelocityCsv("1,2\n")
   raisesWith("line 2: 'abc'"): discard parseVelocityCsv("1,0,1500\nabc,1,2\n")
   doAssert parseVelocities("").len == 0
+  # An empty first field is data with a missing number, not a header.
+  raisesWith("line 1: '' is not a number"): discard parseVelocityCsv(",0,1500\n")
+  raisesWith("line 1: a NaN location"): discard parseVelocityCsv("nan,0,1500\n")

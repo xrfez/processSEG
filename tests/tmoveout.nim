@@ -183,11 +183,12 @@ block lmo_flattens_and_returns:
   for r in 0..<f.len: doAssert abs(f.peakCol(r) - 50) <= 1
 
 block lmo_rows_left_alone:
-  var g = cmpGather[float32](0, [400.0, 400, 400, 400, 400], 50, dtMs = 2)
+  var g = cmpGather[float32](0, [400.0, 400, 400, 400, 400, 400], 50, dtMs = 2)
   for r in 0..<g.len:
     for j in 0..<g.cols: g.data[r, j] = float32(j + 1)
   g.keys[1].status = tsDead
   g.keys[2].offset = NaN
+  g.keys[5].status = tsAuxiliary
   g.setLive(4, 30)
   for j in 30..<50: g.data[4, j] = 99 # a sentinel past the live end
   let orig = g.data.clone
@@ -199,6 +200,8 @@ block lmo_rows_left_alone:
       else: doAssert g.data[r, j] == orig[r, j]
   g.data.applyLmo(meta, velocity = 1e6) # tiny shift, row 0 of zeros stays 0
   doAssert allocsIn(g.data.applyLmo(meta, velocity = 4000)) == 0
+  doAssert allocsIn(g.data.removeLmo(meta, velocity = 4000,
+      interp = siCubic)) == 0
   for v in [0.0, -1, NaN]:
     doAssertRaises ValueError: g.data.applyLmo(meta, velocity = v)
   doAssertRaises ValueError: g.data.removeLmo(meta, velocity = 2000, biasMs = NaN)

@@ -34,11 +34,12 @@ proc shiftSamples*[T: SampleType](x: var openArray[T], shift: float64,
     interp = siLinear) {.raises: [].} =
   ## Shifts `x` in place so that `x[j]` becomes the old `x` at `j + shift`
   ## (positive: earlier; negative: later), zero where that falls outside
-  ## the row. A NaN or infinite shift leaves `x` untouched; one of a row's
-  ## length or more zeroes it. Allocates nothing.
+  ## the row. A NaN or infinite shift leaves `x` untouched; one beyond the
+  ## interpolation's reach zeroes it. Allocates nothing.
   let n = x.len
   if n == 0 or shift.classify in {fcNan, fcInf, fcNegInf}: return
-  if abs(shift) >= float64(n):
+  # The cubic reaches one sample further than linear interpolation.
+  if abs(shift) >= float64(n + ord(interp == siCubic)):
     for v in x.mitems: v = T(0)
     return
   let k = int(floor(shift))

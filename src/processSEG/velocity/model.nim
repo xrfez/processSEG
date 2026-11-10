@@ -23,10 +23,12 @@
 ## is exactly the Dix interval velocity of the knots, so a model never has an
 ## interval velocity the knots do not imply. Before the first knot the RMS
 ## velocity is `V₁` (one layer from time zero), after the last it stays
-## `Vₙ`. A consequence: **a knot at t = 0 sets only the velocity at 0**; for
-## `0 < t < t₂` the RMS velocity is the first layer's interval velocity
-## `V₂` (`W` runs from `(0, 0)` to `(t₂, V₂²t₂)`). Pick the first knot at the
-## first reflection, not at zero.
+## `Vₙ`. **A knot at t = 0** is the exception: `W` from `(0, 0)` would
+## ignore its velocity (Vrms would jump to the next layer's at once), so
+## from 0 to the second knot the RMS velocity is linear in time, `V₀` to
+## `V₁`, as picked; its interval velocity there is the instantaneous
+## `sqrt(dW/dt) = sqrt(V² + 2t·V·dV/dt)`, and the layer's Dix velocity over
+## the whole segment is still `V₁`, as `dixIntervalInto` gives.
 ##
 ## **Unphysical knots.** Knots whose `W` decreases (an RMS velocity that
 ## drops too fast) imply a negative `Vint²`. They are accepted, because
@@ -36,7 +38,8 @@
 ## **Fields.** A `VelocityField` resamples every function onto one time grid
 ## `0, dt, …, tMax` and stores `V²` per node and grid time; a query
 ## interpolates `V²` (equivalently `W`) linearly in space between the
-## neighbouring nodes, then linearly in `W` between grid times. Interpolating
+## neighbouring nodes, then linearly in `W` between grid times (in `V²`
+## between the first two, where `W` is 0 at 0 whatever the velocity). Interpolating
 ## `W` keeps the result physical: the interval `Vint²` of a weighted mix of
 ## functions is the same mix of their `Vint²`. 2D fields are along one
 ## coordinate (a CDP number or a distance along the line); 3D fields are on a
@@ -44,12 +47,15 @@
 ## nearest node's values are used, and past `tMax` the RMS velocity stays
 ## constant. Memory: nodes × grid samples × 8 bytes (2500 nodes at 6 s and
 ## 4 ms: 36 MB); a grid coarser than the data's interval is fine, the time
-## interpolation is exact for knots on the grid, and off it the RMS velocity
-## is within a few 1e-4 (relative, at the knot: 3.3e-4 for a 1001 ms knot on
-## a 4 ms grid).
+## interpolation is exact for knots on the grid (between knots past a first
+## segment from zero), and otherwise the RMS velocity is within ≲ 1e-3
+## (relative: worst at a knot off the grid, or in the first few grid times
+## after a knot at zero).
 ##
-## Builders and constructors raise `ValueError` for bad arguments; queries
-## never raise (NaN in, NaN out).
+## Builders and constructors raise `ValueError` for bad arguments. Point
+## queries (`vrmsAt`, `vintAt`) never raise: NaN in, NaN out, and NaN for a
+## query of the wrong field kind. The `vrmsInto` forms check their arguments
+## once, so they raise for a bad `dtMs` or the wrong field kind.
 
 import std/[algorithm, math, sequtils]
 
@@ -114,7 +120,8 @@ proc gradientVelocity*(v0, k: float64): VelocityFunction =
   ## An interval velocity growing linearly with two-way time,
   ## `Vint(t) = v0 + k·t/1000` (`k` in distance units per second, per second
   ## of two-way time), so `Vrms² = v0² + v0·k·s + k²s²/3` with `s = t/1000`.
-  ## A negative `k` is allowed; `vintAt` is NaN once `Vint ≤ 0`. Raises
+  ## A negative `k` is allowed; `vintAt` and `vrmsAt` are NaN once
+  ## `Vint ≤ 0` (past `t = −1000·v0/k`). Raises
   ## `ValueError` unless `v0` is finite and positive and `k` finite.
   checkVelocity(v0, "a gradient's v0")
   if not k.isFinite:
@@ -180,6 +187,7 @@ func vrmsAt*(f: VelocityFunction, tMs: float64): float64 {.raises: [].} =
   of vkGradient:
     if not (f.v0 > 0): return NaN
     let s = max(tMs, 0) / 1000
+    if f.k < 0 and s > -f.v0 / f.k: return NaN # past Vint = 0
     sqrt(f.v0 * f.v0 + f.v0 * f.k * s + f.k * f.k * s * s / 3)
   of vkKnots:
     let k = f.knots
@@ -187,6 +195,10 @@ func vrmsAt*(f: VelocityFunction, tMs: float64): float64 {.raises: [].} =
     if not (tMs > k[0].tMs): return k[0].vrms
     if tMs >= k[^1].tMs: return k[^1].vrms
     let i = bracket(k, tMs)
+    if i == 0 and k[0].tMs == 0:
+      # A knot at zero: the RMS velocity is linear from V₀ to V₁ (W = V²t
+      # from (0, 0) would ignore V₀).
+      return k[0].vrms + (k[1].vrms - k[0].vrms) * tMs / k[1].tMs
     let w0 = k[i].w
     let wt = w0 + (k[i + 1].w - w0) * (tMs - k[i].tMs) / (k[i + 1].tMs - k[i].tMs)
     sqrt(wt / tMs)
@@ -209,6 +221,12 @@ func vintAt*(f: VelocityFunction, tMs: float64): float64 {.raises: [].} =
     if tMs < k[0].tMs: return k[0].vrms
     if tMs >= k[^1].tMs: return k[^1].vrms
     let i = bracket(k, tMs)
+    if i == 0 and k[0].tMs == 0:
+      # Vrms linear from V₀: the instantaneous Vint² = dW/dt = V² + 2tV·V'.
+      let dv = (k[1].vrms - k[0].vrms) / k[1].tMs
+      let v = k[0].vrms + dv * tMs
+      let v2 = v * v + 2 * tMs * v * dv
+      return if v2 >= 0: sqrt(v2) else: NaN
     let v2 = (k[i + 1].w - k[i].w) / (k[i + 1].tMs - k[i].tMs)
     if v2 >= 0: sqrt(v2) else: NaN
 
@@ -319,10 +337,11 @@ proc initGrid(dtMs, tMaxMs: float64): int =
   checkGrid(dtMs)
   if not tMaxMs.isFinite or tMaxMs < 0:
     badArg("tMaxMs must be finite and ≥ 0, got " & $tMaxMs)
-  let n = floor(tMaxMs / dtMs + 1e-9).int + 1
-  if n > 1 shl 24:
-    badArg("the field's time grid has " & $n & " samples; use a larger dtMs")
-  n
+  let r = tMaxMs / dtMs
+  if not (r < float64(1 shl 24)):
+    badArg("the field's time grid would have " & $r & " samples (at most " &
+      $(1 shl 24) & "); use a larger dtMs")
+  floor(r + 1e-9).int + 1
 
 proc initVelocityField*(locations: openArray[float64],
     functions: openArray[VelocityFunction], dtMs,
@@ -430,6 +449,10 @@ func vrmsWith(field: VelocityField, ws: Weights,
   if u >= float64(field.samples - 1): return sqrt(field.v2At(ws, field.samples - 1))
   let i = int(u)
   let f = u - float64(i)
+  if i == 0:
+    # From time zero W = V²t starts at 0 whatever V is: interpolate V².
+    let v0 = field.v2At(ws, 0)
+    return sqrt(v0 + (field.v2At(ws, 1) - v0) * f)
   # Linear in W = V²·t between grid times i and i + 1.
   let w0 = field.v2At(ws, i) * float64(i)
   let w1 = field.v2At(ws, i + 1) * float64(i + 1)
@@ -514,7 +537,9 @@ proc initVelocityField*(picks: openArray[VelocityPick],
     var fs = newSeq[VelocityFunction](picks.len)
     for k, (_, i) in order:
       if picks[i].cdp.isNaN:
-        badArg("pick " & $i & " has no cdp, inline or crossline")
+        badArg("pick " & $i & " has no cdp" & (if picks[i].inline.isNaN and
+          picks[i].crossline.isNaN: ", inline or crossline" else:
+          ", and a 3D pick needs both an inline and a crossline"))
       locs[k] = picks[i].cdp
       fs[k] = picks[i].velocity
     return initVelocityField(locs, fs, dtMs, tMaxMs)
@@ -526,6 +551,10 @@ proc initVelocityField*(picks: openArray[VelocityPick],
   xls.sort
   ils = ils.deduplicate(isSorted = true)
   xls = xls.deduplicate(isSorted = true)
+  if picks.len < ils.len * xls.len:
+    badArg("3D picks must cover a full inline × crossline grid: " &
+      $picks.len &
+      " picks for " & $ils.len & " inlines × " & $xls.len & " crosslines")
   var fs = newSeq[VelocityFunction](ils.len * xls.len)
   var seen = newSeq[bool](fs.len)
   for i, p in picks:

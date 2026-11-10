@@ -88,6 +88,13 @@ block edges:
   x = @[1.0, 2, 3]
   x.shiftSamples(-5, siCubic)
   doAssert x == @[0.0, 0, 0]
+  # The cubic reaches one sample past linear: a shift of n still reads x[0].
+  for interp in [siLinear, siCubic]:
+    for sh in [-3.5, -3.0, -2.5, 2.5, 3.0, 3.5]:
+      var z = @[1.0, 2, 3]
+      z.shiftSamples(sh, interp)
+      let r = reference(@[1.0, 2, 3], sh, interp)
+      for j in 0..<3: doAssert abs(z[j] - r[j]) <= 1e-12, $interp & " " & $sh
   var e: seq[float64]
   e.shiftSamples(1.5)
   var y = zeroSignal[float32](100)

@@ -20,7 +20,9 @@
 ##
 ## **VELF** (Western cards): `VELF` cards of whitespace-separated numbers.
 ## A card with an odd count starts a new function, its first number the
-## CDP; a card with an even count continues the previous one. Other cards
+## CDP; a card with an even count continues the previous one. CDPs must
+## increase through the file, which catches a continuation card that lost a
+## number (its first time would read as a CDP). Other cards
 ## (`SPNT`, `LINE`, …) are skipped. Fixed-column cards whose fields touch
 ## (a 5-digit time next to a 5-digit velocity) and card sequence numbers in
 ## columns 73–80 are not supported:
@@ -30,7 +32,8 @@
 ##
 ## **CSV**: comma-separated `cdp,tMs,vrms` (2D) or
 ## `inline,crossline,tMs,vrms` (3D), one knot per line, with an optional
-## header line (a first line that is not numbers). Rows of one location may
+## header line (a first line with a field that is a word: `cdp`, not `nan`
+## or an empty field). Rows of one location may
 ## be anywhere in the file; their times must increase in file order.
 
 import std/[math, strutils, tables]
@@ -41,6 +44,18 @@ proc parseError(line: int, msg: string) {.noinline, noreturn.} =
 
 func isComment(s: string): bool =
   s.len == 0 or s[0] in {'*', '#'}
+
+func isNumber(t: string): bool =
+  try:
+    discard parseFloat(t)
+    true
+  except ValueError:
+    false
+
+func isCard(t: string): bool =
+  ## A card name (`LINE`, `END`): a word that is not a number, so `nan` and
+  ## `inf` are not cards.
+  t.len > 0 and t[0] in Letters and not t.isNumber
 
 proc numbers(tokens: openArray[string], line: int): seq[float64] =
   for t in tokens:
@@ -122,7 +137,7 @@ proc parseHandvel*(text: string): seq[VelocityPick] =
     if tokens[0].cmpIgnoreCase("HANDVEL") == 0:
       b.finish(result)
       b.start(numbers(tokens.toOpenArray(1, tokens.high), lineNo), lineNo)
-    elif tokens[0][0] in Letters:
+    elif tokens[0].isCard:
       b.finish(result)
     elif not b.open:
       parseError(lineNo, "numbers outside a HANDVEL block")
@@ -143,7 +158,12 @@ proc parseVelf*(text: string): seq[VelocityPick] =
     let tokens = s.splitWhitespace
     if tokens[0].cmpIgnoreCase("VELF") != 0: continue
     let xs = numbers(tokens.toOpenArray(1, tokens.high), lineNo)
+    if xs.len == 0: continue # a bare card
     if xs.len mod 2 == 1:
+      if b.open and not (xs[0] > b.cdp):
+        parseError(lineNo, "cdp " & num(xs[0]) & " after cdp " & num(b.cdp) &
+          ": VELF cdps must increase (or is this a continuation card with an " &
+          "odd count of numbers?)")
       b.finish(result)
       b.start(xs.toOpenArray(0, 0), lineNo)
       b.addPairs(xs.toOpenArray(1, xs.high), lineNo)
@@ -173,10 +193,10 @@ proc parseVelocityCsv*(text: string): seq[VelocityPick] =
         parseError(lineNo, "a velocity CSV has 3 columns (cdp,tMs,vrms) or 4 " &
           "(inline,crossline,tMs,vrms), got " & $fields.len)
       cols = fields.len
-      try:
-        discard parseFloat(fields[0])
-      except ValueError:
-        continue # the header
+      var header = false
+      for f in fields:
+        if f.isCard: header = true # a name, not a number or an empty field
+      if header: continue
     if fields.len != cols:
       parseError(lineNo, $fields.len & " columns, the file has " & $cols)
     let xs = numbers(fields, lineNo)
@@ -203,7 +223,7 @@ proc parseVelocities*(text: string): seq[VelocityPick] =
     let first = s.splitWhitespace[0]
     if first.cmpIgnoreCase("HANDVEL") == 0: return parseHandvel(text)
     if first.cmpIgnoreCase("VELF") == 0: return parseVelf(text)
-    if first[0] in Letters and ',' notin s: continue # another card (LINE, SPNT)
+    if first.isCard and ',' notin s: continue # another card (LINE, SPNT)
     break
   parseVelocityCsv(text)
 
