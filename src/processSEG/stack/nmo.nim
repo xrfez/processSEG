@@ -33,7 +33,7 @@
 ## **Velocities.** The block forms take a `VelocityFunction` (one for every
 ## row) or a `VelocityField` read at each row's location: the keys'
 ## `ensemble` (the CDP) for a 2D field, `inline` and `crossline` for a 3D
-## one, as `moveoutTimesInto`. The offset's sign is ignored (|x|).
+## one, as `moveoutTimesInto`. The offset's sign is ignored.
 ##
 ## **NaN.** The block forms leave a row alone when its offset, its `t0Ms` or
 ## its location is NaN, as they do dead, auxiliary and failed rows. The
