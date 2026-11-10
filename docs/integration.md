@@ -212,6 +212,26 @@ Viewers usually offer **fixed**, **normalized** and **AGC** display gain.
 
 Both paths give the same picture: the CPU gain ops exist too, for exports and tests.
 
+## Spectrum panel
+
+`SpectrumPlan` (`processSEG/fft/spectrum`) gives the averaged amplitude spectrum of the
+traces and time window a user selects. Make the plan once per window length and `dt`
+(`initSpectrumPlan(float32, windowLen, dtMs, taperFraction = 0.1)`), reserve
+`sp.workspaceSize`, then per selection:
+
+```nim
+let used = sp.averageAmplitudeInto(raw, meta, firstCol, amp, ws, rows = a .. b)
+toDbInto(amp, db)                       # 0 dB at the peak (or dbAbsolute)
+# x axis: sp.binHz(k), k in 0 ..< sp.bins
+```
+
+The window is demeaned, Tukey-tapered and zero-padded; the average is over power across
+the live rows (dead, auxiliary and failed rows and padding past a trace's end are left
+out), and amplitudes are scaled so that a sinusoid of amplitude A on a bin reads A. The
+window is given in columns of the block: the viewer converts its time selection with the
+meta's time axis (`sampleTimeMs`). It does not change the samples, so it runs on the raw
+or the processed buffer. It allocates nothing once the workspace is reserved.
+
 ## Overlays: moveout ticks for geometry checks
 
 The viewer passes the chunk's rows and the user's velocity parameters, and processSEG
