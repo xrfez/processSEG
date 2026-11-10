@@ -20,7 +20,9 @@ const
       # split kernels into forwardImpl/inverseImpl.
     "pass2", "pass3", "pass4", "pass5", "forwardImpl", "inverseImpl",
     # Filter: the gain multiply of the lanes path (packing is strided, scalar).
-    "gainLanes"]
+    "gainLanes",
+    # Gain statistics: Σx² (eight accumulators), max |x| (integer max).
+    "sumSq64", "maxAbs"]
   # Non-generic kernels: their symbols carry their own module (and GCC clones
   # such as `.constprop.0` count too).
   moduleKernels = [("sosLanes", "ZfilterZiir")]

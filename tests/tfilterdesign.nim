@@ -33,10 +33,13 @@ block trapezoid:
     doAssert g >= prev
     prev = g
   let lc = lowCut(0.5, 1)
-  doAssert lc.response(0, DT) == 0 and near(lc.response(0.75, DT), 0.5, 1e-15) and lc.response(400, DT) == 1
+  doAssert lc.response(0, DT) == 0 and near(lc.response(0.75, DT), 0.5,
+      1e-15) and lc.response(400, DT) == 1
   let hc = highCut(60, 80)
-  doAssert hc.response(0, DT) == 1 and near(hc.response(70, DT), 0.5, 1e-15) and hc.response(80, DT) == 0
-  doAssert lowCut(0, 2).response(0, DT) == 0 and near(lowCut(0, 2).response(1, DT), 0.5, 1e-15)
+  doAssert hc.response(0, DT) == 1 and near(hc.response(70, DT), 0.5, 1e-15) and
+      hc.response(80, DT) == 0
+  doAssert lowCut(0, 2).response(0, DT) == 0 and near(lowCut(0, 2).response(1,
+      DT), 0.5, 1e-15)
 
 block butterworth:
   # At a fine interval the warp tan(π·f·dt) is linear: the analog shapes.
@@ -54,7 +57,8 @@ block butterworth:
   doAssert lc.response(0, fine) == 0 and near(db(lc.response(4, fine)), db(0.5), 1e-9)
   doAssert near(db(lc.response(1, fine)) - db(lc.response(0.5, fine)), 36.12, 0.01)
   let bp = butterBandPass(5, 80, 24, 48)
-  doAssert near(db(bp.response(5, fine)), -6.02, 0.05) and near(db(bp.response(80, fine)), -6.02, 0.05)
+  doAssert near(db(bp.response(5, fine)), -6.02, 0.05) and near(db(bp.response(
+      80, fine)), -6.02, 0.05)
   doAssert bp.response(20, fine) > 0.99
   # At 2 ms the warp matters near Nyquist: the corner stays −6 dB, a high-cut
   # is 0 at Nyquist, and the gain follows tan(π·f·dt).
@@ -63,7 +67,8 @@ block butterworth:
   doAssert h2.response(250, DT) == 0
   let w = tan(PI * 100 * 0.002) / tan(PI * 60 * 0.002)
   doAssert near(h2.response(100, DT), 1 / (1 + w ^ 4), 1e-12)
-  doAssert near(butterLowCut(4).response(8, DT), butterLowCut(4).response(8, fine), 1e-3)
+  doAssert near(butterLowCut(4).response(8, DT), butterLowCut(4).response(8,
+      fine), 1e-3)
 
 block notch_and_zero_dc:
   let s = bandPass(Corners(f1: 2, f2: 4, f3: 100, f4: 120)).withNotch(50, 4)
@@ -78,9 +83,11 @@ block notch_and_zero_dc:
   doAssert near(h[18], z.response(18 * 1000 / 256, DT), 0)
 
 block validation:
-  for c in [Corners(f1: 8, f2: 4, f3: 60, f4: 80), Corners(f1: 4, f2: 4, f3: 60, f4: 80),
-      Corners(f1: 4, f2: 8, f3: 80, f4: 80), Corners(f1: 4, f2: 70, f3: 60, f4: 80),
-      Corners(f1: NaN, f2: 8, f3: 60, f4: 80), Corners(f1: -1, f2: 8, f3: 60, f4: 80),
+  for c in [Corners(f1: 8, f2: 4, f3: 60, f4: 80), Corners(f1: 4, f2: 4, f3: 60,
+      f4: 80), Corners(f1: 4, f2: 8, f3: 80, f4: 80), Corners(f1: 4, f2: 70,
+          f3: 60, f4: 80),
+      Corners(f1: NaN, f2: 8, f3: 60, f4: 80), Corners(f1: -1, f2: 8, f3: 60,
+          f4: 80),
       Corners(f1: 1, f2: 0, f3: 60, f4: 80), Corners(f1: 4, f2: 8, f3: Inf, f4: 80)]:
     doAssertRaises ValueError: discard bandPass(c)
   for (lo, hi, s) in [(5.0, 5.0, 24.0), (10.0, 5.0, 24.0), (5.0, 50.0, 0.0),
@@ -92,7 +99,8 @@ block validation:
   doAssertRaises ValueError: discard lowCut(1, 2).withNotch(50, 0)
   # Against Nyquist (250 Hz at 2 ms).
   bandPass(Corners(f1: 4, f2: 8, f3: 200, f4: 250)).validate(2)
-  doAssertRaises ValueError: bandPass(Corners(f1: 4, f2: 8, f3: 200, f4: 251)).validate(2)
+  doAssertRaises ValueError: bandPass(Corners(f1: 4, f2: 8, f3: 200,
+      f4: 251)).validate(2)
   doAssertRaises ValueError: lowCut(200, 250).validate(2)
   doAssertRaises ValueError: butterHighCut(250).validate(2)
   doAssertRaises ValueError: lowCut(1, 2).withNotch(250, 2).validate(2)
@@ -125,9 +133,11 @@ block impulse_length:
   # band sets L (the wide side's energy would hide its tail).
   doAssert bandPass(Corners(f1: 0.5, f2: 1, f3: 60, f4: 80)).impulseLength(2) ==
     lowCut(0.5, 1).impulseLength(2)
-  doAssert butterBandPass(4, 60, 48).impulseLength(2) == butterLowCut(4, 48).impulseLength(2)
+  doAssert butterBandPass(4, 60, 48).impulseLength(2) == butterLowCut(4,
+      48).impulseLength(2)
   let notchOnly = bandPass(Corners(f1: 0, f2: 0, f3: Inf, f4: Inf)).withNotch(50, 1)
-  doAssert highCut(100, 120).withNotch(50, 1).impulseLength(2) == notchOnly.impulseLength(2)
+  doAssert highCut(100, 120).withNotch(50, 1).impulseLength(2) ==
+      notchOnly.impulseLength(2)
   doAssert notchOnly.impulseLength(2) > 500
   # Too narrow for a sane grid.
   doAssertRaises ValueError: discard lowCut(1, 1.00001).impulseLength(0.01)

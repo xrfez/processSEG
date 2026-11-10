@@ -16,6 +16,12 @@ wrap(vec_clip_f32, clip, float32, -1.0, 1.0)
 wrap(vec_reversePolarity_f32, reversePolarity, float32)
 wrap(vec_muteTop_f32, muteTop, float32, 300.5, 20.0)
 
+proc vec_traceStats_f32(x: openArray[float32]): TraceStats {.exportc: "vec_traceStats_f32", noinline.} =
+  traceStats(x)
+
+proc vec_traceStats_f64(x: openArray[float64]): TraceStats {.exportc: "vec_traceStats_f64", noinline.} =
+  traceStats(x)
+
 proc vec_taperPads_f32(x: var openArray[float32],
     ramp: openArray[float32]) {.exportc: "vec_taperPads_f32", noinline.} =
   taperPads(x, ramp)
@@ -79,4 +85,4 @@ when isMainModule:
   vec_reversePolarity_f32(x)
   vec_muteTop_f32(x)
   vec_taperPads_f32(x, ramp)
-  echo x[0], y[0]
+  echo x[0], y[0], vec_traceStats_f32(x), vec_traceStats_f64(y)

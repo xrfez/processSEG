@@ -8,8 +8,8 @@ type
   TrendRemoval* = enum
     ## What is removed from a trace before it is padded and filtered (and
     ## added back after, scaled by the gain at 0 Hz).
-    trNone   ## nothing
-    trMean   ## the mean
+    trNone ## nothing
+    trMean ## the mean
     trLinear ## the least-squares line (also removes the mean)
 
 proc trendOf*[T: SampleType](trend: TrendRemoval, x: ptr UncheckedArray[T],

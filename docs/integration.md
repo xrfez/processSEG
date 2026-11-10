@@ -229,9 +229,15 @@ its causal impulse, since its whole error comes from the history before the wind
 Viewers usually offer **fixed**, **normalized** and **AGC** display gain.
 
 - **Fixed and normalized** gain are a scale factor per trace or per panel. processSEG
-  computes the statistics (`traceStats`: per-trace RMS and max, and percentile clip values
-  for a panel), and the viewer can apply the factor as a shader uniform, with no CPU pass
-  over the samples.
+  computes the statistics (`processSEG/gain/stats`), and the viewer can apply the factor
+  as a shader uniform, with no CPU pass over the samples:
+  - `traceStatsInto(samples, meta, stats)`: RMS and max |x| per row (NaN for dead,
+    auxiliary and failed rows), about 0.9 ms for a 2000 × 2001 panel;
+  - `panelStats(samples, meta, ws, clipPercentile = 99, rows = a .. b)`: RMS, max and a
+    percentile clip of |x| over the live rows (rows with a NaN or Inf are left out and
+    counted in `rows`), from a histogram with 0.4 % relative resolution (`ws` holds
+    `panelStatsWorkspace`), about 4 ms for the same panel, so recompute it when the data
+    or the selection changes, not per frame.
 - **AGC, time-variant dB curves and filters** change sample values in a way that depends
   on time, so they run on the CPU, in the plan.
 

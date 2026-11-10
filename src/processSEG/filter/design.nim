@@ -84,7 +84,7 @@ type
     of rkTrapezoid:
       corners*: Corners
     of rkButterworth:
-      lowHz*, lowSlope*: float64   ## low-cut corner (−6 dB) and slope; `lowHz = 0`: none
+      lowHz*, lowSlope*: float64 ## low-cut corner (−6 dB) and slope; `lowHz = 0`: none
       highHz*, highSlope*: float64 ## high-cut corner and slope; `highHz = Inf`: none
 
 const energyFraction* = 0.999
@@ -124,7 +124,8 @@ proc checkButter(lowHz, lowSlope, highHz, highSlope: float64) =
   if lowHz > 0: checkSlope(lowSlope)
   if highHz < Inf: checkSlope(highSlope)
   if not (lowHz < highHz):
-    badFilter("the low-cut corner must be below the high-cut one, got " & $lowHz &
+    badFilter("the low-cut corner must be below the high-cut one, got " &
+      $lowHz &
       " and " & $highHz)
 
 proc checkNotch(n: Notch) =
@@ -156,15 +157,18 @@ proc validate*(spec: FilterSpec, dtMs: float64) =
   of rkButterworth:
     checkButter(spec.lowHz, spec.lowSlope, spec.highHz, spec.highSlope)
     if spec.highHz < Inf and spec.highHz >= nyq:
-      badFilter("the high-cut corner " & $spec.highHz & " Hz is not below Nyquist (" &
+      badFilter("the high-cut corner " & $spec.highHz &
+        " Hz is not below Nyquist (" &
         $nyq & " Hz)")
     if spec.lowHz >= nyq:
-      badFilter("the low-cut corner " & $spec.lowHz & " Hz is not below Nyquist (" &
+      badFilter("the low-cut corner " & $spec.lowHz &
+        " Hz is not below Nyquist (" &
         $nyq & " Hz)")
   for n in spec.notches:
     checkNotch(n)
     if n.freqHz >= nyq:
-      badFilter("a notch at " & $n.freqHz & " Hz is not below Nyquist (" & $nyq & " Hz)")
+      badFilter("a notch at " & $n.freqHz & " Hz is not below Nyquist (" &
+          $nyq & " Hz)")
 
 # ----------------------------------------------------------------- builders --
 
@@ -318,20 +322,24 @@ proc featureLength(spec: FilterSpec, dtMs: float64): int =
 
 func features(spec: FilterSpec): seq[FilterSpec] =
   ## Each edge and notch of `spec` as a response of its own.
-  let flat = FilterSpec(kind: rkTrapezoid, corners: Corners(f1: 0, f2: 0, f3: Inf, f4: Inf))
+  let flat = FilterSpec(kind: rkTrapezoid, corners: Corners(f1: 0, f2: 0,
+      f3: Inf, f4: Inf))
   case spec.kind
   of rkTrapezoid:
     let c = spec.corners
     if c.hasLow:
-      result.add FilterSpec(kind: rkTrapezoid, corners: Corners(f1: c.f1, f2: c.f2, f3: Inf, f4: Inf))
+      result.add FilterSpec(kind: rkTrapezoid, corners: Corners(f1: c.f1,
+          f2: c.f2, f3: Inf, f4: Inf))
     if c.hasHigh:
-      result.add FilterSpec(kind: rkTrapezoid, corners: Corners(f1: 0, f2: 0, f3: c.f3, f4: c.f4))
+      result.add FilterSpec(kind: rkTrapezoid, corners: Corners(f1: 0, f2: 0,
+          f3: c.f3, f4: c.f4))
   of rkButterworth:
     if spec.lowHz > 0:
       result.add FilterSpec(kind: rkButterworth, lowHz: spec.lowHz,
         lowSlope: spec.lowSlope, highHz: Inf, highSlope: spec.highSlope)
     if spec.highHz < Inf:
-      result.add FilterSpec(kind: rkButterworth, lowHz: 0, lowSlope: spec.lowSlope,
+      result.add FilterSpec(kind: rkButterworth, lowHz: 0,
+        lowSlope: spec.lowSlope,
         highHz: spec.highHz, highSlope: spec.highSlope)
   for n in spec.notches:
     var f = flat

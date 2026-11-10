@@ -63,8 +63,8 @@ type
     ## module documentation.
     spec: FilterSpec
     fft: FftPlan[T]
-    gain: seq[T]   # one value per bin
-    fall: seq[T]   # pad weights, k = 1 .. pad (fall[k − 1])
+    gain: seq[T] # one value per bin
+    fall: seq[T] # pad weights, k = 1 .. pad (fall[k − 1])
     pad: int
     samples: int
     dtMs: float64
@@ -173,7 +173,8 @@ proc unpackFrom[T](plan: FilterPlan[T], src: Buf[T], stride: int, a, b: float64,
   if ga == 0 and gb == 0:
     for i in 0..<n: x[i] = src[(p + i) * stride]
   else:
-    for i in 0..<n: x[i] = T(float64(src[(p + i) * stride]) + (ga + gb * float64(i)))
+    for i in 0..<n: x[i] = T(float64(src[(p + i) * stride]) + (ga + gb *
+        float64(i)))
   {.pop.}
 
 {.push boundChecks: off, overflowChecks: off.} # an inline kernel keeps the
@@ -189,12 +190,14 @@ proc gainKernel[T](re {.noalias.}, im {.noalias.}: Buf[T],
 
 proc gainLanes[T](plan: FilterPlan[T], re, im: Buf[T]) {.noinline, raises: [].} =
   {.push boundChecks: off, overflowChecks: off.}
-  gainKernel(re, im, cast[ptr UncheckedArray[T]](unsafeAddr plan.gain[0]), plan.fft.bins, fftLanes)
+  gainKernel(re, im, cast[ptr UncheckedArray[T]](unsafeAddr plan.gain[0]),
+      plan.fft.bins, fftLanes)
   {.pop.}
 
 proc gainSingle[T](plan: FilterPlan[T], re, im: Buf[T]) {.noinline, raises: [].} =
   {.push boundChecks: off, overflowChecks: off.}
-  gainKernel(re, im, cast[ptr UncheckedArray[T]](unsafeAddr plan.gain[0]), plan.fft.bins, 1)
+  gainKernel(re, im, cast[ptr UncheckedArray[T]](unsafeAddr plan.gain[0]),
+      plan.fft.bins, 1)
   {.pop.}
 
 # -------------------------------------------------------------- one trace --
@@ -256,12 +259,15 @@ proc applyFilter*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
       for l in lane..<fftLanes: # unused lanes are zero
         for j in 0..<nf: buf[j * fftLanes + l] = T(0)
       plan.fft.forwardLanes(buf.toOpenArray(0, nf * fftLanes - 1),
-        re.toOpenArray(0, nb * fftLanes - 1), im.toOpenArray(0, nb * fftLanes - 1), ws)
+        re.toOpenArray(0, nb * fftLanes - 1), im.toOpenArray(0, nb * fftLanes -
+            1), ws)
       plan.gainLanes(re, im)
       plan.fft.inverseLanes(re.toOpenArray(0, nb * fftLanes - 1),
-        im.toOpenArray(0, nb * fftLanes - 1), buf.toOpenArray(0, nf * fftLanes - 1), ws)
+        im.toOpenArray(0, nb * fftLanes - 1), buf.toOpenArray(0, nf * fftLanes -
+            1), ws)
       for l in 0..<lane:
-        plan.unpackFrom(cast[ptr UncheckedArray[T]](addr buf[l]), fftLanes, ta[l], tb[l],
+        plan.unpackFrom(cast[ptr UncheckedArray[T]](addr buf[l]), fftLanes, ta[
+            l], tb[l],
           b.rowPtr(rowOf[l]), lenOf[l])
       lane = 0
 
@@ -271,7 +277,8 @@ proc applyFilter*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
     if n == 0: continue
     let src = b.rowPtr(r)
     (ta[lane], tb[lane]) = trendOf(plan.trend, src, n)
-    plan.packInto(src, n, ta[lane], tb[lane], cast[ptr UncheckedArray[T]](addr buf[lane]), fftLanes)
+    plan.packInto(src, n, ta[lane], tb[lane], cast[ptr UncheckedArray[T]](
+        addr buf[lane]), fftLanes)
     rowOf[lane] = r
     lenOf[lane] = n
     inc lane

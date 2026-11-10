@@ -120,3 +120,22 @@ about **6 ms on 4 workers** (12 ms for a narrow 0.5 Hz low-cut ramp), so a filte
 fits a 60 Hz frame (16.7 ms) with room for the draw; on one thread it takes 1.5–2.5 frames,
 so a viewer without the pool should filter off the draw thread. Cost scales with traces ×
 nfft·log(nfft): halve the panel, halve the time.
+
+## Gain (Phase 4)
+
+`nim bench` (bench/bgain.nim), same machine and flags as above, one thread, a panel of
+2000 traces × 2001 samples of float32 (16 MB).
+
+| operation | panel (median) | GB/s |
+|---|---|---|
+| `traceStatsInto` (RMS and max per trace) | 0.86 ms | 18.7 |
+| `panelStats`, no clip | 0.96 ms | 16.7 |
+| `panelStats`, p99 clip (histogram) | 4.2 ms | 3.8 |
+
+- The statistics are two vectorized passes per row (Σx² in eight float64 accumulators,
+  then max |x| as an integer max of the bit patterns). One fused loop with a float max
+  stayed scalar in `-d:danger` (1.7 ms); tvectorized builds in `-d:release`, where it was
+  packed, so check danger builds by hand too.
+- The percentile clip is a scatter into a 65536-bin histogram, about 3 cycles a sample;
+  four interleaved sub-histograms took it from 5.1 to 4.2 ms. It is a value to recompute
+  when the data or the selection changes, not per frame.

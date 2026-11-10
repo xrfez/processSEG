@@ -11,10 +11,13 @@
 ## - `processSEG/filter/design`: `FilterSpec`, cos² trapezoid, Butterworth and notch responses;
 ## - `processSEG/filter/apply`: `FilterPlan`, zero-phase FFT filtering with edge handling;
 ## - `processSEG/filter/iir`: `IirPlan`, Butterworth biquads, zero and minimum phase;
+## - `processSEG/gain/stats`: per-trace and panel RMS, max and percentile clip;
 ## - `processSEG/adapters`: `chunkMeta` from a prefetch chunk or a trace read.
 
 import processSEG/core/[types, rows, workspace, basic, mute]
 import processSEG/fft/[plan, spectrum]
 import processSEG/filter/[design, apply, iir]
+import processSEG/gain/stats
 import processSEG/adapters
-export types, rows, workspace, basic, mute, plan, spectrum, design, apply, iir, adapters
+export types, rows, workspace, basic, mute, plan, spectrum, design, apply, iir,
+    stats, adapters

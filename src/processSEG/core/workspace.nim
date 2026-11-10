@@ -25,11 +25,13 @@ type
     ## Scratch needed by a plan, in elements of each type.
     f32*: int ## float32 elements.
     f64*: int ## float64 elements.
+    u32*: int ## uint32 elements (counters, such as histogram bins).
 
   Workspace* = object
     ## Grow-only scratch; see the module documentation.
     f32: seq[float32]
     f64: seq[float64]
+    u32: seq[uint32]
 
 proc `=copy`(dst: var Workspace, src: Workspace) {.error: "a Workspace cannot be " &
   "copied: each thread owns its own; move it instead".}
@@ -40,29 +42,32 @@ func initWorkspace*(): Workspace =
 
 func `+`*(a, b: WorkspaceSize): WorkspaceSize =
   ## The scratch needed by two buffers used at the same time.
-  WorkspaceSize(f32: a.f32 + b.f32, f64: a.f64 + b.f64)
+  WorkspaceSize(f32: a.f32 + b.f32, f64: a.f64 + b.f64, u32: a.u32 + b.u32)
 
 func max*(a, b: WorkspaceSize): WorkspaceSize =
   ## The scratch needed by two steps that run one after the other.
-  WorkspaceSize(f32: max(a.f32, b.f32), f64: max(a.f64, b.f64))
+  WorkspaceSize(f32: max(a.f32, b.f32), f64: max(a.f64, b.f64),
+    u32: max(a.u32, b.u32))
 
 func capacity*(ws: Workspace): WorkspaceSize {.raises: [].} =
   ## What `ws` holds.
-  WorkspaceSize(f32: ws.f32.len, f64: ws.f64.len)
+  WorkspaceSize(f32: ws.f32.len, f64: ws.f64.len, u32: ws.u32.len)
 
 func fits*(ws: Workspace, size: WorkspaceSize): bool {.raises: [].} =
   ## `ws` holds at least `size`, so `reserve(size)` would not allocate.
-  ws.f32.len >= size.f32 and ws.f64.len >= size.f64
+  ws.f32.len >= size.f32 and ws.f64.len >= size.f64 and ws.u32.len >= size.u32
 
 proc reserve*(ws: var Workspace, size: WorkspaceSize) =
   ## Grows `ws` to hold at least `size`; a no-op when it already does. The
   ## contents are not kept. Raises `ValueError` for a negative size.
-  if size.f32 < 0 or size.f64 < 0:
+  if size.f32 < 0 or size.f64 < 0 or size.u32 < 0:
     raise newException(ValueError, "a workspace size must be ≥ 0, got " & $size)
   if ws.f32.len < size.f32:
     ws.f32 = newSeqUninit[float32](size.f32)
   if ws.f64.len < size.f64:
     ws.f64 = newSeqUninit[float64](size.f64)
+  if ws.u32.len < size.u32:
+    ws.u32 = newSeqUninit[uint32](size.u32)
 
 proc scratchOutside(at, n, cap: int) {.noinline, noreturn.} =
   raise newException(IndexDefect, "scratch " & $at & " ..< " & $(at + n) &
@@ -88,3 +93,9 @@ proc scratch*(ws: var Workspace, T: typedesc[float64], n: int,
   ## `n` float64 elements of scratch starting at element `at`; see the float32
   ## form.
   scratchOf(ws.f64, at, n)
+
+proc scratch*(ws: var Workspace, T: typedesc[uint32], n: int,
+    at = 0): ptr UncheckedArray[uint32] {.inline, raises: [].} =
+  ## `n` uint32 elements of scratch starting at element `at`; see the float32
+  ## form.
+  scratchOf(ws.u32, at, n)

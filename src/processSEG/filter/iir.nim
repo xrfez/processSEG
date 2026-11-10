@@ -71,7 +71,7 @@ type
     pad: int
     samples: int
     dtMs: float64
-    dcGain: float64  # G(1), or G(1)² for zero phase
+    dcGain: float64 # G(1), or G(1)² for zero phase
     dcSlope: float64 # G′(1) for minimum phase, 0 for zero phase
     trend: TrendRemoval
 
@@ -161,7 +161,8 @@ proc poles(slope: float64, perPole: float64, side: string): int =
   let n = slope / perPole
   if not (n >= 1 and n <= 32 and n == round(n)):
     badIir("the " & side & " slope of an IIR filter must be a multiple of " &
-      $perPole & " dB/octave (" & $int(perPole) & " per pole), 1 .. 32 poles; got " &
+      $perPole & " dB/octave (" & $int(perPole) &
+          " per pole), 1 .. 32 poles; got " &
       $slope)
   int(n)
 
@@ -291,7 +292,8 @@ proc sosLanes(buf: Buf, m: int, c: Biquad, backward: bool) {.noinline, raises: [
   if backward: sosKernel(buf, m, c, fftLanes, true)
   else: sosKernel(buf, m, c, fftLanes, false)
 
-proc sosSingle(buf: Buf, m: int, c: Biquad, backward: bool) {.noinline, raises: [].} =
+proc sosSingle(buf: Buf, m: int, c: Biquad, backward: bool) {.noinline,
+    raises: [].} =
   if backward: sosKernel(buf, m, c, 1, true)
   else: sosKernel(buf, m, c, 1, false)
 
