@@ -19,7 +19,28 @@ proc vec_taperPads_f32(x: var openArray[float32],
     ramp: openArray[float32]) {.exportc: "vec_taperPads_f32", noinline.} =
   taperPads(x, ramp)
 
+proc vec_fftLanes_f32(p: FftPlan[float32], x: var openArray[float32],
+    re, im: var openArray[float32], ws: var Workspace) {.exportc: "vec_fftLanes_f32", noinline.} =
+  p.forwardLanes(x, re, im, ws)
+  p.inverseLanes(re, im, x, ws)
+
+proc vec_fftLanes_f64(p: FftPlan[float64], x: var openArray[float64],
+    re, im: var openArray[float64], ws: var Workspace) {.exportc: "vec_fftLanes_f64", noinline.} =
+  p.forwardLanes(x, re, im, ws)
+  p.inverseLanes(re, im, x, ws)
+
+proc fftOnce(T: typedesc) =
+  let p = initFftPlan(T, 60)
+  var ws = initWorkspace()
+  ws.reserve(p.workspaceSize)
+  var x = newSeq[T](p.len * fftLanes)
+  var re, im = newSeq[T](p.bins * fftLanes)
+  when T is float32: vec_fftLanes_f32(p, x, re, im, ws)
+  else: vec_fftLanes_f64(p, x, re, im, ws)
+
 when isMainModule:
+  fftOnce(float32)
+  fftOnce(float64)
   var x = newSeq[float32](1000)
   var y = newSeq[float64](1000)
   let ramp = newSeq[float32](100)

@@ -14,7 +14,11 @@ const
   # instructions. The mutes are not here: their zero fill is a memset call
   # whether or not GCC vectorizes, and their short taper calls `sin`.
   kernels = ["sum64", "sumIndexed64", "demean", "detrend", "scale", "clip",
-    "reversePolarity", "taperPads"]
+    "reversePolarity", "taperPads",
+    # FFT (instances of the lanes path only: the one-trace path, L = 1, is
+      # scalar by design). The butterflies are inlined into the passes, the
+      # split kernels into forwardImpl/inverseImpl.
+    "pass2", "pass3", "pass4", "pass5", "forwardImpl", "inverseImpl"]
 
 proc isPacked(insn: string): bool =
   ## Packed arithmetic, compares or conversions on vector registers; not

@@ -6,8 +6,10 @@
 ## - `processSEG/core/workspace`: `Workspace`, grow-only per-thread scratch;
 ## - `processSEG/core/basic`: demean, detrend, scale, clip, polarity, pad taper;
 ## - `processSEG/core/mute`: top and bottom mutes (`MuteCurve`);
+## - `processSEG/fft/plan`: `FftPlan`, real mixed-radix FFTs, batched across traces;
 ## - `processSEG/adapters`: `chunkMeta` from a prefetch chunk or a trace read.
 
 import processSEG/core/[types, rows, workspace, basic, mute]
+import processSEG/fft/plan
 import processSEG/adapters
-export types, rows, workspace, basic, mute, adapters
+export types, rows, workspace, basic, mute, plan, adapters
