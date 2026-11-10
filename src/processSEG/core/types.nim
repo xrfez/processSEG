@@ -57,6 +57,7 @@ type
     firstSample: int
     failed: ptr UncheckedArray[int] ## Ascending rows; nil when there are none.
     failedLen: int
+    failedBase: int ## Subtracted from `failed[i]` (a `sub` meta shares the list).
 
 proc initChunkMeta*(rows: TraceRows, dtMs: float64, firstSample = 0,
     failed: openArray[int] = []): ChunkMeta =
@@ -123,7 +124,7 @@ func failedRow*(m: ChunkMeta, i: int): int {.inline, raises: [].} =
       raise newException(IndexDefect, "failed row index " & $i &
         " is outside 0 ..< " &
         $m.failedLen)
-  m.failed[i]
+  m.failed[i] - m.failedBase
 
 func keys*(m: ChunkMeta, row: int): lent TraceKeys {.inline, raises: [].} =
   ## The keys of row `row`, in place (parseSEG's `keysAt`; the meta checked
@@ -137,8 +138,8 @@ func isFailed*(m: ChunkMeta, row: int): bool {.raises: [].} =
   var hi = m.failedLen
   while lo < hi:
     let mid = (lo + hi) shr 1
-    if m.failed[mid] < row: lo = mid + 1 else: hi = mid
-  lo < m.failedLen and m.failed[lo] == row
+    if m.failed[mid] - m.failedBase < row: lo = mid + 1 else: hi = mid
+  lo < m.failedLen and m.failed[lo] - m.failedBase == row
 
 func isLive*(m: ChunkMeta, row: int): bool {.inline, raises: [].} =
   ## Row `row` holds seismic data to process: its status is `tsLive` or
@@ -160,6 +161,32 @@ func sampleTimeMs*(m: ChunkMeta, row, col: int): float64 {.inline, raises: [].} 
   ## The time of column `col` of row `row`, in ms:
   ## `t0Ms + (firstSample + col) · dtMs`. NaN when `t0Ms` is.
   m.t0Ms(row) + float64(m.firstSample + col) * m.dtMs
+
+func sub*(m: ChunkMeta, rows: Slice[int]): ChunkMeta {.raises: [ValueError].} =
+  ## The meta of the rows `rows` of `m` (row 0 is `m`'s row `rows.a`), for
+  ## a `RowBlock.sub` of the same rows: splitting work across threads or
+  ## tiles. It shares the view and the failed-row list (no copy, no
+  ## allocation) and keeps `dtMs` and `firstSample`. Raises `ValueError` for
+  ## rows outside `0 ..< len` (an empty slice may start at `len`).
+  result = m
+  result.rows = m.rows.sub(rows) # validates the span
+  if result.rows.len == 0:
+    result.failed = nil
+    result.failedLen = 0
+    return
+  # The failed rows within `rows`: [lo, hi) of the list, by binary search.
+  template firstAtLeast(v: int): int =
+    var lo = 0
+    var hi = m.failedLen
+    while lo < hi:
+      let mid = (lo + hi) shr 1
+      if m.failed[mid] - m.failedBase < v: lo = mid + 1 else: hi = mid
+    lo
+  let lo = firstAtLeast(rows.a)
+  let hi = firstAtLeast(rows.b + 1)
+  result.failedLen = hi - lo
+  result.failed = (if hi > lo: cast[ptr UncheckedArray[int]](addr m.failed[lo]) else: nil)
+  result.failedBase = m.failedBase + rows.a
 
 proc checkShape*[T: SampleType](m: ChunkMeta, samples: Tensor[T]) =
   ## Checks that `samples` is a C-contiguous `[rows, cols]` tensor with one row

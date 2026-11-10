@@ -203,3 +203,30 @@ block meta_copied_into_a_thread:
   doAssert wantLive == 61
   for i in 0..1:
     doAssert counts[2 * i] == wantLive and counts[2 * i + 1] == wantSamples
+
+block sub_meta:
+  var g = liveGather(20, 100)
+  g.keys[12].status = tsDead
+  g.setLive(15, 30)
+  let failed = @[0, 4, 5, 13, 19]
+  let meta = initChunkMeta(g.rows, dtMs = 2, firstSample = 3, failed = failed)
+  for rows in [0 .. 19, 4 .. 13, 6 .. 12, 14 .. 18, 19 .. 19, 20 .. 19, 3 .. 2]:
+    let s = meta.sub(rows)
+    doAssert s.len == rows.len and s.dtMs == 2 and s.firstSample == 3
+    var want: seq[int]
+    for f in failed:
+      if f in rows: want.add f - rows.a
+    doAssert s.failedCount == want.len
+    for i in 0..<want.len: doAssert s.failedRow(i) == want[i]
+    for r in 0..<s.len:
+      doAssert s.isFailed(r) == meta.isFailed(r + rows.a)
+      doAssert s.isLive(r) == meta.isLive(r + rows.a)
+      doAssert s.liveSamples(r, 100) == meta.liveSamples(r + rows.a, 100)
+      doAssert s.keys(r).offset == meta.keys(r + rows.a).offset
+    # A sub of a sub.
+    if rows.len >= 3:
+      let ss = s.sub(1 .. rows.len - 2)
+      for r in 0..<ss.len:
+        doAssert ss.isFailed(r) == meta.isFailed(r + rows.a + 1)
+  doAssertRaises ValueError: discard meta.sub(-1 .. 3)
+  doAssertRaises ValueError: discard meta.sub(5 .. 20)

@@ -216,6 +216,27 @@ proc normalize*[T: SampleType](x: var openArray[T], plan: NormalizePlan,
   doAssert x.len <= plan.samples, "a trace longer than the plan's samples"
   scaleToTarget(x, traceStatOf(x, plan, ws), plan.target)
 
+proc panelFactor*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
+    plan: NormalizePlan, ws: var Workspace): float64 =
+  ## The one factor a `perPanel` normalization of `b` multiplies its live
+  ## rows by (whatever `plan.scope` says), or NaN when it would leave the
+  ## block alone (a statistic of 0 or not finite, or a factor that does not
+  ## fit `T`). The pipeline uses it to fuse the factor into later steps; a
+  ## viewer can use it as a display-gain uniform. `ws` must hold
+  ## `panelStatsWorkspace` for `normPercentile`. Raises `ValueError` when `b`
+  ## does not match `meta`.
+  meta.checkShape(b)
+  plan.checkPlan
+  let clipP = (if plan.stat == normPercentile: plan.percentile else: NaN)
+  let s = panelStats(b, meta, ws, clipP)
+  let level =
+    case plan.stat
+    of normMax: s.maxAbs
+    of normRms: s.rms
+    of normPercentile: s.clip
+  if level.finitePositive and fitsIn(T, plan.target / level): plan.target / level
+  else: NaN
+
 proc normalize*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
     plan: NormalizePlan, ws: var Workspace) =
   ## Normalizes the live rows of `b` in place, per trace or with one factor
@@ -233,15 +254,9 @@ proc normalize*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
       if meta.isLive(r):
         normalize(b.row(r, meta.liveSamples(r, b.cols)), plan, ws)
   of perPanel:
-    let clipP = (if plan.stat == normPercentile: plan.percentile else: NaN)
-    let s = panelStats(b, meta, ws, clipP)
-    let level =
-      case plan.stat
-      of normMax: s.maxAbs
-      of normRms: s.rms
-      of normPercentile: s.clip
-    if level.finitePositive and fitsIn(T, plan.target / level):
-      scale(b, meta, plan.target / level)
+    let f = panelFactor(b, meta, plan, ws)
+    if not f.isNaN:
+      scale(b, meta, f)
 
 proc normalize*[T: SampleType](samples: var Tensor[T], meta: ChunkMeta,
     plan: NormalizePlan, ws: var Workspace) =
