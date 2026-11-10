@@ -9,10 +9,11 @@
 ## - `processSEG/fft/plan`: `FftPlan`, real mixed-radix FFTs, batched across traces;
 ## - `processSEG/fft/spectrum`: `SpectrumPlan`, amplitude spectra and dB for display;
 ## - `processSEG/filter/design`: `FilterSpec`, cos² trapezoid, Butterworth and notch responses;
+## - `processSEG/filter/apply`: `FilterPlan`, zero-phase FFT filtering with edge handling;
 ## - `processSEG/adapters`: `chunkMeta` from a prefetch chunk or a trace read.
 
 import processSEG/core/[types, rows, workspace, basic, mute]
 import processSEG/fft/[plan, spectrum]
-import processSEG/filter/design
+import processSEG/filter/[design, apply]
 import processSEG/adapters
-export types, rows, workspace, basic, mute, plan, spectrum, design, adapters
+export types, rows, workspace, basic, mute, plan, spectrum, design, apply, adapters

@@ -18,7 +18,9 @@ const
     # FFT (instances of the lanes path only: the one-trace path, L = 1, is
       # scalar by design). The butterflies are inlined into the passes, the
       # split kernels into forwardImpl/inverseImpl.
-    "pass2", "pass3", "pass4", "pass5", "forwardImpl", "inverseImpl"]
+    "pass2", "pass3", "pass4", "pass5", "forwardImpl", "inverseImpl",
+    # Filter: the gain multiply of the lanes path (packing is strided, scalar).
+    "gainLanes"]
 
 proc isPacked(insn: string): bool =
   ## Packed arithmetic, compares or conversions on vector registers; not

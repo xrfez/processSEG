@@ -195,9 +195,26 @@ At the true ends of a trace, processSEG does the edge handling itself:
 2. pad by odd reflection, which keeps the value and the slope continuous, for as long as
    the filter's impulse response;
 3. taper the pad only;
-4. choose an FFT size at which the response does not wrap.
+4. choose an FFT size at which the response does not wrap (`samples + 4L`: below −60 dB
+   even for a spike on the last sample);
+5. after filtering, add the trend back, scaled by the filter's gain at 0 Hz (a high-cut
+   keeps a drift, a low-cut removes it).
 
 So the first samples of a trace do not swing after a low-cut such as 1 Hz.
+
+Until the pipeline lands (Phase 5), a filter runs on its own:
+
+```nim
+let plan = initFilterPlan(float32, lowCut(0.5, 1), dtMs = 2, samples = 2001)
+var ws = initWorkspace()
+ws.reserve(plan.workspaceSize)
+samples.applyFilter(meta, plan, ws)   # in place, live rows to their live length
+let m = plan.requiredMargin           # L samples: decode a zoom window with m each side
+```
+
+The impulse length `L` holds 99.9 % of the energy of the response or of its complement
+(a narrow low-cut ramp is long: 0.5–1 Hz at 2 ms is 881 samples, 1.8 s). A window decoded
+with `m` samples each side matches the whole trace filtered to about 1 % of the peak.
 
 ## Display gain: CPU or GPU
 

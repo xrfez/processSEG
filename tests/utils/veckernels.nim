@@ -2,6 +2,7 @@
 ## builds this module and checks their disassembly for packed SIMD.
 
 import processSEG
+import synth
 
 template wrap(name, kernel: untyped, T: typedesc, args: varargs[untyped]) =
   proc name(x: var openArray[T]) {.exportc: astToStr(name), noinline.} =
@@ -38,9 +39,22 @@ proc fftOnce(T: typedesc) =
   when T is float32: vec_fftLanes_f32(p, x, re, im, ws)
   else: vec_fftLanes_f64(p, x, re, im, ws)
 
+proc vec_filter_f32(b: RowBlock[float32], meta: ChunkMeta, plan: FilterPlan[float32],
+    ws: var Workspace) {.exportc: "vec_filter_f32", noinline.} =
+  b.applyFilter(meta, plan, ws)
+
+proc filterOnce() =
+  let plan = initFilterPlan(float32, lowCut(10, 40), 2, 50)
+  var ws = initWorkspace()
+  ws.reserve(plan.workspaceSize)
+  var g = cmpGather[float32](cmpX = 0, offsets = [0.0, 0.0], 50, 2)
+  let meta = initChunkMeta(g.rows, dtMs = 2)
+  vec_filter_f32(rowBlock(g.data), meta, plan, ws)
+
 when isMainModule:
   fftOnce(float32)
   fftOnce(float64)
+  filterOnce()
   var x = newSeq[float32](1000)
   var y = newSeq[float64](1000)
   let ramp = newSeq[float32](100)
