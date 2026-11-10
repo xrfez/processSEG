@@ -121,5 +121,13 @@ block impulse_length:
   doAssert butterLowCut(2, 48).impulseLength(2) > bw, "steeper is longer"
   let nt = highCut(100, 120).withNotch(50, 1).impulseLength(2)
   doAssert nt > highCut(100, 120).impulseLength(2)
+  # Each feature counts alone: a narrow low ramp or a notch beside a wide
+  # band sets L (the wide side's energy would hide its tail).
+  doAssert bandPass(Corners(f1: 0.5, f2: 1, f3: 60, f4: 80)).impulseLength(2) ==
+    lowCut(0.5, 1).impulseLength(2)
+  doAssert butterBandPass(4, 60, 48).impulseLength(2) == butterLowCut(4, 48).impulseLength(2)
+  let notchOnly = bandPass(Corners(f1: 0, f2: 0, f3: Inf, f4: Inf)).withNotch(50, 1)
+  doAssert highCut(100, 120).withNotch(50, 1).impulseLength(2) == notchOnly.impulseLength(2)
+  doAssert notchOnly.impulseLength(2) > 500
   # Too narrow for a sane grid.
   doAssertRaises ValueError: discard lowCut(1, 1.00001).impulseLength(0.01)

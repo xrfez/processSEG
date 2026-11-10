@@ -79,23 +79,35 @@ block edges_against_clean_references:
   edgesMatchReference(float32, 2e-4) # 1000 + x in float32 keeps ~6e-5
 
 block no_swing_without_trend_removal:
-  # Even with nothing removed, the reflection keeps value and slope continuous:
-  # a drift through a low-cut does not swing at the ends.
+  # With nothing removed, the reflection keeps value and slope continuous, so
+  # a small drift through a low-cut does not swing at the ends. A large offset
+  # does leak (the pad taper pulls it to 0 through the ramp): about 1 % of it,
+  # which is why trLinear is the default.
   let plan = initFilterPlan(float64, lowCut(0.5, 1), dt, ns, trend = trNone)
   var x = clean[float64]()
   x.addDrift(dt, slopePerS = 2, start = 0.5)
   let y = filtered(x, plan)
   let e = maxDiff(y, clean[float64](), 0, ns div 10 - 1)
   doAssert e < 0.1, $e
+  var big = clean[float64]()
+  big.addDc(1000)
+  let leak = maxDiff(filtered(big, plan), filtered(clean[float64](), plan), 0, ns div 10 - 1)
+  doAssert leak > 1 and leak < 20, $leak
 
 block trend_back_by_dc_gain:
-  # A high-cut keeps the trend (gain 1 at 0 Hz); with withZeroDc it goes.
+  # A high-cut keeps the trend (gain 1 at 0 Hz); withZeroDc drops its mean and
+  # keeps its slope, so the output has zero mean.
   var x = clean[float64]()
-  x.addDrift(dt, slopePerS = 3, start = 2)
+  x.addDrift(dt, slopePerS = 3, start = 2) # 2 .. 14, mean 8
   let hc = filtered(x, initFilterPlan(float64, highCut(60, 80), dt, ns))
   doAssert abs(hc[0] - 2) < 1e-3 and abs(hc[^1] - (2 + 3 * 4.0)) < 1e-3
-  let z = filtered(x, initFilterPlan(float64, highCut(60, 80).withZeroDc, dt, ns))
-  doAssert abs(z[0]) < 1e-3 and abs(z[^1]) < 1e-3
+  for tr in [trMean, trLinear]:
+    let z = filtered(x, initFilterPlan(float64, highCut(60, 80).withZeroDc, dt, ns, tr))
+    var mean = 0.0
+    for v in z: mean += v
+    doAssert abs(mean / float64(ns)) < 1e-3, $tr & " mean " & $(mean / float64(ns))
+    if tr == trLinear:
+      doAssert abs(z[0] + 6) < 1e-3 and abs(z[^1] - 6) < 1e-3, $z[0] & " " & $z[^1]
 
 block no_wraparound:
   # An event at the end of the trace does not leak to its start: the output
@@ -103,7 +115,11 @@ block no_wraparound:
   # one), to −60 dB of the peak, in the worst case of a spike on the last
   # sample (its odd reflection fills the pad).
   for s in [lowCut(0.5, 1), lowCut(1, 2), bandPass(Corners(f1: 4, f2: 8, f3: 60, f4: 80)),
-      butterLowCut(2), highCut(60, 80).withNotch(50, 2)]:
+      butterLowCut(2), highCut(60, 80).withNotch(50, 2),
+      # A narrow feature next to a wide one: the low ramp and the notch set L.
+      bandPass(Corners(f1: 0.5, f2: 1, f3: 60, f4: 80)),
+      bandPass(Corners(f1: 4, f2: 8, f3: 60, f4: 80)).withNotch(50, 1),
+      butterBandPass(2, 80, 48)]:
     var x = zeroSignal[float64](ns)
     x.addRicker(dt, float64(ns - 15) * dt, 25, amp = 1)
     x.addSpike(ns - 1, 1)
@@ -185,7 +201,8 @@ block zoom_window_with_margin:
   # whole trace filtered, over the window.
   const total = 4001
   for s in [lowCut(0.5, 1), bandPass(Corners(f1: 4, f2: 8, f3: 60, f4: 80)),
-      butterBandPass(3, 80)]:
+      butterBandPass(3, 80), bandPass(Corners(f1: 0.5, f2: 1, f3: 60, f4: 80)),
+      butterBandPass(4, 60, 48), highCut(100, 120).withNotch(50, 1)]:
     var x = zeroSignal[float64](total)
     x.addNoise(1, seed = 3)
     x.addRicker(dt, 3000, 25, amp = 5)
@@ -202,7 +219,7 @@ block zoom_window_with_margin:
     var e = 0.0
     for j in a..b: e = max(e, abs(win[j - lo] - whole[j]))
     let rel = e / maxAbs(whole.toOpenArray(a, b))
-    doAssert rel < 0.02, $s.kind & ": " & $rel
+    doAssert rel < 0.01, $s.kind & ": " & $rel
 
 block nan_stays_in_its_row:
   var g = cmpGather[float32](cmpX = 0, offsets = newSeq[float64](3), 500, dt)

@@ -30,11 +30,19 @@
 ##    back scaled by the response at 0 Hz (0 for a low-cut, 1 for a high-cut;
 ##    exact for a zero-phase filter, whose symmetric impulse maps a line to
 ##    itself times its sum). A high-cut therefore keeps the trend, and a
-##    low-cut removes it.
+##    low-cut removes it. With `withZeroDc`, the trend's mean is not added
+##    back, only its slope: the output has zero mean.
+##
+## `trNone` leaves the samples as they are, so the pad taper pulls each end's
+## value to 0 over `L` samples. That is fine for data near zero mean at its
+## ends; a large offset then leaks through a low-cut's ramp (a DC of 1000
+## under a 0.5–1 Hz low-cut moves the first samples by about 1 % of it). The
+## default, `trLinear`, has no such leak.
 ##
 ## **Margin.** `requiredMargin` is `L`: a zoom window decoded with `L` extra
 ## samples on each side, filtered, matches the whole trace filtered over the
-## window, to the 0.1 % of the impulse energy left out of `L`.
+## window, to within 1 % of the peak (tested): the 0.1 % of the impulse
+## energy left out of `L`.
 ##
 ## **Rows.** The block forms filter the live rows, each to its live length
 ## (`ChunkMeta.liveSamples`); dead, auxiliary and failed rows and the padding
@@ -92,7 +100,7 @@ proc initFilterPlan*(T: typedesc[SampleType], spec: FilterSpec, dtMs: float64,
   result.pad = pad
   result.samples = samples
   result.dtMs = dtMs
-  result.dcGain = if spec.zeroDc: 0.0 else: spec.response(0, dtMs)
+  result.dcGain = spec.response(0, dtMs)
   result.trend = trend
 
 func requiredMargin*[T](plan: FilterPlan[T]): int {.inline, raises: [].} =
@@ -157,10 +165,10 @@ proc packInto[T](plan: FilterPlan[T], x: Buf[T], n: int, a, b: float64,
 proc unpackFrom[T](plan: FilterPlan[T], src: Buf[T], stride: int, a, b: float64,
     x: Buf[T], n: int) {.raises: [].} =
   ## The filtered data back into `x[0 ..< n]`, with the trend times the gain
-  ## at 0 Hz added back.
+  ## at 0 Hz added back (for `withZeroDc`, its slope only, without its mean).
   let p = plan.pad
-  let ga = a * plan.dcGain
   let gb = b * plan.dcGain
+  let ga = if plan.spec.zeroDc: -gb * float64(n - 1) / 2 else: a * plan.dcGain
   {.push boundChecks: off, overflowChecks: off.}
   if ga == 0 and gb == 0:
     for i in 0..<n: x[i] = src[(p + i) * stride]

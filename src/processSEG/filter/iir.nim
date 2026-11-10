@@ -30,8 +30,7 @@
 ##
 ## **Edge handling.** As for the FFT filters (D4), on each trace's live
 ## samples: the trend is removed (`trendRemoval`), each end that a pass
-## starts from is padded by odd reflection for `requiredMargin` samples (the
-## impulse length of the spec, `impulseLength`), and each pass of each
+## starts from is padded by odd reflection for `requiredMargin` samples, and each pass of each
 ## section starts in the steady state of its first input sample (the
 ## `lfilter_zi` method), so a DC offset does not start a transient. The trend
 ## `a + b·i` is then added back as the filter's steady-state response to it:
@@ -118,6 +117,46 @@ proc butterSections(fc, dtMs: float64, order: int, high: bool): seq[Biquad] =
       let g = (1 + a1) / 2
       result.add biquad(g, g, 0, a1, 0)
 
+const causalEnergyFraction* = 0.9999
+  ## The energy a minimum-phase margin holds. Stricter than the zero-phase
+  ## `energyFraction` (0.999): all the error of a causal filter's start comes
+  ## from the history before a window, and at 0.999 a zoom window was off by
+  ## 2 % of its peak; at 0.9999, under 0.7 %.
+
+proc causalLength(sections: seq[Biquad]): int =
+  ## The samples after a spike that hold `causalEnergyFraction` of the
+  ## energy of the causal impulse response `h` of `sections`, or of its complement
+  ## `δ − h`, whichever is longer (a low-cut's impulse is nearly a spike with
+  ## a long, weak tail), run in float64 with a zero start until the response
+  ## has died away (the last quarter holds < 1e-12 of the energy).
+  var n = 1024
+  while true:
+    var h = newSeq[float64](n)
+    h[0] = 1
+    for c in sections: # zero initial state
+      var s1, s2 = 0.0
+      for j in 0..<n:
+        let x = h[j]
+        let y = c.b0 * x + s1
+        s1 = c.b1 * x - c.a1 * y + s2
+        s2 = c.b2 * x - c.a2 * y
+        h[j] = y
+    var rest, tail = 0.0
+    for j in 1..<n:
+      rest += h[j] * h[j]
+      if j >= n - n div 4: tail += h[j] * h[j]
+    if tail <= 1e-12 * max(rest, 1e-300) or n >= 1 shl 24:
+      for c0 in [h[0], 1 - h[0]]:
+        let total = c0 * c0 + rest
+        var e = c0 * c0
+        var L = 0
+        while e < causalEnergyFraction * total and L < n - 1:
+          inc L
+          e += h[L] * h[L]
+        result = max(result, L)
+      return
+    n *= 2
+
 proc poles(slope: float64, perPole: float64, side: string): int =
   let n = slope / perPole
   if not (n >= 1 and n <= 32 and n == round(n)):
@@ -141,15 +180,20 @@ proc initIirPlan*(T: typedesc[SampleType], spec: FilterSpec, dtMs: float64,
   if spec.notches.len > 0 or spec.zeroDc:
     badIir("an IIR filter takes no notches and no 0 Hz suppression")
   let perPole = if phase == ipZero: 12.0 else: 6.0
+  var lowSecs, highSecs: seq[Biquad]
   if spec.lowHz > 0:
-    result.sections.add butterSections(spec.lowHz, dtMs,
+    lowSecs = butterSections(spec.lowHz, dtMs,
       poles(spec.lowSlope, perPole, "low-cut"), high = true)
   if spec.highHz < Inf:
-    result.sections.add butterSections(spec.highHz, dtMs,
+    highSecs = butterSections(spec.highHz, dtMs,
       poles(spec.highSlope, perPole, "high-cut"), high = false)
+  result.sections = lowSecs & highSecs
   result.spec = spec
   result.phase = phase
-  result.pad = spec.impulseLength(dtMs)
+  if phase == ipZero:
+    result.pad = spec.impulseLength(dtMs) # |H|² is the spec's response
+  else: # each edge alone, as for impulseLength
+    result.pad = max(causalLength(lowSecs), causalLength(highSecs))
   result.samples = samples
   result.dtMs = dtMs
   # G(1) and G′(1) of the cascade, from each section's N(q)/D(q).
@@ -168,7 +212,9 @@ proc initIirPlan*(T: typedesc[SampleType], spec: FilterSpec, dtMs: float64,
 
 func requiredMargin*[T](plan: IirPlan[T]): int {.inline, raises: [].} =
   ## The samples a zoom window needs on each side (before it, for minimum
-  ## phase): the impulse length of the spec.
+  ## phase): the impulse length of the spec for zero phase (its `|H|²` is the
+  ## spec's response), and for minimum phase the 99.99 %-energy length of the
+  ## cascade's own causal impulse (slope/6 poles ring longer).
   plan.pad
 
 func samples*[T](plan: IirPlan[T]): int {.inline, raises: [].} =

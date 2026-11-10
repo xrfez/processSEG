@@ -34,10 +34,11 @@
 ##   of 12 (zero phase) or 6 (minimum phase, where the corner is −3 dB).
 ## - **Notches** (`withNotch`): gain 0 at `freqHz`, rising as `sin²` to 1 at
 ##   `freqHz ± widthHz/2`; −6 dB at `freqHz ± widthHz/4`.
-## - **0 Hz suppression** (`withZeroDc`): bin 0 is set to 0 when the filter is
-##   applied. It removes only the mean of the padded window, so it is not
-##   counted in the impulse length; the edge handling of `filter/apply`
-##   removes the mean or trend first anyway.
+## - **0 Hz suppression** (`withZeroDc`): the gain at 0 Hz is 0, so the
+##   filtered trace has zero mean. `filter/apply` sets bin 0 to 0 and adds
+##   back only the slope of the removed trend (times the gain at 0 Hz), not
+##   its mean; with `trNone` only the mean of the padded window goes. It has
+##   no impulse length of its own.
 ##
 ## **Impulse length** (`impulseLength`): the zero-phase impulse response is
 ## symmetric; its length is the number of samples `L` on each side of the
@@ -45,7 +46,9 @@
 ## its complement `1 − H`, whichever is longer. (A low-cut's impulse is a
 ## spike minus a narrow low-pass: the spike holds nearly all the energy, and
 ## the long tail that matters at the trace ends is the low-pass, the
-## complement. The same holds for a notch.) A ramp of width `w` Hz gives
+## complement. The same holds for a notch.) Each edge and each notch is
+## measured alone and the longest counts: in a band-pass the wide high side
+## holds most of the energy and would hide a narrow low ramp. A ramp of width `w` Hz gives
 ## roughly `L ≈ 1/(w·dt)` samples, so a narrow low-cut ramp means a long
 ## filter. `filter/apply` pads each trace end by `L` (odd reflection) and
 ## reports `L` as the margin a zoom window needs.
@@ -288,32 +291,23 @@ func energyLength(h: openArray[float64], centre: float64): int =
     e += h[result] * h[result] +
       (if n - result != result: h[n - result] * h[n - result] else: 0.0)
 
-proc impulseLength*(spec: FilterSpec, dtMs: float64): int =
-  ## The number of samples `L` on each side of the centre of the zero-phase
-  ## impulse response that hold `energyFraction` (99.9 %) of its energy
-  ## (module documentation); 0 for a flat response. The response is sampled
-  ## on a grid fine enough to resolve `narrowestRampHz` and long enough to
-  ## hold the impulse, and inverted with a float64 FFT. Raises `ValueError`
-  ## for a `spec` that `validate` rejects, or a response so narrow that its
-  ## impulse is longer than 2²² samples.
-  spec.validate(dtMs)
+proc featureLength(spec: FilterSpec, dtMs: float64): int =
+  ## The energy length of one response, the longer of `H` and `1 − H`.
   let feature = spec.narrowestRampHz
   if feature == Inf: return 0
   let fs = 1000 / dtMs
   var n = nextFastLen(max(64, int(ceil(16 * fs / feature))))
-  var flat = spec
-  flat.zeroDc = false
   while true:
     if n > maxImpulseGrid:
       badFilter("the filter's impulse response is longer than " &
-        $(maxImpulseGrid div 4) & " samples at " & $dtMs &
+        $(maxImpulseGrid div 8) & " samples at " & $dtMs &
         " ms (narrowest ramp " & $feature & " Hz)")
     let p = initFftPlan(float64, n)
     var ws = initWorkspace()
     ws.reserve(p.workspaceSize(batched = false))
     var re = newSeq[float64](p.bins)
     let im = newSeq[float64](p.bins)
-    flat.responseInto(dtMs, n, re)
+    spec.responseInto(dtMs, n, re)
     var h = newSeq[float64](n)
     p.inverse(re, im, h, ws)
     # H and its complement 1 − H (impulse δ − h) share every sample but the
@@ -321,3 +315,40 @@ proc impulseLength*(spec: FilterSpec, dtMs: float64): int =
     let L = max(energyLength(h, h[0]), energyLength(h, 1 - h[0]))
     if L <= n div 8: return L
     n = nextFastLen(2 * n) # the grid was too short to hold the impulse
+
+func features(spec: FilterSpec): seq[FilterSpec] =
+  ## Each edge and notch of `spec` as a response of its own.
+  let flat = FilterSpec(kind: rkTrapezoid, corners: Corners(f1: 0, f2: 0, f3: Inf, f4: Inf))
+  case spec.kind
+  of rkTrapezoid:
+    let c = spec.corners
+    if c.hasLow:
+      result.add FilterSpec(kind: rkTrapezoid, corners: Corners(f1: c.f1, f2: c.f2, f3: Inf, f4: Inf))
+    if c.hasHigh:
+      result.add FilterSpec(kind: rkTrapezoid, corners: Corners(f1: 0, f2: 0, f3: c.f3, f4: c.f4))
+  of rkButterworth:
+    if spec.lowHz > 0:
+      result.add FilterSpec(kind: rkButterworth, lowHz: spec.lowHz,
+        lowSlope: spec.lowSlope, highHz: Inf, highSlope: spec.highSlope)
+    if spec.highHz < Inf:
+      result.add FilterSpec(kind: rkButterworth, lowHz: 0, lowSlope: spec.lowSlope,
+        highHz: spec.highHz, highSlope: spec.highSlope)
+  for n in spec.notches:
+    var f = flat
+    f.notches.add n
+    result.add f
+
+proc impulseLength*(spec: FilterSpec, dtMs: float64): int =
+  ## The number of samples `L` on each side of the centre of the zero-phase
+  ## impulse response that hold `energyFraction` (99.9 %) of its energy
+  ## (module documentation); 0 for a flat response. Each edge and notch is
+  ## measured on its own (a low-cut alone, a high-cut alone, a notch alone),
+  ## and `L` is the longest: in a band-pass, the energy of the wide part
+  ## would hide the long tail of a narrow low ramp or notch. Each response is
+  ## sampled on a grid fine enough to resolve its ramp and long enough to
+  ## hold its impulse (up to 2²⁴ points), and inverted with a float64 FFT.
+  ## Raises `ValueError` for a `spec` that `validate` rejects, or a response
+  ## so narrow that its impulse is longer than 2²¹ samples.
+  spec.validate(dtMs)
+  for f in spec.features:
+    result = max(result, f.featureLength(dtMs))

@@ -95,7 +95,7 @@ block matches_frequency_domain_magnitude:
       (butterLowCut(3, 18), butterLowCut(3, 36))]:
     let iir = initIirPlan(float64, s, dt, ns, phase = ipMinimum, trend = trNone)
     var x = zeroSignal[float64](ns)
-    x.addSpike(100)
+    x.addSpike(iir.requiredMargin + 1) # past the reach of the start pad's reflection
     let mag = spectrumOf(filtered(x, iir))
     let df = 1000 / (float64(ns) * dt)
     var e = 0.0
@@ -209,3 +209,25 @@ block nan_and_shapes:
   doAssertRaises AssertionDefect: long.applyFilter(small, ws)
   var p0: IirPlan[float32]
   doAssertRaises AssertionDefect: long.applyFilter(p0, ws)
+
+block zoom_window_with_margin:
+  # A window decoded with requiredMargin (before it, for minimum phase; both
+  # sides for zero phase) matches the whole trace filtered, over the window.
+  const total = 4000
+  for s in [butterLowCut(2, 24), butterLowCut(2, 48), butterBandPass(4, 60, 48)]:
+    for phase in [ipZero, ipMinimum]:
+      var x = zeroSignal[float64](total)
+      x.addNoise(1, seed = 3)
+      x.addRicker(dt, 3000, 25, amp = 5)
+      x.addDrift(dt, 4, 1)
+      let whole = filtered(x, initIirPlan(float64, s, dt, total, phase))
+      let (a, b) = (1500, 2300)
+      let plan = initIirPlan(float64, s, dt, total, phase)
+      let m = plan.requiredMargin
+      let lo = max(0, a - m)
+      let hi = if phase == ipZero: min(total - 1, b + m) else: b
+      let win = filtered(x[lo .. hi], plan)
+      var e = 0.0
+      for j in a..b: e = max(e, abs(win[j - lo] - whole[j]))
+      let rel = e / maxAbs(whole.toOpenArray(a, b))
+      doAssert rel < 0.01, $phase & " m = " & $m & ": " & $rel

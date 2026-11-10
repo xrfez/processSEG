@@ -218,8 +218,11 @@ one filter at ~6 ms per frame with the pool, and keep filtering off the draw thr
 without it.
 
 The impulse length `L` holds 99.9 % of the energy of the response or of its complement
-(a narrow low-cut ramp is long: 0.5–1 Hz at 2 ms is 881 samples, 1.8 s). A window decoded
-with `m` samples each side matches the whole trace filtered to about 1 % of the peak.
+(a narrow low-cut ramp is long: 0.5–1 Hz at 2 ms is 881 samples, 1.8 s), each edge and
+notch measured on its own, so the narrowest one sets it. A window decoded with `m`
+samples each side matches the whole trace filtered to within 1 % of the peak (tested
+for FFT and IIR filters, zero and minimum phase; a minimum-phase margin holds 99.99 % of
+its causal impulse, since its whole error comes from the history before the window).
 
 ## Display gain: CPU or GPU
 

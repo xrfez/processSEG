@@ -102,9 +102,12 @@ Forward only, ns per n·log₂n and trace, from a sweep (5 samples each):
 
 | filter | L (pad) | nfft | 1 thread | 4 workers | speedup |
 |---|---|---|---|---|---|
-| FFT band-pass cos² 4-8-60-80 Hz | 67 | 2304 | 23.1 ms (11.6 µs/trace) | 6.0 ms | 3.85× |
-| FFT low-cut cos² 0.5–1 Hz | 881 | 5760 | 42.5 ms (21.3 µs/trace) | 11.1 ms | 3.83× |
-| IIR zero-phase Butterworth 4–60 Hz, 24 dB/oct (4 poles) | 45 | — | 24.3 ms (12.2 µs/trace) | 6.4 ms | 3.83× |
+| FFT band-pass cos² 4-8-60-80 Hz | 110 | 2500 | 23.6 ms (11.8 µs/trace) | 6.2 ms | 3.82× |
+| FFT low-cut cos² 0.5–1 Hz | 881 | 5760 | 42.2 ms (21.1 µs/trace) | 11.5 ms | 3.67× |
+| IIR zero-phase Butterworth 4–60 Hz, 24 dB/oct (4 poles) | 99 | — | 25.0 ms (12.5 µs/trace) | 6.5 ms | 3.86× |
+
+(Re-measured after the 3.5 review: L is now taken per edge, so the band-passes got longer
+pads: 67 → 110 and 45 → 99.)
 
 Where the FFT band-pass goes (cachegrind, instructions): the FFT passes about 45 %, the
 strided pack/unpack (with its float64 conversions) about 30 %, the trend sums about 15 %
