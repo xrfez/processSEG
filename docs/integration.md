@@ -1,8 +1,9 @@
 # Integrating parseSEG, processSEG and the viewer
 
-Status: **draft**, written before the viewer exists. It fixes who owns what, the data that
-crosses each boundary, and the changes parseSEG needs. Update it whenever an API it
-describes changes.
+Status: **draft**, written before the viewer exists and revised for parseSEG 0.7.0. It
+fixes who owns what, the data that crosses each boundary, and what processSEG needs from
+parseSEG. Update it whenever an API it describes changes. Names marked *(sketch)* settle
+in task 5.1.
 
 ## The three parts
 
@@ -14,7 +15,10 @@ describes changes.
 
 Dependencies point one way: `viewer → processSEG → parseSEG`, and `viewer → parseSEG`
 directly. processSEG imports parseSEG for its tensor type (Arraymancer `Tensor[T]`, which
-parseSEG re-exports) and, in its adapter and batch modules only, for `SeismicFile`.
+parseSEG re-exports), for the per-trace data model (`TraceKeys` and the `TraceRows` view),
+and, in its adapter and batch modules only, for `SeismicFile` and the prefetcher.
+processSEG adds no C dependency: its FFT is pure Nim (mixed radix 2/3/4/5, batched across
+traces).
 
 ## Who reads the file?
 
@@ -25,66 +29,95 @@ keeps the decoded *raw* tensors. It hands processSEG a tensor plus a small metad
 The processSEG core never opens a file, so it is testable on synthetic arrays and usable
 on data from anywhere. Two thin layers sit on top of it:
 
-- **Metadata adapters** (`processSEG/adapters`): `chunkMetaInto(f, traces, var meta)`
-  fills a `ChunkMeta` from a `SeismicFile` and a trace range or list. It reuses `meta`'s
-  storage, like parseSEG's `traceKeysInto` and `traceFieldColumnInto`, so a chunk costs no
-  allocation. Header reads are thread-safe in parseSEG, so it may run on any thread.
-- **Batch drivers** (`processSEG/batch`): jobs that must read many traces in a particular
-  order, such as a brute stack or a first-break pass over a whole file. They take a
-  `SeismicFile`, read through parseSEG's prefetcher, report progress through a
-  `Progress`-style hook that can cancel, and return in-memory results.
+- **Metadata adapters** (`processSEG/adapters`): `chunkMeta(c: PrefetchChunk)` and
+  `chunkMeta(f, traces, firstSample, failed)` for `readTracesInto` callers. They are O(1)
+  and copy nothing: a `ChunkMeta` wraps the chunk's `TraceRows` view, its interval, its
+  window origin and its failed rows.
+- **Batch drivers** (`processSEG/batch`): jobs over a whole file, such as a brute stack or
+  a first-break pass. They take a `SeismicFile` and run processing inside parseSEG's
+  prefetcher, through its `transform` hook, with one `Workspace` per prefetch worker. They
+  report progress through a `Progress`-style hook that can cancel, and return in-memory
+  results.
 
 ## Data contract
 
+**One data model, owned by parseSEG.** No header value is copied into a processSEG object.
+Every per-trace value is read from parseSEG's `TraceRows` view when it is needed.
+
 - **Samples:** `Tensor[float32]` (or `float64`) shaped `[traces, samples]`, row-major and
   C-contiguous, exactly what `readTraces`, `readTracesInto` and `PrefetchChunk.samples`
-  return. The kernels underneath take `var openArray[T]` rows, so a caller can also pass
-  any contiguous buffer.
+  return. Rows are zero-padded past a shorter trace's end. The kernels underneath take
+  `var openArray[T]` rows, so a caller can also pass any contiguous buffer.
 - **One sample interval per call.** A chunk passed to a plan has a single `dt`. SEG-D
-  records can mix intervals across channel sets, so the viewer (or the adapter) splits
-  chunks by channel set. Auxiliary traces are excluded with parseSEG's `isSeismic`.
-- **`ChunkMeta`.** Unknown values are NaN, as in parseSEG's `TraceKeys`.
-  - Per chunk:
-    - `dtMs`;
-    - `firstSample`: the window origin, 0 unless the rows were decoded with a sample
-      window (`readTracesInto(..., samples)` or the prefetcher's `firstSample`).
-  - Per row:
-    - `t0Ms`: the time of the trace's sample 0;
-    - `liveSamples`: the trace's real sample count. Rows are zero-padded past a shorter
-      trace's end, and filters, AGC and padding stop at that count;
-    - `live`: false for decode failures (parseSEG's zero rows), for traces marked dead by
-      their trace-identification code, and for traces the caller excludes;
-    - `offset`, signed as in the file. Formulas use |x|; split-spread QC uses the sign;
-    - `srcX`, `srcY`, `srcZ`, `rcvX`, `rcvY`, `rcvZ`, `cmpX`, `cmpY`;
-    - `bin`: a CDP number, or inline and crossline.
+  records can mix intervals across channel sets, so the viewer prefetches with
+  `uniform = true` (chunks never span two channel sets or intervals), or splits a range
+  with `uniformRuns`. The adapter checks that the rows' `intervalUs` agree and raises
+  `ValueError` on a mixed chunk.
+- **`ChunkMeta`** is `{rows: TraceRows, dtMs, firstSample, failed}`:
+  - `rows`: the chunk's view (`PrefetchChunk.rows`, or `rowsOf(f, traces)`, or
+    `rowsOf(keys, numSamples)` for synthetics). It must have keys (`hasKeys`), which is
+    checked once, when the meta is built; kernels then read keys without raising;
+  - `dtMs`: from the rows' `intervalUs`;
+  - `firstSample`: the window origin, 0 unless the rows were decoded with a sample window
+    (`readTracesInto(..., samples)` or the prefetcher's `firstSample`);
+  - `failed`: the rows that could not be decoded (parseSEG leaves them zero), from
+    `PrefetchChunk.failedRows` or a caller's list. It is held as a pointer and a length, so
+    the meta can be copied to another thread.
+- **Per-row values** come straight from the view:
+  - `traceKeys(row).offset`: signed, as in the file. Formulas use |x|; split-spread QC
+    uses the sign;
+  - `.t0Ms`: the time of the trace's sample 0;
+  - `.srcX`, `.srcY`, `.srcZ`, `.rcvX`, `.rcvY`, `.rcvZ`, `.cmpX`, `.cmpY`, `.ensemble`
+    (CDP), `.inline`, `.crossline`;
+  - `numSamples(row)`: the trace's real length. The live length within the window is that
+    minus `firstSample`, clamped to the row width; filters, AGC and padding stop there.
+- **Live traces:** a row is live when its `status` is `tsLive` or `tsUnknown` and it is not
+  a failed row. Unset SEG-Y trace codes are common, so unknown counts as live. Dead and
+  auxiliary traces are passed through untouched and are left out of stacks and panel
+  statistics.
 - **Time axis:** sample `j` of row `r` is at `t0Ms[r] + (firstSample + j) · dtMs`.
 - **Units:** time in ms, frequency in Hz, gain in dB, and velocity in distance units per
   second, with distance in the file's coordinate units (`summary.coordinateUnits`).
   processSEG never converts feet and metres silently.
 - **Errors:** as in parseSEG. A bad argument (an empty band, a negative window) raises
-  `ValueError` when the plan is built, not per chunk. Applying a valid plan does not raise.
-  NaN or Inf in the input stays local to its trace and does not poison its neighbours.
+  `ValueError` when the plan is built, not per chunk; a bad `ChunkMeta` raises when it is
+  built. Applying a valid plan does not raise. NaN or Inf in the input stays local to its
+  trace and does not poison its neighbours.
+- **Lifetimes** (parseSEG's rules, which `ChunkMeta` inherits):
+  - `rowsOf(f, list)` keeps a pointer to the list: the list must outlive the view and the
+    meta;
+  - a view made before `ensureKeys` has no keys, so it cannot make a meta: make views after
+    `ensureKeys`;
+  - views, prefetchers and metas need their readers stopped before `applySurvey` or a
+    `HeaderEditor` write, which rewrite the stored keys.
 
 ### Where the geometry comes from
 
-- **SEG-Y:** offsets and coordinates come from the trace headers. Inline and crossline
-  often sit in non-standard bytes that the file's Layout stanza describes, and
-  `TraceKeys` has no inline/crossline fields. The adapter reads them with
-  `traceFieldColumn` on the layout field names.
+All of it arrives through `TraceKeys`; processSEG never reads header bytes itself.
+
+- **SEG-Y:** offsets and coordinates come from the trace headers. Inline and crossline are
+  the keys' `inline` and `crossline`, taken from the layout's `iline` and `xline` fields
+  (bytes 189 and 193 in Rev 1 and later, unless a Layout stanza or vendor map moves them).
 - **SEG-D Rev 1/2:** the headers carry receiver and source line, point and index, but no
-  coordinates, so the offset is NaN. The viewer joins SPS or P1 with
-  `SurveyGeometry` and `applySurvey` on a file opened with `keys = true`; the adapter then
-  takes the joined keys. Without a join, moveout ticks, NMO and stacking have no offsets.
+  coordinates, so the offset is NaN. The viewer joins SPS or P1 with `SurveyGeometry` and
+  `applySurvey` on a file opened with `keys = true` (or after `ensureKeys`); the view then
+  sees the joined keys. Without a join, moveout ticks, NMO and stacking have no offsets.
 - **SEG-D Rev 3 and SEG-2:** coordinates when the file has them; offsets are derived from
   them.
+- **Statics:** datum elevations, uphole times and the statics already applied are not in
+  the keys. `traceStatics(f, traces)` reads them on demand, for elevation statics.
+- **Changes:** `applySurvey` and `HeaderEditor` writes refresh the stored keys and bump
+  `keysRevision(f)`. Anything derived from keys (moveout ticks, bins) records the revision
+  it was made from and is recomputed when it changes.
 
 ## Plans and buffers: the interactive loop
 
 A processing flow is a `Pipeline`: an ordered list of operations, held as plain data. The
 viewer edits it when the user moves a slider. Compiling it for a `dt` and a trace length
 gives a `PipelinePlan`, with filter responses, FFT plans and gain curves precomputed. A
-plan is immutable after compilation and carries a `generation` id. Each thread brings its
-own `Workspace`: grow-only scratch that keeps `apply` from allocating.
+plan is immutable after compilation and carries a `generation` id. Every thread that
+applies a plan has its own `Workspace` (grow-only scratch that keeps `apply` from
+allocating); a `ProcessPool` keeps one per worker, so pool users never see it.
 
 ```mermaid
 flowchart LR
@@ -103,14 +136,25 @@ flowchart LR
   slider event, or on a zoom that changes the trace length. `ws.reserve(plan)` is a no-op
   when the workspace is already big enough. The viewer tags each processed buffer with the
   plan's generation and reprocesses any buffer whose generation is stale.
-- **Threads.** Kernels are single-threaded and reentrant, with no globals.
-  - Arraymancer tensors and Nim seqs are ref-counted, and the count is not atomic, so no
-    tensor or plan value may be copied into another thread.
-  - The threaded entry points take `ptr PipelinePlan` and raw row pointers, as parseSEG's
-    prefetcher does internally.
-  - The plan must outlive every thread using it.
-  - Parallelism comes from the caller's threads, from processSEG's opt-in `parallelApply`
-    (a worker count, ptr-based), or from parseSEG change P2.
+- **Threads.** processSEG offers three ways to run, from the simplest to the most control:
+  1. **No threads.** `plan.apply(raw, processed, meta, ws)` on any thread. Kernels touch no
+     globals, so several threads can each call `apply` with their own `Workspace`.
+  2. **The pool.** `var pool = newProcessPool(workers = 4)` once, at viewer start-up, then
+     `pool.apply(plan, raw, processed, meta)` per frame or chunk. The workers are started
+     once and sleep between jobs, so a job costs a wake-up, not a thread start. A call
+     splits the rows across the workers and returns when all are done. User code passes
+     tensors and plans as usual: no pointers, no locks, no `Workspace` handling. One job
+     runs at a time per pool, and a second caller waits. The pool cannot be copied, and
+     destroying it stops and joins its workers.
+  3. **Inside the prefetcher**, for batch jobs: the `transform` hook runs the plan on
+     parseSEG's decode workers while the chunk is still in cache, with one `Workspace` per
+     worker passed through the `user` pointer.
+
+  Arraymancer tensors and Nim seqs are ref-counted, and the count is not atomic, so no
+  tensor, seq or plan value crosses a thread. The pool turns its arguments into raw
+  pointers internally, and because `pool.apply` blocks until every worker is done, the
+  data outlives the work. A viewer with its own job system uses the first form from each
+  of its threads instead.
 
 ## Sample windows and edge effects
 
@@ -147,15 +191,17 @@ Both paths give the same picture: the CPU gain ops exist too, for exports and te
 
 ## Overlays: moveout ticks for geometry checks
 
-The viewer passes each trace's offset (from `ChunkMeta` or `traceKeys`) and the user's
-velocity parameters. processSEG returns one time per trace for each curve:
+The viewer passes the chunk's rows and the user's velocity parameters, and processSEG
+fills one time per trace for each curve, reading each offset from the view
+(`moveoutTimesInto(meta.rows, lmo(velocity = 1800, t0Ms = 0), ticks)` *(sketch)*):
 
 - linear moveout, `t = t0 + |x| / v`, for first-break and refraction checks;
 - hyperbolic moveout, `t = sqrt(t0² + x² / v²)`, for reflections;
 - either kind from a velocity function or field instead of a constant velocity (later).
 
-The constant-velocity form ships early, with the pipeline. The viewer draws these ticks.
-If the ticks drift from the first breaks across a spread, the geometry is suspect.
+The constant-velocity form ships early, with the pipeline. The viewer draws these ticks
+and tags them with `keysRevision(f)`: an `applySurvey` or header edit makes them stale. If
+the ticks drift from the first breaks across a spread, the geometry is suspect.
 processSEG's QC module can also score this fit automatically, with an offset-binned or
 two-segment fit, because land refractor velocities vary.
 
@@ -166,39 +212,62 @@ On each trace it runs the pre-stack flow (offset-variant mute, elevation statics
 gain) and NMO with a stretch mute. It accumulates the result into CMP bins in any order,
 because stacking is linear and needs no sort, keeping a live count per sample.
 
+It runs inside the prefetcher's `transform` hook with `uniform = true`, one `Workspace`
+and one stack accumulator per worker, merged at the end.
+
 It returns a `StackResult`: a `[bins, samples]` tensor, the fold, and the bin geometry.
 It uses about bins × samples × 8 bytes, as float32 for the sum plus the live count. The
-viewer shows the result as an in-memory dataset. Writing it to a file needs parseSEG
-change P3.
+viewer shows the result as an in-memory dataset. A stack of SEG-Y input can be written
+with `writeTrace(..., overrides = [headerOverride("trace.cdp", n), ...])` on a template
+trace; a stack of SEG-D or SEG-2 input needs patch F3 (below).
 
-## Proposed parseSEG changes
+## parseSEG 0.7.0 and the patch branch
+
+The changes this doc first proposed (P1–P4) all landed in parseSEG 0.7.0, which processSEG
+requires:
+
+| Was | Now in parseSEG 0.7.0 |
+|---|---|
+| P1: the time of sample 0 | `TraceKeys.t0Ms`, and `startTimeMs` / `startTimeMsInto` |
+| P2: a per-chunk prefetch transform | `newPrefetcher(..., transform: ChunkTransform[T], user: pointer)`, run on the worker with its index; `PrefetchChunk.rows` and `.failedRows` |
+| P3: writing derived traces | `writeTrace(..., overrides = [headerOverride(...)])` with a template trace of the output's standard |
+| P4: runs of one channel set and interval | `uniform = true` on the prefetcher, and `uniformRuns(f, range \| list)` |
+| (new) one data model | `TraceRows` views, `TraceKeys` with `inline`, `crossline`, `intervalUs`, `traceCode`, `status`; `ensureKeys` and `keysRevision`; keys kept current by `HeaderEditor` writes; `traceStatics` |
+
+What processSEG still needs, patched on parseSEG's `processseg-integration` branch and
+offered upstream as one pull request:
 
 | # | Change | Why |
 |---|---|---|
-| P1 | A public `startTimeMs(f, trace)` (and a column form): the time of sample 0, across standards. SEG-Y: delay recording time × the time scalar. SEG-D: the channel set start time (`segd startTimeMs`, already public on the reader). SEG-2: DELAY. | Every time-dependent operation, and every time axis, needs it. Today the SEG-Y/SEG-2 resolution is private (`segyTimeMs` in `convert/toseg2`). The adapter reproduces it until then. |
-| P2 | An optional per-chunk `transform` on `newPrefetcher`, run on the worker thread right after decoding. It gets: the worker index (so each worker owns a `Workspace`), the chunk's rows as a raw pointer with its shape, the trace indices of the rows (in selection mode, `first` is a list position), and the failed rows. It is `{.gcsafe, raises: [].}` and captures only raw pointers to state that outlives the prefetcher. | Processing then runs on the prefetch workers while the chunk is still in cache, which suits batch jobs. It is optional: batch code can also process right after `next` on the consumer thread, and the viewer, which keeps raw data, processes on its own threads either way. |
-| P3 | A writer path for derived traces: `writeTrace` with header overrides, such as a template trace's headers with `cdp`, `fold` and `offset` changed. | It lets a stack, or other derived traces that have no source trace, be written as SEG-Y. |
-| P4 | A helper that splits a range or list into runs of one channel set and one sample interval. | Optional: `channelSets` and `sampleIntervalUs(f, trace)` are public, so processSEG's adapter does it meanwhile. |
+| F1 | A non-raising key accessor on `TraceRows`, for callers that checked `hasKeys` once | `traceKeys(rows, row)` raises `ValueError`, so a `{.raises: [].}` kernel or a `ChunkTransform` cannot call it |
+| F2 | A `readTracesInto` overload that fills a caller's failed-row list | Today its failed traces are reported only through a `DiagLog`, unlike the prefetcher's `failedRows` |
+| F3 | (Optional) a SEG-Y trace written from `TraceKeys` plus overrides, with no template trace | A stack of SEG-D or SEG-2 input cannot be written as SEG-Y otherwise |
 
 ## Viewer checklist
 
-1. Open with `openSeismic`, using an index cache and a `progress` hook. Use `keys = true`
-   if gathers or geometry are needed for the whole file, or if SPS or P1 geometry must be
-   joined with `applySurvey` (SEG-D Rev 1/2).
-2. Prefetch raw chunks, and keep them in a raw cache.
-3. Fill a `ChunkMeta` per chunk with `chunkMetaInto`, or from the keys the viewer already has.
-4. Edit a `Pipeline` and `compile` it. Each processing thread keeps one `Workspace` and
-   calls `reserve(plan)`.
-5. `apply(plan, raw, processed, meta, ws)`, tag the result with `plan.generation`, then
-   draw. Apply fixed or normalized gain as a shader uniform from `traceStats`, if the GPU
-   is used.
+1. Open with `openSeismic`, using an index cache and a `progress` hook, with `keys = true`
+   (or call `ensureKeys` before making any view). Join SPS or P1 geometry with
+   `applySurvey` if needed (SEG-D Rev 1/2), before any reader starts.
+2. Prefetch raw chunks with `uniform = true`, and keep them in a raw cache.
+3. Make a `ChunkMeta` per chunk with `chunkMeta(c)`: it wraps `c.rows`, the interval and
+   `c.failedRows`, and copies nothing.
+4. Edit a `Pipeline` and `compile` it.
+5. Create one `ProcessPool` at start-up, then `pool.apply(plan, raw, processed, meta)`, tag
+   the result with `plan.generation`, and draw. (Or call `plan.apply` from your own threads,
+   each with its own `Workspace` and `reserve(plan)`.) Apply fixed or normalized gain as a
+   shader uniform from `traceStats`, if the GPU is used.
 6. For zoom windows, decode with `requiredMargin(plan)`, and set `firstSample`.
-7. For overlays, call `moveoutTimes(offsets, model)` and draw the ticks.
-8. For a brute stack, run `bruteStack` on a background thread with a cancel hook.
+7. For overlays, fill moveout times from `meta.rows`, tag them with `keysRevision(f)`, and
+   draw the ticks.
+8. Before `applySurvey` or a header edit, stop the prefetcher and any processing; after
+   it, rebuild views and metas, and recompute anything tagged with an older revision.
+9. For a brute stack, run `bruteStack` on a background thread with a cancel hook.
 
 ## Open questions
 
-- Does the viewer want processSEG's `parallelApply`, or will it run its own job system?
-  This decides whether the pool is public API or a test helper.
-- Will 3D CMP binning come from the file (inline and crossline in a Layout stanza), from
-  a user-defined grid, or both? Both are planned. The viewer decides the UI.
+- Will 3D CMP binning come from the file (the keys' `inline` and `crossline`), from a
+  user-defined grid, or both? Both are planned. The viewer decides the UI.
+- Does the viewer want an asynchronous `submit` / `wait` pair on the pool, so a frame can
+  be abandoned before it finishes? It is added only if the viewer asks for it.
+
+Settled: the pool is public API (`ProcessPool`, decided 2026-11-09).
