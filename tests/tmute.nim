@@ -41,7 +41,7 @@ block validation:
 
 block top_kernel_exact:
   var x = ones(10)
-  muteTop(x, startCol = 2, taperCols = 4)
+  muteTop(x, startCol = 6, taperCols = 4)
   doAssert x[0] == 0 and x[1] == 0 and x[2] == 0
   for j in 3..5:
     doAssert near(x[j], sin(PI / 2 * float64(j - 2) / 4) ^ 2, 1e-12)
@@ -50,7 +50,7 @@ block top_kernel_exact:
   muteTop(sharp, startCol = 2, taperCols = 0)
   doAssert sharp == @[0.0, 0, 1, 1, 1], "a sharp mute keeps the sample at t"
   var frac = ones(5)
-  muteTop(frac, startCol = 1.5, taperCols = 1)
+  muteTop(frac, startCol = 2.5, taperCols = 1)
   doAssert frac[1] == 0 and near(frac[2], sin(PI / 4) ^ 2, 1e-12) and frac[3] == 1
   var all = ones(4)
   muteTop(all, startCol = 99, taperCols = 3)
@@ -64,7 +64,7 @@ block top_kernel_exact:
 
 block bottom_kernel_exact:
   var x = ones(10)
-  muteBottom(x, endCol = 7, taperCols = 4)
+  muteBottom(x, endCol = 3, taperCols = 4)
   for j in 0..3: doAssert x[j] == 1
   for j in 4..6:
     doAssert near(x[j], sin(PI / 2 * float64(7 - j) / 4) ^ 2, 1e-12)
@@ -86,16 +86,28 @@ proc filled(offsets: openArray[float64], cols: int): SynthGather[float32] =
 
 block lmo_top_mute_on_a_gather:
   # Offsets 0, 400, 800 at 2000 m/s: mute times 0, 200, 400 ms = columns
-  # 0, 50, 100 at 4 ms; a 20 ms taper is 5 columns.
+  # 0, 50, 100 at 4 ms; a 20 ms taper is the 5 columns before each.
   var g = filled([0.0, 400, 800], cols = 150)
   let meta = initChunkMeta(g.rows, dtMs = 4)
   g.data.muteTop(meta, lmoMute(velocity = 2000), taperMs = 20)
   for i, col in [0, 50, 100]:
     let r = int(i)
-    for j in 0..<col: doAssert g.data[r, j] == 0
+    for j in 0..<col - 5: doAssert g.data[r, j] == 0
     for k in 0..<5:
-      doAssert near(float64(g.data[r, col + k]), sin(PI / 2 * float64(k) / 5) ^ 2)
-    doAssert g.data[r, col + 5] == 1 and g.data[r, 149] == 1
+      if col - 5 + k >= 0:
+        doAssert near(float64(g.data[r, col - 5 + k]), sin(PI / 2 * float64(k) /
+            5) ^ 2)
+    for j in col..<150: doAssert g.data[r, j] == 1, "untouched from the mute time on"
+
+block taper_limit_is_continuous:
+  # A vanishing taper converges on the sharp cut: the sample at t is kept.
+  for L in [0.0, 1e-3]:
+    var top = ones(6)
+    muteTop(top, startCol = 3, taperCols = L)
+    doAssert top == @[0.0, 0, 0, 1, 1, 1], $L
+    var bottom = ones(6)
+    muteBottom(bottom, endCol = 2, taperCols = L)
+    doAssert bottom == @[1.0, 1, 1, 0, 0, 0], $L
 
 block time_axis_follows_t0_and_the_window:
   # Row 0 starts at t0 = 100 ms: a 140 ms mute is its column 10 at 4 ms;
@@ -120,14 +132,19 @@ block table_bottom_mute_and_liveness:
   g.keys[1].status = tsAuxiliary
   g.keys[2].offset = NaN
   g.setLive(3, 60)
+  for j in 60..<100: g.data[3, j] = 7 # a sentinel past the live end
   let failed: seq[int] = @[]
   let meta = initChunkMeta(g.rows, dtMs = 4, failed = failed)
-  let tab = tableMute([100.0, 400], [200.0, 320])       # columns 50 .. 80
+  let tab = tableMute([100.0, 400], [200.0, 160])       # columns 50 .. 40
   g.data.muteBottom(meta, tab)
   doAssert g.data[0, 50] == 1 and g.data[0, 51] == 0
   doAssert g.data[1, 99] == 1, "auxiliary rows are untouched"
   doAssert g.data[2, 99] == 1, "a NaN offset leaves the row alone"
-  doAssert g.data[3, 59] == 1 and g.data[3, 60] == 0, "a mute past the live end"
+  doAssert g.data[3, 40] == 1 and g.data[3, 41] == 0 and g.data[3, 59] == 0
+  for j in 60..<100:
+    doAssert g.data[3, j] == 7, "nothing past the live end is written"
+  g.data.muteTop(meta, timeMute(400))
+  doAssert g.data[3, 60] == 7, "a top mute also stops at the live end"
 
 block nan_t0_leaves_the_row_alone:
   var g = filled([100.0], cols = 10)

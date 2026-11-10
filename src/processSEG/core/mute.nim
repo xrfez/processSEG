@@ -12,12 +12,13 @@
 ## column `j` of row `r` is at `t0Ms(r) + (firstSample + j) · dtMs`, so a mute
 ## follows each row's `t0Ms` and the window origin.
 ##
-## **Top mute** at time `t`, taper `L`: samples before `t` are zeroed; from
-## `t` to `t + L` they are scaled by `sin²(π/2 · (s − t)/L)` (0 at `t`, rising
-## to 1); later samples are untouched. **Bottom mute** mirrors it: samples
-## after `t` are zeroed, and the taper falls from 1 at `t − L` to 0 at `t`.
-## With `L = 0` the cut is sharp: a top mute keeps the sample at `t`, a
-## bottom mute keeps it too.
+## **Top mute** at time `t`, taper `L`: samples from `t` on are untouched;
+## the taper lies on the muted side, scaling `t − L ≤ s < t` by
+## `sin²(π/2 · (s − (t − L))/L)` (0 at `t − L`, rising towards 1 at `t`), and
+## earlier samples are zeroed. **Bottom mute** mirrors it: samples up to `t`
+## are untouched, the taper falls from 1 at `t` to 0 at `t + L`, and later
+## samples are zeroed. So `t` is always the edge of the untouched data, and a
+## taper shrinking to 0 gives the sharp cut in the limit.
 ##
 ## The block forms process live rows only, up to their live length. A row
 ## whose mute time is NaN (an offset or `t0Ms` the headers cannot give) is
@@ -44,7 +45,7 @@ type
       offsets: seq[float64] ## |offset| knots, strictly ascending, ≥ 0
       timesMs: seq[float64]
     of mkLmo:
-      secPerDist: float64 ## 1/velocity, in ms per distance unit
+      msPerDist: float64 ## 1000/velocity, in ms per distance unit
       t0Ms, padMs: float64
 
 proc badMute(msg: string) {.noinline, noreturn.} =
@@ -88,7 +89,7 @@ proc lmoMute*(velocity: float64, t0Ms = 0.0, padMs = 0.0): MuteCurve =
   if not finite(t0Ms) or not finite(padMs):
     badMute("LMO mute times must be finite, got t0Ms " & $t0Ms & ", padMs " &
       $padMs)
-  MuteCurve(kind: mkLmo, secPerDist: 1000 / velocity, t0Ms: t0Ms, padMs: padMs)
+  MuteCurve(kind: mkLmo, msPerDist: 1000 / velocity, t0Ms: t0Ms, padMs: padMs)
 
 func kind*(c: MuteCurve): MuteKind {.inline, raises: [].} =
   ## How the curve gives each trace's time.
@@ -101,7 +102,7 @@ func muteTimeMs*(c: MuteCurve, offset: float64): float64 {.raises: [].} =
   of mkTime:
     c.tMs
   of mkLmo:
-    c.t0Ms + abs(offset) * c.secPerDist + c.padMs
+    c.t0Ms + abs(offset) * c.msPerDist + c.padMs
   of mkTable:
     let x = abs(offset)
     if x.isNaN: return NaN
@@ -124,46 +125,50 @@ func firstAtOrAfter(c: float64, n: int): int {.inline.} =
   elif c >= float64(n): n
   else: int(ceil(c))
 
+func firstAfter(c: float64, n: int): int {.inline.} =
+  ## The first column > `c`, clamped to `0 .. n`.
+  if c < 0: 0
+  elif c >= float64(n): n
+  else: int(floor(c)) + 1
+
 proc muteTop*[T: SampleType](x: var openArray[T], startCol,
     taperCols: float64) {.raises: [].} =
-  ## Top mute of one row in column units: zeroes `x[j]` for `j < startCol`,
-  ## scales `startCol ≤ j < startCol + taperCols` by
-  ## `sin²(π/2 · (j − startCol)/taperCols)`. Columns may be fractional. A NaN
-  ## `startCol` leaves `x` untouched; `taperCols` must be ≥ 0.
+  ## Top mute of one row in column units: `x[j]` for `j ≥ startCol` is
+  ## untouched, `startCol − taperCols ≤ j < startCol` is scaled by
+  ## `sin²(π/2 · (j − startCol + taperCols)/taperCols)`, and earlier columns
+  ## are zeroed. Columns may be fractional. A NaN `startCol` leaves `x`
+  ## untouched; `taperCols` must be ≥ 0.
   if startCol.isNaN: return
   let n = x.len
-  let zeroEnd = firstAtOrAfter(startCol, n)
+  let rampStart = startCol - taperCols
+  let zeroEnd = firstAtOrAfter(rampStart, n)
   {.push boundChecks: off.}
   for j in 0..<zeroEnd:
     x[j] = T(0)
   if taperCols > 0:
-    let rampEnd = firstAtOrAfter(startCol + taperCols, n)
-    for j in zeroEnd..<rampEnd:
-      let w = sin(PI / 2 * (float64(j) - startCol) / taperCols) ^ 2
+    for j in zeroEnd..<firstAtOrAfter(startCol, n):
+      let w = sin(PI / 2 * (float64(j) - rampStart) / taperCols) ^ 2
       x[j] = T(float64(x[j]) * w)
   {.pop.}
 
 proc muteBottom*[T: SampleType](x: var openArray[T], endCol,
     taperCols: float64) {.raises: [].} =
-  ## Bottom mute of one row in column units: zeroes `x[j]` for `j > endCol`,
-  ## scales `endCol − taperCols < j ≤ endCol` by
-  ## `sin²(π/2 · (endCol − j)/taperCols)`. Columns may be fractional. A NaN
-  ## `endCol` leaves `x` untouched; `taperCols` must be ≥ 0.
+  ## Bottom mute of one row in column units: `x[j]` for `j ≤ endCol` is
+  ## untouched, `endCol < j ≤ endCol + taperCols` is scaled by
+  ## `sin²(π/2 · (endCol + taperCols − j)/taperCols)`, and later columns are
+  ## zeroed. Columns may be fractional. A NaN `endCol` leaves `x` untouched;
+  ## `taperCols` must be ≥ 0.
   if endCol.isNaN: return
   let n = x.len
-  # The first column > endCol.
-  let zeroStart =
-    if endCol < 0: 0
-    elif endCol >= float64(n): n
-    else: int(floor(endCol)) + 1
+  let rampEnd = endCol + taperCols
+  let zeroStart = firstAfter(rampEnd, n)
   {.push boundChecks: off.}
+  if taperCols > 0:
+    for j in firstAfter(endCol, n)..<zeroStart:
+      let w = sin(PI / 2 * (rampEnd - float64(j)) / taperCols) ^ 2
+      x[j] = T(float64(x[j]) * w)
   for j in zeroStart..<n:
     x[j] = T(0)
-  if taperCols > 0:
-    let first = firstAtOrAfter(endCol - taperCols, n)
-    for j in first..<zeroStart:
-      let u = (endCol - float64(j)) / taperCols # ≤ 1
-      x[j] = T(float64(x[j]) * sin(PI / 2 * u) ^ 2)
   {.pop.}
 
 # -------------------------------------------------------------- block forms --
@@ -182,7 +187,7 @@ func muteCol(meta: ChunkMeta, row: int, c: MuteCurve): float64 {.inline.} =
 proc muteTop*[T: SampleType](b: RowBlock[T], meta: ChunkMeta, curve: MuteCurve,
     taperMs = 0.0) =
   ## Top mute of every live row of `b` at its `curve` time, with a taper of
-  ## `taperMs` after it; see the module documentation. Raises `ValueError`
+  ## `taperMs` before it (on the muted side); see the module documentation. Raises `ValueError`
   ## when `b` and `meta` disagree or `taperMs` is negative or not finite.
   checkTaper(taperMs)
   meta.checkShape(b)
@@ -195,7 +200,7 @@ proc muteTop*[T: SampleType](b: RowBlock[T], meta: ChunkMeta, curve: MuteCurve,
 proc muteBottom*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
     curve: MuteCurve, taperMs = 0.0) =
   ## Bottom mute of every live row of `b` at its `curve` time, with a taper
-  ## of `taperMs` before it; see `muteTop`.
+  ## of `taperMs` after it (on the muted side); see `muteTop`.
   checkTaper(taperMs)
   meta.checkShape(b)
   let taperCols = taperMs / meta.dtMs

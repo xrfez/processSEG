@@ -132,6 +132,7 @@ block scratch_regions:
       discard ws.scratch(float64, 9)
     doAssertRaises IndexDefect:
       discard ws.scratch(float64, 1, at = -1)
+  doAssert ws.scratch(float32, 0, at = 10) == nil, "an empty request at the end"
   var empty = initWorkspace()
   doAssert empty.scratch(float32, 0) == nil
 

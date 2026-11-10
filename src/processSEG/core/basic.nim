@@ -17,7 +17,8 @@
 ## samples.scale(meta, 0.5)
 ## ```
 ##
-## The kernels do not allocate or raise (except `clip` on bad limits); the
+## The kernels do not allocate or raise (except `clip` on bad limits and
+## `taperPads` on a ramp that does not fit); the
 ## block forms raise `ValueError` once, before touching any sample, when the
 ## tensor or block does not match the meta. Sums run in float64. A NaN or Inf
 ## sample stays in its own row: a mean or trend over it is NaN, so that row
@@ -89,7 +90,7 @@ proc demean*[T: SampleType](x: var openArray[T]) {.raises: [].} =
 
 proc detrend*[T: SampleType](x: var openArray[T]) {.raises: [].} =
   ## Subtracts the least-squares line `a + b·i` from `x`, which also removes
-  ## the mean. One sample is set to 0.
+  ## the mean. A row of one sample becomes 0.
   let n = x.len
   if n == 0: return
   doAssert n <= int32.high, "a row longer than int32.high samples"
@@ -110,7 +111,8 @@ proc detrend*[T: SampleType](x: var openArray[T]) {.raises: [].} =
   {.pop.}
 
 proc scale*[T: SampleType](x: var openArray[T], factor: float64) {.raises: [].} =
-  ## Multiplies every sample by `factor`.
+  ## Multiplies every sample by `factor`, which the caller checked to be
+  ## finite (the block forms raise otherwise).
   let k = T(factor)
   {.push boundChecks: off.}
   for i in 0..<x.len:
@@ -174,7 +176,10 @@ proc detrend*[T: SampleType](b: RowBlock[T], meta: ChunkMeta) =
   eachLiveRow(b, meta, x): detrend(x)
 
 proc scale*[T: SampleType](b: RowBlock[T], meta: ChunkMeta, factor: float64) =
-  ## `scale` on the live samples of each live row of `b`; see `demean`.
+  ## `scale` on the live samples of each live row of `b`; see `demean`. Raises
+  ## `ValueError` for a factor that is NaN or infinite.
+  if factor.classify in {fcNan, fcInf, fcNegInf}:
+    raise newException(ValueError, "a scale factor must be finite, got " & $factor)
   eachLiveRow(b, meta, x): scale(x, factor)
 
 proc clip*[T: SampleType](b: RowBlock[T], meta: ChunkMeta, lo, hi: float64) =

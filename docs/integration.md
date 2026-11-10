@@ -30,13 +30,15 @@ The processSEG core never opens a file, so it is testable on synthetic arrays an
 on data from anywhere. Two thin layers sit on top of it:
 
 - **Metadata adapters** (`processSEG/adapters`): `chunkMeta(c: PrefetchChunk)` and
-  `chunkMeta(f, traces, firstSample = 0, failed = [])` for `readTracesInto` callers
-  (`traces` a range or a list). They copy nothing: a `ChunkMeta` wraps the chunk's
-  `TraceRows` view, its interval (`intervalMs(rows)`, from the keys' `intervalUs`), its
-  window origin (`c.firstSample`) and its failed rows (`c.failedRows`, or the list filled
-  by `readTracesInto(..., failedRows)`). Building one costs a single pass over the rows, to
-  check that their intervals agree, and no allocation. A chunk's meta is valid until the
-  chunk is filled again.
+  `chunkMeta(f, traces[, samples], failed = [])` for `readTracesInto` callers (`traces` a
+  range or a list, `samples` the same sample window as the read). They copy nothing: a
+  `ChunkMeta` wraps the chunk's `TraceRows` view, its interval (`intervalMs(rows)`, from
+  the keys' `intervalUs`), its window origin (`c.firstSample` or `samples.a`) and its
+  failed rows (`c.failedRows`, or the list filled by `readTracesInto(..., failedRows)`).
+  Building one costs a single pass over the rows, to check that their intervals agree, and
+  no allocation. A chunk's meta is valid until the chunk is filled again. Headers without
+  an interval (SEG-Y leaves it 0 at times) raise `ValueError` asking for `dtMs`, which
+  every `chunkMeta` takes as an override.
 - **Batch drivers** (`processSEG/batch`): jobs over a whole file, such as a brute stack or
   a first-break pass. They take a `SeismicFile` and run processing inside parseSEG's
   prefetcher, through its `transform` hook, with one `Workspace` per prefetch worker. They
@@ -273,8 +275,8 @@ offered upstream as one pull request:
 2. Prefetch raw chunks with `uniform = true`, and keep them in a raw cache.
 3. Make a `ChunkMeta` per chunk with `chunkMeta(c)`: it wraps `c.rows`, the interval,
    `c.firstSample` and `c.failedRows`, and copies nothing. For a direct read, pass a reused
-   `var seq[int]` to `readTracesInto` and build the meta with `chunkMeta(f, traces,
-   firstSample, failed)`.
+   `var seq[int]` to `readTracesInto` and build the meta with the same arguments,
+   `chunkMeta(f, traces[, samples], failed)`.
 4. Edit a `Pipeline` and `compile` it.
 5. Create one `ProcessPool` at start-up, then `pool.apply(plan, raw, processed, meta)`, tag
    the result with `plan.generation`, and draw. (Or call `plan.apply` from your own threads,

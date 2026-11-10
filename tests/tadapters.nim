@@ -100,8 +100,14 @@ block sample_windows:
   var buf = zeros[float32](4, 64)
   var failed: seq[int]
   doAssert f.readTracesInto(0 ..< 4, (ns - 20) ..< (ns + 44), buf, failed) == 0
-  let m2 = chunkMeta(f, 0 ..< 4, firstSample = ns - 20, failed = failed)
-  doAssert m2.liveSamples(3, 64) == 20 and buf[0, 5] == c.samples[0, 5]
+  let window = (ns - 20) ..< (ns + 44)
+  let m2 = chunkMeta(f, 0 ..< 4, window, failed)
+  doAssert m2.firstSample == ns - 20 and m2.liveSamples(3, 64) == 20
+  doAssert buf[0, 5] == c.samples[0, 5]
+  let list = @[3, 1]
+  doAssert chunkMeta(f, list, window).firstSample == ns - 20
+  doAssertRaises ValueError:
+    discard chunkMeta(f, 0 ..< 4, -1 .. 5)
 
 block sps_joined_segd_rev2:
   # record.sgd has stations (receiver 10/104, source 20/99.5) but no
@@ -195,3 +201,21 @@ block errors:
     discard intervalMs(rowsOf(keys, counts))
   keys[1].intervalUs = 2000
   doAssert intervalMs(rowsOf(keys, counts)) == 2
+  # SEG-Y headers may leave the interval 0: the message says to pass dtMs.
+  keys[1].intervalUs = 0
+  try:
+    discard intervalMs(rowsOf(keys, counts))
+    doAssert false, "an interval of 0 must raise"
+  except ValueError as e:
+    doAssert "pass dtMs" in e.msg, e.msg
+
+block a_dt_override:
+  var f = openSeismic(demoDir() / "survey.sgy", keys = true)
+  defer: f.close()
+  doAssert chunkMeta(f, 0 ..< 3, dtMs = 4).dtMs == 4, "dtMs wins over the keys"
+  doAssertRaises ValueError:
+    discard chunkMeta(f, 0 ..< 3, dtMs = -1)
+  var p = newPrefetcher[float32](f, 0 ..< 4, chunkTraces = 4)
+  defer: p.close()
+  var c: PrefetchChunk[float32]
+  doAssert p.next(c) and chunkMeta(c, dtMs = 0.5).dtMs == 0.5

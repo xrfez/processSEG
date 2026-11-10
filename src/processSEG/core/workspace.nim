@@ -72,12 +72,14 @@ template scratchOf(s: seq, at, n: int): untyped =
   when compileOption("boundChecks"):
     if at < 0 or n < 0 or at + n > s.len:
       scratchOutside(at, n, s.len)
-  cast[ptr UncheckedArray[typeof(s[0])]](if s.len == 0: nil else: addr s[at])
+  # `at` may equal `len` for an empty request: no element is addressed then.
+  cast[ptr UncheckedArray[typeof(s[0])]](if n == 0 or s.len ==
+      0: nil else: addr s[at])
 
 proc scratch*(ws: var Workspace, T: typedesc[float32], n: int,
     at = 0): ptr UncheckedArray[float32] {.inline, raises: [].} =
   ## `n` float32 elements of scratch starting at element `at`, valid until
-  ## `ws` is next reserved or destroyed. An `IndexDefect` beyond the reserved
+  ## `ws` is next reserved or destroyed (nil when `n` is 0). An `IndexDefect` beyond the reserved
   ## size, with bound checks on.
   scratchOf(ws.f32, at, n)
 

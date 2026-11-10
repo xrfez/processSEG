@@ -114,6 +114,8 @@ block block_forms_respect_liveness_and_live_length:
   g.data.clip(meta, -1, 1)
   doAssert g.data[0, 0] == 1 and g.data[1, 0] == 2
   doAssertRaises ValueError: g.data.clip(meta, 1, -1)
+  for bad in [NaN, Inf, -Inf]:
+    doAssertRaises ValueError: g.data.scale(meta, bad)
 
 block detrend_block_on_a_window:
   # A trace of 20 samples decoded as columns 5 ..< 13; one row is cut short.

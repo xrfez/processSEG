@@ -16,8 +16,8 @@
 ##
 ## ```nim
 ## var failed: seq[int]               # reused: no allocation once it has grown
-## discard f.readTracesInto(first .. last, buf, failed)
-## let meta = chunkMeta(f, first .. last, failed = failed)
+## discard f.readTracesInto(first .. last, 500 .. 999, buf, failed)
+## let meta = chunkMeta(f, first .. last, 500 .. 999, failed)  # the same window
 ## ```
 ##
 ## **One interval per meta.** SEG-D records can mix sample intervals across
@@ -44,43 +44,73 @@ proc requireKeys(rows: TraceRows) =
 proc intervalMs*(rows: TraceRows): float64 =
   ## The sample interval of the rows, in ms, from their keys' `intervalUs`.
   ## Raises `ValueError` when the view has no keys or no rows, when an
-  ## interval is unknown (NaN), or when two rows disagree (a mixed chunk:
-  ## prefetch with `uniform = true` or split with `uniformRuns`).
+  ## interval is unknown (NaN, or 0 as in SEG-Y headers that leave it unset:
+  ## pass `dtMs` to `chunkMeta` then), or when two rows disagree (a mixed
+  ## chunk: prefetch with `uniform = true` or split with `uniformRuns`).
   requireKeys(rows)
   if rows.len == 0:
     noInterval("no rows to take the sample interval from")
+  template known(us: float64): bool = us > 0 and us < Inf
+  template unknown(r: int) =
+    noInterval("row " & $r & " has no sample interval in its headers (" &
+      $rows.keysAt(r).intervalUs & " µs): pass dtMs")
   let us = rows.keysAt(0).intervalUs
-  if us.isNaN: noInterval("row 0 has no known sample interval")
+  if not known(us): unknown(0)
   for r in 1..<rows.len:
     let x = rows.keysAt(r).intervalUs
-    if x.isNaN: noInterval("row " & $r & " has no known sample interval")
+    if not known(x): unknown(r)
     if x != us:
       noInterval("rows 0 and " & $r & " have different sample intervals (" &
         $us & " and " & $x & " µs): prefetch with uniform = true, or split " &
         "the traces with uniformRuns")
   us / 1000
 
-proc chunkMeta*[T: SampleType](c: PrefetchChunk[T]): ChunkMeta =
+proc metaOf(rows: TraceRows, dtMs: float64, firstSample: int,
+    failed: openArray[int]): ChunkMeta =
+  requireKeys(rows)
+  initChunkMeta(rows, if dtMs.isNaN: intervalMs(rows) else: dtMs, firstSample,
+    failed)
+
+proc chunkMeta*[T: SampleType](c: PrefetchChunk[T], dtMs = NaN): ChunkMeta =
   ## The meta of a prefetch chunk: its rows, their sample interval, the
   ## chunk's `firstSample` and its `failedRows`, wrapped in place (valid until
-  ## `c` is filled again). Raises `ValueError` as `intervalMs` and
-  ## `initChunkMeta` do.
-  initChunkMeta(c.rows, intervalMs(c.rows), c.firstSample, c.failedRows)
+  ## `c` is filled again). The interval comes from the rows' keys
+  ## (`intervalMs`) unless `dtMs` is given, for headers without one. Raises
+  ## `ValueError` as `intervalMs` and `initChunkMeta` do.
+  metaOf(c.rows, dtMs, c.firstSample, c.failedRows)
 
-proc chunkMeta*(f: SeismicFile, traces: Slice[int], firstSample = 0,
-    failed: openArray[int] = []): ChunkMeta =
-  ## The meta of the traces `traces` as `readTracesInto` decodes them:
-  ## `firstSample` is the window's first sample (`samples.a`, 0 without a
-  ## window) and `failed` the positions it left zero (its `failedRows` form;
-  ## not copied, so it must outlive the meta). Raises `ValueError` as
-  ## `intervalMs` and `initChunkMeta` do, and for traces outside the file.
-  let rows = f.rowsOf(traces)
-  initChunkMeta(rows, intervalMs(rows), firstSample, failed)
+proc chunkMeta*(f: SeismicFile, traces: Slice[int], failed: openArray[int] = [],
+    dtMs = NaN): ChunkMeta =
+  ## The meta of the traces `traces` as `readTracesInto(f, traces, dst,
+  ## failed)` decodes them, with `failed` the positions it left zero (not
+  ## copied: it must outlive the meta). The interval is from the keys unless
+  ## `dtMs` is given. Raises `ValueError` as `intervalMs` and `initChunkMeta`
+  ## do, and for traces outside the file.
+  metaOf(f.rowsOf(traces), dtMs, 0, failed)
 
-proc chunkMeta*(f: SeismicFile, traces: openArray[int], firstSample = 0,
-    failed: openArray[int] = []): ChunkMeta =
+proc chunkMeta*(f: SeismicFile, traces: openArray[int],
+    failed: openArray[int] = [], dtMs = NaN): ChunkMeta =
   ## The meta of a list of traces (a gather, a sort order), in list order; see
   ## the `Slice` form. The view keeps a pointer to `traces`: the list must
   ## outlive the meta and keep its size.
-  let rows = f.rowsOf(traces)
-  initChunkMeta(rows, intervalMs(rows), firstSample, failed)
+  metaOf(f.rowsOf(traces), dtMs, 0, failed)
+
+proc checkWindow(samples: Slice[int]) =
+  if samples.a < 0 or samples.b < samples.a:
+    raise newException(ValueError, "the sample window " & $samples &
+      " must be a..b with 0 <= a <= b")
+
+proc chunkMeta*(f: SeismicFile, traces: Slice[int], samples: Slice[int],
+    failed: openArray[int] = [], dtMs = NaN): ChunkMeta =
+  ## The meta of the sample window `samples` of `traces`, as
+  ## `readTracesInto(f, traces, samples, dst, failed)` decodes it: column 0 is
+  ## trace sample `samples.a`. Otherwise as the form without a window.
+  checkWindow(samples)
+  metaOf(f.rowsOf(traces), dtMs, samples.a, failed)
+
+proc chunkMeta*(f: SeismicFile, traces: openArray[int], samples: Slice[int],
+    failed: openArray[int] = [], dtMs = NaN): ChunkMeta =
+  ## The meta of the sample window `samples` of a list of traces; see the
+  ## `Slice` forms.
+  checkWindow(samples)
+  metaOf(f.rowsOf(traces), dtMs, samples.a, failed)

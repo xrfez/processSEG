@@ -3,7 +3,7 @@
     "parseSEG": {
       "dir": "$deps/parseSEG",
       "url": "https://github.com/xrfez/parseSEG",
-      "commit": "c2d862ce32371d7415a30db0ab2bfd3b38c1add7",
+      "commit": "15334e24f24c612d76856ba45445ebe06825fee8",
       "version": ""
     },
     "Arraymancer": {
