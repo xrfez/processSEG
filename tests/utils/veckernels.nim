@@ -67,8 +67,8 @@ proc fftOnce(T: typedesc) =
   when T is float32: vec_fftLanes_f32(p, x, re, im, ws)
   else: vec_fftLanes_f64(p, x, re, im, ws)
 
-proc vec_filter_f32(b: RowBlock[float32], meta: ChunkMeta, plan: FilterPlan[float32],
-    ws: var Workspace) {.exportc: "vec_filter_f32", noinline.} =
+proc vec_filter_f32(b: RowBlock[float32], meta: ChunkMeta, plan: FilterPlan[
+    float32], ws: var Workspace) {.exportc: "vec_filter_f32", noinline.} =
   b.applyFilter(meta, plan, ws)
 
 proc filterOnce() =
@@ -91,7 +91,17 @@ proc iirOnce() =
   let meta = initChunkMeta(g.rows, dtMs = 2)
   vec_iir_f32(rowBlock(g.data), meta, plan, ws)
 
+proc vec_stackAdd_f32(acc: var StackAccumulator[float32],
+    x: openArray[float32]): bool {.exportc: "vec_stackAdd_f32", noinline.} =
+  acc.add(0, x)
+
+proc stackOnce() =
+  var acc = initStackAccumulator[float32](1, 100, 2)
+  var x = newSeq[float32](100)
+  discard vec_stackAdd_f32(acc, x)
+
 when isMainModule:
+  stackOnce()
   fftOnce(float32)
   fftOnce(float64)
   filterOnce()
@@ -110,3 +120,4 @@ when isMainModule:
   vec_muteTop_f32(x)
   vec_taperPads_f32(x, ramp)
   echo x[0], y[0], vec_traceStats_f32(x), vec_traceStats_f64(y)
+

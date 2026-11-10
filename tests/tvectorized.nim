@@ -27,7 +27,9 @@ const
     # AGC: the gain loops (the block sums are serial add chains, scalar).
     "agcImpl",
     # Gain curves: the table multiply, on and off the grid.
-    "mulTable", "mulTableLerp"]
+    "mulTable", "mulTableLerp",
+    # Stacking: the sum and fold update.
+    "accumulate"]
   # Non-generic kernels: their symbols carry their own module (and GCC clones
   # such as `.constprop.0` count too).
   moduleKernels = [("sosLanes", "ZfilterZiir")]
