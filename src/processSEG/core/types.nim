@@ -44,6 +44,7 @@
 
 import std/math
 import parseSEG
+import rows
 
 export SampleType
 
@@ -171,3 +172,10 @@ proc checkShape*[T: SampleType](m: ChunkMeta, samples: Tensor[T]) =
       " rows, the meta " & $m.len)
   if not samples.is_C_contiguous:
     raise newException(ValueError, "samples must be C-contiguous (row-major)")
+
+proc checkShape*[T: SampleType](m: ChunkMeta, b: RowBlock[T]) =
+  ## Checks that the block `b` has one row per row of `m`. Raises `ValueError`
+  ## otherwise.
+  if b.len != m.len:
+    raise newException(ValueError, "the block has " & $b.len &
+      " rows, the meta " & $m.len)

@@ -86,6 +86,23 @@ template row*[T](b: RowBlock[T], r: int): untyped =
   ## parameter of type `openArray[T]` or `var openArray[T]`.
   toOpenArray(rowPtr(b, r), 0, cols(b) - 1)
 
+proc headOutside(n, cols: int) {.noinline, noreturn.} =
+  raise newException(IndexDefect, "a row head of " & $n &
+    " samples is outside 0 .. " & $cols)
+
+func headPtr[T](b: RowBlock[T], row, n: int): ptr UncheckedArray[T] {.inline,
+    raises: [].} =
+  when compileOption("boundChecks"):
+    if n < 0 or n > b.cols:
+      headOutside(n, b.cols)
+  rowPtr(b, row)
+
+template row*[T](b: RowBlock[T], r, n: int): untyped =
+  ## The first `n` samples of row `r` (its live part, `n` from
+  ## `ChunkMeta.liveSamples`) as an `openArray[T]`, in place. An
+  ## `IndexDefect` for `n` outside `0 .. cols`, with bound checks on.
+  toOpenArray(headPtr(b, r, n), 0, n - 1)
+
 func sub*[T](b: RowBlock[T], rows: Slice[int]): RowBlock[T] {.raises: [ValueError].} =
   ## The rows `rows` of `b` as a block of their own (row 0 is `b`'s row
   ## `rows.a`), for splitting work across threads. Raises `ValueError` for
