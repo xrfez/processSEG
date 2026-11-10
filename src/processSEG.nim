@@ -22,6 +22,7 @@
 ## - `processSEG/velocity/moveout`: LMO and NMO times for overlays (`Moveout`), LMO on samples;
 ## - `processSEG/statics/elevation`: datum statics from elevations (`DatumStatics`);
 ## - `processSEG/stack/nmo`: NMO correction with a stretch mute (`applyNmo`, `nmoInto`);
+## - `processSEG/stack/binning`: CMP bins, 2D and 3D (`Binning`, `binsInto`);
 ## - `processSEG/pipeline`: `Op`, `Pipeline`, `compile` → `PipelinePlan`, `apply`;
 ## - `processSEG/core/pool`: `ProcessPool`, persistent workers that apply plans;
 ## - `processSEG/adapters`: `chunkMeta` from a prefetch chunk or a trace read.
@@ -34,7 +35,7 @@ import processSEG/[pipeline, adapters]
 import processSEG/core/pool
 import processSEG/velocity/[model, formats, moveout]
 import processSEG/statics/elevation
-import processSEG/stack/nmo
+import processSEG/stack/[nmo, binning]
 export types, rows, workspace, basic, mute, plan, spectrum, design,
     apply, iir, gain, curves, stats, pipeline, adapters, pool, shift, model,
-    formats, moveout, elevation, nmo
+    formats, moveout, elevation, nmo, binning
