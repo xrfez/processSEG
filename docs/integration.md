@@ -54,7 +54,11 @@ Every per-trace value is read from parseSEG's `TraceRows` view when it is needed
   `uniform = true` (chunks never span two channel sets or intervals), or splits a range
   with `uniformRuns`. The adapter checks that the rows' `intervalUs` agree and raises
   `ValueError` on a mixed chunk.
-- **`ChunkMeta`** is `{rows: TraceRows, dtMs, firstSample, failed}`:
+- **`ChunkMeta`** is `{rows: TraceRows, dtMs, firstSample, failed}`, built and validated
+  once by `initChunkMeta(rows, dtMs, firstSample = 0, failed = [])` (the adapters call it).
+  Its fields are read through accessors (`rows`, `len`, `dtMs`, `firstSample`,
+  `failedCount`, `failedRow(i)`), so a meta cannot be changed after it was checked, and
+  `checkShape(meta, samples)` checks a tensor against it:
   - `rows`: the chunk's view (`PrefetchChunk.rows`, or `rowsOf(f, traces)`, or
     `rowsOf(keys, numSamples)` for synthetics). It must have keys (`hasKeys`), which is
     checked once, when the meta is built; kernels then read keys without raising;
@@ -62,11 +66,13 @@ Every per-trace value is read from parseSEG's `TraceRows` view when it is needed
   - `firstSample`: the window origin, 0 unless the rows were decoded with a sample window
     (`readTracesInto(..., samples)` or the prefetcher's `firstSample`);
   - `failed`: the rows that could not be decoded (parseSEG leaves them zero), from
-    `PrefetchChunk.failedRows` or a caller's list. It is held as a pointer and a length, so
-    the meta can be copied to another thread.
-- **Per-row values** come straight from the view. Kernels read them with `keysAt(row)`,
-  parseSEG's non-raising accessor (the meta checked `hasKeys` once); `traceKeys(row)` is
-  the same lookup for code that may raise:
+    `PrefetchChunk.failedRows` or a caller's list, ascending. It is held as a pointer and a
+    length, so the meta can be copied to another thread, and the list must outlive the
+    meta. `isFailed(row)` looks a row up in O(log n).
+- **Per-row values** come straight from the view. Kernels read them with
+  `meta.keys(row)`, which is parseSEG's non-raising `keysAt` (the meta checked `hasKeys`
+  once). `isLive(row)`, `liveSamples(row, cols)`, `t0Ms(row)` and `sampleTimeMs(row, col)`
+  apply the rules below, and none of them raises:
   - `.offset`: as in the file. SEG-Y header offsets may be signed; offsets parseSEG derives
     from coordinates (SEG-D Rev 3, SEG-2, survey joins) are the unsigned source-receiver
     distance. Formulas use |x|; split-spread QC takes the side from the coordinates
@@ -80,7 +86,9 @@ Every per-trace value is read from parseSEG's `TraceRows` view when it is needed
   a failed row. Unset SEG-Y trace codes are common, so unknown counts as live. Dead and
   auxiliary traces are passed through untouched and are left out of stacks and panel
   statistics.
-- **Time axis:** sample `j` of row `r` is at `t0Ms[r] + (firstSample + j) · dtMs`.
+- **Time axis:** sample `j` of row `r` is at `t0Ms[r] + (firstSample + j) · dtMs`. A NaN
+  `t0Ms` (an unknown SEG-D channel set) gives NaN times: processSEG never substitutes a
+  default for an unknown key.
 - **Units:** time in ms, frequency in Hz, gain in dB, and velocity in distance units per
   second, with distance in the file's coordinate units (`summary.coordinateUnits`).
   processSEG never converts feet and metres silently.

@@ -7,7 +7,7 @@ func near(a, b: float64, tol = 1e-9): bool = abs(a - b) <= tol
 
 proc argMaxAbs[T](g: SynthGather[T], row: int): int =
   result = 0
-  for j in 1..<g.numSamples[row]:
+  for j in 1..<g.liveCols(row):
     if abs(g.data[row, j]) > abs(g.data[row, result]):
       result = j
 
@@ -169,3 +169,23 @@ block unsigned_offsets:
   g.unsignOffsets()
   doAssert g.keys[0].offset == 100 and g.keys[3].offset == 100
   doAssert g.keys[0].rcvX - g.keys[0].srcX < 0, "the side stays in the coordinates"
+
+block window_of_a_gather:
+  var full = cmpGather[float64](0, [0.0, 0], cols = 500, dtMs = 2)
+  full.setLive(1, 300)
+  full.addHyperbola(t0Ms = 600, velocity = 2000, freqHz = 20)
+  let w = full.window(firstSample = 200, cols = 150)
+  doAssert w.firstSample == 200 and w.cols == 150
+  doAssert w.numSamples == @[500, 300], "trace lengths are kept, longer than the window"
+  doAssert w.liveCols(0) == 150 and w.liveCols(1) == 100
+  doAssert w.data[0, 100] == 1, "600 ms is trace sample 300, column 100"
+  for j in 100..<150:
+    doAssert w.data[1, j] == 0, "zero past the trace's end"
+  doAssert w.rows.numSamples(0) == 500
+
+block window_events_use_first_sample:
+  var w = cmpGather[float64](0, [0.0], cols = 1000, dtMs = 2).window(400, 100)
+  w.addHyperbola(t0Ms = 900, velocity = 2000, freqHz = 20)
+  doAssert w.argMaxAbs(0) == 50, "900 ms is trace sample 450, column 50"
+  w.setLive(0, 420)
+  doAssert w.liveCols(0) == 20 and w.data[0, 20] == 0

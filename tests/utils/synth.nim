@@ -16,6 +16,11 @@
 ## the `TraceRows` view the library takes. Events are Ricker wavelets placed at a
 ## moveout time computed from each trace's |offset|.
 ##
+## A gather may be a **window** of its traces (`window`): column 0 is trace
+## sample `firstSample`, and a trace may run past the last column
+## (`numSamples > cols`), as a zoomed decode with a sample window delivers it.
+## Its live columns are `liveCols(row)`.
+##
 ## Conventions:
 ## - offset is signed, `rcvX − srcX` (a split spread has both signs), as SEG-Y
 ##   headers may hold it; `unsignOffsets` turns it into the distance parseSEG
@@ -122,12 +127,18 @@ type
   SynthGather*[T: SampleType] = object
     ## Synthetic traces: keys, live lengths and zero-padded samples.
     keys*: seq[TraceKeys]
-    numSamples*: seq[int] ## live samples per row (≤ cols)
-    data*: Tensor[T]      ## `[rows, cols]`, zero past each row's live length
+    numSamples*: seq[int] ## each trace's length (may exceed cols in a window)
+    data*: Tensor[T]      ## `[rows, cols]`, zero past each row's live columns
     dtMs*: float64
+    firstSample*: int     ## the trace sample in column 0 (0 unless a window)
 
 func len*[T](g: SynthGather[T]): int {.inline.} = g.keys.len
 func cols*[T](g: SynthGather[T]): int {.inline.} = g.data.shape[1]
+
+func liveCols*[T](g: SynthGather[T], row: int): int {.inline.} =
+  ## The columns of row `row` that hold trace samples:
+  ## `numSamples[row] − firstSample`, clamped to `0 .. cols`.
+  clamp(g.numSamples[row] - g.firstSample, 0, g.cols)
 
 func rows*[T](g: SynthGather[T]): TraceRows =
   ## The `TraceRows` view of `g`. It points into `g`: `g` must be a named
@@ -176,11 +187,25 @@ proc unsignOffsets*[T](g: var SynthGather[T]) =
     k.offset = abs(k.offset)
 
 proc setLive*[T](g: var SynthGather[T], row, samples: int) =
-  ## Cuts row `row` to `samples` live samples and zeroes the rest.
-  doAssert samples in 0..g.cols
+  ## Cuts row `row`'s trace to `samples` samples and zeroes the columns past
+  ## it. Without a window, `samples ≤ cols`.
+  doAssert samples >= 0 and (g.firstSample > 0 or samples <= g.cols)
   g.numSamples[row] = samples
-  for j in samples..<g.cols:
+  for j in g.liveCols(row)..<g.cols:
     g.data[row, j] = T(0)
+
+proc window*[T](g: SynthGather[T], firstSample, cols: int): SynthGather[T] =
+  ## Columns `firstSample ..< firstSample + cols` of every trace of the
+  ## unwindowed gather `g`, as a sample-window decode returns them: the keys
+  ## and trace lengths are `g`'s, and columns past a trace's end (or past
+  ## `g.cols`) are zero.
+  doAssert g.firstSample == 0 and firstSample >= 0 and cols >= 0
+  result = SynthGather[T](keys: g.keys, numSamples: g.numSamples,
+    data: zeros[T](g.len, cols), dtMs: g.dtMs, firstSample: firstSample)
+  for r in 0..<g.len:
+    for j in 0..<result.liveCols(r):
+      if firstSample + j < g.cols:
+        result.data[r, j] = g.data[r, firstSample + j]
 
 # ------------------------------------------------------------------- events --
 
@@ -203,8 +228,8 @@ proc addWavelet[T](g: var SynthGather[T], row: int, centreMs, freqHz,
   let
     t0 = g.keys[row].t0Ms
     halfMs = 3000 / freqHz
-  for j in 0..<g.numSamples[row]:
-    let tau = t0 + j.float64 * g.dtMs - centreMs
+  for j in 0..<g.liveCols(row):
+    let tau = t0 + float64(g.firstSample + j) * g.dtMs - centreMs
     if abs(tau) <= halfMs:
       g.data[row, j] = g.data[row, j] + T(amp * ricker(tau, freqHz))
 
