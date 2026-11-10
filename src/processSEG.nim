@@ -16,14 +16,15 @@
 ## - `processSEG/gain/gain`: fixed dB gain, normalization (`NormalizePlan`), AGC (`AgcPlan`);
 ## - `processSEG/gain/curves`: time-variant gain (`GainCurve`, `GainCurvePlan`);
 ## - `processSEG/gain/stats`: per-trace and panel RMS, max and percentile clip;
+## - `processSEG/core/shift`: fractional time shifts of a row (`shiftSamples`);
 ## - `processSEG/velocity/model`: velocity functions, Dix, fields (`VelocityField`);
 ## - `processSEG/velocity/formats`: VELF, HANDVEL and CSV velocity picks;
-## - `processSEG/velocity/moveout`: LMO and NMO times for overlays (`Moveout`);
+## - `processSEG/velocity/moveout`: LMO and NMO times for overlays (`Moveout`), LMO on samples;
 ## - `processSEG/pipeline`: `Op`, `Pipeline`, `compile` → `PipelinePlan`, `apply`;
 ## - `processSEG/core/pool`: `ProcessPool`, persistent workers that apply plans;
 ## - `processSEG/adapters`: `chunkMeta` from a prefetch chunk or a trace read.
 
-import processSEG/core/[types, rows, workspace, basic, mute]
+import processSEG/core/[types, rows, workspace, basic, mute, shift]
 import processSEG/fft/[plan, spectrum]
 import processSEG/filter/[design, apply, iir]
 import processSEG/gain/[gain, curves, stats]
@@ -31,5 +32,5 @@ import processSEG/[pipeline, adapters]
 import processSEG/core/pool
 import processSEG/velocity/[model, formats, moveout]
 export types, rows, workspace, basic, mute, plan, spectrum, design,
-    apply, iir, gain, curves, stats, pipeline, adapters, pool, model,
+    apply, iir, gain, curves, stats, pipeline, adapters, pool, shift, model,
     formats, moveout

@@ -1,6 +1,7 @@
 ## Moveout times for overlays: linear (LMO) and hyperbolic (NMO) moveout at
-## a constant velocity, one time per trace from the offsets of a view
-## (task 5.3; velocity functions and fields come with Phase 6).
+## a constant velocity or from a velocity model (`velocity/model`), one time
+## per trace from the offsets of a view; and LMO applied to and removed from
+## the samples (`applyLmo`, `removeLmo`).
 ##
 ## ```nim
 ## let first = linearMoveout(velocity = 1800, t0Ms = 20)   # first breaks
@@ -8,6 +9,9 @@
 ## var ticks = newSeq[float64](meta.len)                  # once; reused
 ## moveoutTimesInto(meta.rows, first, ticks)              # ms, per row
 ## moveoutColumnsInto(meta, refl, ticks)                  # block columns
+## let fromModel = hyperbolicMoveout(vfun, t0Ms = 800)    # Vrms(800 ms)
+## moveoutTimesInto(meta, field, t0Ms = 800, ticks)       # per row's location
+## samples.applyLmo(meta, velocity = 1800, biasMs = 50)   # flatten first breaks
 ## ```
 ##
 ## **Formulas,** with `x` the offset, `v` the velocity in distance units per
@@ -23,12 +27,30 @@
 ## spread get the same times. A NaN offset (a SEG-D file without geometry)
 ## gives a NaN time; nothing defaults it.
 ##
+## **Models.** A hyperbola from a velocity model takes the RMS velocity at
+## its zero-offset time, `t = sqrt(t0² + (1000·x / Vrms(t0))²)`. From a
+## `VelocityField`, each row takes it at its own location: the keys'
+## `ensemble` (the CDP) for a 2D field, `inline` and `crossline` for a 3D
+## one, or caller locations (a distance along the line, from binning). A
+## NaN location gives a NaN time.
+##
+## **LMO on samples.** `applyLmo` moves each live row earlier by
+## `1000·|x|/v − biasMs` (so a linear event at `t0 + 1000·|x|/v` lands at
+## `t0 + biasMs`, flat); `removeLmo` moves it back. The shift is fractional
+## (`core/shift`, linear or cubic), samples moved in from outside the live
+## part are zero, and an apply then remove loses what was moved out of the
+## row: use `biasMs` to keep the early part. Rows with a NaN offset, and
+## dead, auxiliary and failed rows, are left alone.
+##
 ## **Staleness.** The times derive from the keys: tag them with the file's
 ## `keysRevision` and recompute them after `applySurvey` or a header edit.
 
 import std/math
 import parseSEG
-import ../core/types
+import ../core/[rows, shift, types]
+import model
+
+export ShiftInterp
 
 type
   MoveoutKind* = enum
@@ -128,3 +150,113 @@ proc moveoutColumnsInto*(meta: ChunkMeta, m: Moveout,
     let k = meta.keys(i)
     cols[i] = (m.timeMs(k.offset) - k.t0Ms) / meta.dtMs - float64(
         meta.firstSample)
+
+# ------------------------------------------------------- from velocity models --
+
+proc hyperbolicMoveout*(f: VelocityFunction, t0Ms: float64): Moveout =
+  ## The hyperbola through `t0Ms` at zero offset with the RMS velocity of
+  ## `f` at `t0Ms`. Raises `ValueError` as the constant form (a default `f`
+  ## gives a NaN velocity).
+  hyperbolicMoveout(f.vrmsAt(t0Ms), t0Ms)
+
+proc checkT0(t0Ms: float64) =
+  if t0Ms.classify in {fcNan, fcInf, fcNegInf} or t0Ms < 0:
+    raise newException(ValueError, "a hyperbolic moveout needs a finite " &
+      "t0Ms ≥ 0, got " & $t0Ms)
+
+func fieldVrms(field: VelocityField, k: TraceKeys,
+    t0Ms: float64): float64 {.inline.} =
+  case field.kind
+  of fk2D: field.vrmsAt(k.ensemble, t0Ms)
+  of fk3D: field.vrmsAt(k.inline, k.crossline, t0Ms)
+
+proc moveoutTimesInto*(rows: TraceRows, field: VelocityField, t0Ms: float64,
+    times: var openArray[float64]) =
+  ## Fills `times[i]` with the hyperbola through `t0Ms` at row `i`'s
+  ## offset, with the field's RMS velocity at the row's location (`ensemble`
+  ## in 2D, `inline` and `crossline` in 3D) and `t0Ms`, in ms; NaN where the
+  ## location or offset is. Raises `ValueError` without keys, for a length
+  ## mismatch or a `t0Ms` that is negative or not finite.
+  if not rows.hasKeys:
+    raise newException(ValueError, "the rows have no keys: open the file with " &
+      "keys = true (or call ensureKeys) before making the view")
+  checkLen(times.len, rows.len)
+  checkT0(t0Ms)
+  for i in 0 ..< rows.len:
+    let k = rows.keysAt(i)
+    times[i] = nmoTime(k.offset, field.fieldVrms(k, t0Ms), t0Ms)
+
+proc moveoutTimesInto*(meta: ChunkMeta, field: VelocityField, t0Ms: float64,
+    times: var openArray[float64]) =
+  ## `moveoutTimesInto(meta.rows, field, t0Ms, times)`.
+  moveoutTimesInto(meta.rows, field, t0Ms, times)
+
+proc moveoutTimesInto*(rows: TraceRows, field: VelocityField,
+    locations: openArray[float64], t0Ms: float64, times: var openArray[float64]) =
+  ## The 2D form with caller locations: row `i` is at `locations[i]` (a
+  ## distance along the line, say). Raises `ValueError` as the other form,
+  ## for a 3D field, or when `locations.len != rows.len`.
+  if not rows.hasKeys:
+    raise newException(ValueError, "the rows have no keys: open the file with " &
+      "keys = true (or call ensureKeys) before making the view")
+  if field.kind != fk2D:
+    raise newException(ValueError, "locations need a 2D field")
+  checkLen(times.len, rows.len)
+  if locations.len != rows.len:
+    raise newException(ValueError, "locations has " & $locations.len &
+      " elements, the rows " & $rows.len)
+  checkT0(t0Ms)
+  for i in 0 ..< rows.len:
+    times[i] = nmoTime(rows.keysAt(i).offset, field.vrmsAt(locations[i], t0Ms), t0Ms)
+
+proc moveoutColumnsInto*(meta: ChunkMeta, field: VelocityField, t0Ms: float64,
+    cols: var openArray[float64]) =
+  ## The field's hyperbolas as fractional block columns, as the constant
+  ## `moveoutColumnsInto`. Raises `ValueError` as `moveoutTimesInto`.
+  moveoutTimesInto(meta, field, t0Ms, cols)
+  for i in 0 ..< meta.len:
+    cols[i] = (cols[i] - meta.keys(i).t0Ms) / meta.dtMs - float64(
+        meta.firstSample)
+
+# -------------------------------------------------------------- LMO on samples --
+
+proc checkLmo(velocity, biasMs: float64) =
+  checkMoveout(velocity, 0)
+  if biasMs.classify in {fcNan, fcInf, fcNegInf}:
+    raise newException(ValueError, "biasMs must be finite, got " & $biasMs)
+
+proc shiftLmo[T: SampleType](b: RowBlock[T], meta: ChunkMeta, velocity,
+    biasMs: float64, interp: ShiftInterp, sign: float64) =
+  checkLmo(velocity, biasMs)
+  meta.checkShape(b)
+  for r in 0 ..< b.len:
+    if meta.isLive(r):
+      let s = (1000 * abs(meta.keys(r).offset) / velocity - biasMs) / meta.dtMs
+      shiftSamples(b.row(r, meta.liveSamples(r, b.cols)), sign * s, interp)
+
+proc applyLmo*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
+    velocity: float64, biasMs = 0.0, interp = siLinear) =
+  ## Linear moveout correction, in place: every live row moves earlier by
+  ## `1000·|offset|/velocity − biasMs` ms (see the module documentation).
+  ## Raises `ValueError` when `b` and `meta` disagree, `velocity` is not
+  ## finite and positive or `biasMs` not finite. Allocates nothing.
+  shiftLmo(b, meta, velocity, biasMs, interp, 1)
+
+proc removeLmo*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
+    velocity: float64, biasMs = 0.0, interp = siLinear) =
+  ## The inverse of `applyLmo`: every live row moves later by the same
+  ## shift. Raises `ValueError` as `applyLmo`.
+  shiftLmo(b, meta, velocity, biasMs, interp, -1)
+
+proc applyLmo*[T: SampleType](samples: var Tensor[T], meta: ChunkMeta,
+    velocity: float64, biasMs = 0.0, interp = siLinear) =
+  ## `applyLmo` on a `[rows, cols]` tensor, in place. Raises `ValueError`
+  ## unless it is C-contiguous with `meta.len` rows, or as the block form.
+  meta.checkShape(samples)
+  applyLmo(rowBlock(samples), meta, velocity, biasMs, interp)
+
+proc removeLmo*[T: SampleType](samples: var Tensor[T], meta: ChunkMeta,
+    velocity: float64, biasMs = 0.0, interp = siLinear) =
+  ## `removeLmo` on a `[rows, cols]` tensor, in place; see `applyLmo`.
+  meta.checkShape(samples)
+  removeLmo(rowBlock(samples), meta, velocity, biasMs, interp)

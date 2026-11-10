@@ -3,7 +3,7 @@
 Status: **draft**, written before the viewer exists, revised for parseSEG 0.7.0 and for the
 Phase 5 API. It fixes who owns what, the data that crosses each boundary, and what
 processSEG needs from parseSEG. Update it whenever an API it describes changes. The names below are the real
-API as of Phase 5 (the pipeline, the pool and moveout ticks); `tests/utils/viewersim.nim`
+API as of Phase 6 (the pipeline, the pool, moveout ticks and velocity models); `tests/utils/viewersim.nim`
 acts out the viewer loop it describes, as a test.
 
 ## The three parts
@@ -386,9 +386,22 @@ geometry yet) gives a NaN tick.
   (`linearMoveout`, `lmoTime`);
 - hyperbolic moveout, `t = sqrt(t0² + x² / v²)`, for reflections (`hyperbolicMoveout`,
   `nmoTime`);
-- either kind from a velocity function or field instead of a constant velocity (later).
+- hyperbolas from a velocity model (`processSEG/velocity/model`): `hyperbolicMoveout(f,
+  t0Ms)` takes a `VelocityFunction`'s RMS velocity at `t0Ms`, and
+  `moveoutTimesInto(meta, field, t0Ms, ticks)` / `moveoutColumnsInto(meta, field, t0Ms,
+  ticks)` take a `VelocityField`'s at each row's location (the keys' `ensemble` in 2D,
+  `inline`/`crossline` in 3D; a `locations` overload takes distances along the line).
 
-The constant-velocity form ships with the pipeline (Phase 5). The viewer draws these ticks
+Velocity picks load with `readVelocities(path)` (VELF cards, HANDVEL blocks or CSV,
+detected) into `VelocityPick`s, and `initVelocityField(picks, dtMs, tMaxMs)` builds the
+field once (it allocates nodes × grid samples × 8 bytes); queries allocate nothing.
+Functions are interpolated in `V²·t`, so a knot at t = 0 sets only the value at 0 (see
+the module doc). To flatten first breaks on the display, `applyLmo(samples, meta,
+velocity, biasMs)` shifts each live row up by `|x|/v − biasMs` in place (`removeLmo`
+undoes it, apart from what moved out of the row); it is a display transform on the
+processed buffer, not a pipeline op.
+
+The viewer draws these ticks
 and tags them with `keysRevision(f)`: an `applySurvey` or header edit makes them stale. If
 the ticks drift from the first breaks across a spread, the geometry is suspect.
 processSEG's QC module can also score this fit automatically, with an offset-binned or
