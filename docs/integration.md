@@ -1,9 +1,10 @@
 # Integrating parseSEG, processSEG and the viewer
 
-Status: **draft**, written before the viewer exists and revised for parseSEG 0.7.0. It
-fixes who owns what, the data that crosses each boundary, and what processSEG needs from
-parseSEG. Update it whenever an API it describes changes. Names marked *(sketch)* settle
-in task 5.1.
+Status: **draft**, written before the viewer exists, revised for parseSEG 0.7.0 and for the
+Phase 5 API. It fixes who owns what, the data that crosses each boundary, and what
+processSEG needs from parseSEG. Update it whenever an API it describes changes. The names below are the real
+API as of Phase 5 (the pipeline, the pool and moveout ticks); `tests/utils/viewersim.nim`
+acts out the viewer loop it describes, as a test.
 
 ## The three parts
 
@@ -151,14 +152,40 @@ flowchart LR
   PL --> P
 ```
 
+```nim
+var flow = initPipeline([demeanOp(),
+                         bandPassOp(Corners(f1: 4, f2: 8, f3: 60, f4: 80)),
+                         agcOp(windowMs = 500)])
+let plan = flow.compile(float32, dtMs = 2, samples = 2001) # validates; ValueError
+var ws = initWorkspace()
+ws.reserve(plan)                          # grow-only; a no-op when it fits
+plan.apply(raw, processed, meta, ws)      # src → dst, the raw cache kept
+plan.apply(samples, meta, ws)             # in place
+flow[2].agc.windowMs = 300                # a slider moved: edit the op, recompile
+```
+
+- **Ops** are plain data: an `Op` variant built by `demeanOp`, `detrendOp`, `scaleOp`,
+  `gainDbOp`, `clipOp`, `polarityOp`, `topMuteOp`, `bottomMuteOp`, `filterOp`
+  (`bandPassOp` for the common case), `iirOp`, `agcOp`, `normalizeOp` and `gainCurveOp`.
+  Their parameters are public fields grouped per kind (`op.agc.windowMs`,
+  `op.filter.spec`, `op.mute.taperMs`), and a `Pipeline` supports `add`, `insert`,
+  `delete`, `[]`, `[]=`, `len` and `items`. Nothing is checked until `compile`, whose
+  `ValueError` names the op (`op 1 (opFilter): ...`).
+- **Order and cache.** `apply` runs every op on a tile of rows (about 256 KB) while it is
+  in cache, then moves on. A per-panel normalization needs the whole panel, so it splits
+  the plan into parts; its factor is applied at the start of the next part.
 - **In place where possible.** `apply(plan, var x, meta, ws)` works in place. The viewer,
   though, must keep the raw data so that it can reprocess when a parameter changes, so it
   uses `apply(plan, src, var dst, meta, ws)`. That form costs one copy fused into the first
-  operation, never a separate pass. A batch job with no raw cache works in place.
+  operation (each tile is copied just before its first op), never a separate pass. `dst`
+  is not resized: allocate it once per cached chunk. A batch job with no raw cache works in place.
 - **Recompiling is cheap** (microseconds to a few ms), so the viewer can recompile on every
   slider event, or on a zoom that changes the trace length. `ws.reserve(plan)` is a no-op
   when the workspace is already big enough. The viewer tags each processed buffer with the
-  plan's generation and reprocesses any buffer whose generation is stale.
+  plan's generation and reprocesses any buffer whose generation is stale. Generations
+  increase across every plan the process compiles, so "not equal to the current plan's"
+  means stale. Keep one plan per sample interval and row width: a uniform prefetch of a
+  mixed SEG-D file gives chunks at several intervals.
 - **Threads.** processSEG offers three ways to run, from the simplest to the most control:
   1. **No threads.** `plan.apply(raw, processed, meta, ws)` on any thread. Kernels touch no
      globals, so several threads can each call `apply` with their own `Workspace`.
@@ -168,7 +195,11 @@ flowchart LR
      splits the rows across the workers and returns when all are done. User code passes
      tensors and plans as usual: no pointers, no locks, no `Workspace` handling. One job
      runs at a time per pool, and a second caller waits. The pool cannot be copied, and
-     destroying it stops and joins its workers.
+     destroying it stops and joins its workers. Each worker grows its own workspace on
+     the first job that needs more, so the first frame after a plan that needs more
+     scratch allocates once; later frames allocate nothing. Measured (bench/README "Process
+     pool"): 6–12 µs per job, and a demean + band-pass + AGC flow over a 2000 × 2001
+     panel takes 32 ms on one thread, 8.6 ms on 4 workers, 4.3 ms on 8.
   3. **Inside the prefetcher**, for batch jobs: the `transform` hook runs the plan on
      parseSEG's decode workers while the chunk is still in cache, with one `Workspace` per
      worker passed through the `user` pointer.
@@ -202,7 +233,8 @@ At the true ends of a trace, processSEG does the edge handling itself:
 
 So the first samples of a trace do not swing after a low-cut such as 1 Hz.
 
-Until the pipeline lands (Phase 5), a filter runs on its own:
+In a pipeline a filter is `filterOp(lowCut(0.5, 1))` (or `iirOp(butterLowCut(1))`), and
+`plan.requiredMargin` sums the margins of all its ops. A filter also runs on its own:
 
 ```nim
 let plan = initFilterPlan(float32, lowCut(0.5, 1), dtMs = 2, samples = 2001)
@@ -224,6 +256,24 @@ samples each side matches the whole trace filtered to within 1 % of the peak (te
 for FFT and IIR filters, zero and minimum phase; a minimum-phase margin holds 99.99 % of
 its causal impulse, since its whole error comes from the history before the window).
 
+What the margin does and does not promise:
+
+- the error is relative to the **strongest signal near the window**, not to the window's
+  own peak. A quiet window next to a strong event just outside the margin (noise 46 dB
+  below it, in parseSEG's `survey.sgy`) is within 1 % of the traces' peak but not of its
+  own;
+- a gain that equalizes (AGC, per-trace normalization) **after** a filter lifts that
+  leak to the level of the quiet window: there, a zoomed AGC picture can differ by a few
+  percent from the whole trace's (1.6 % of the window's peak in that file). More margin
+  shrinks the filter's own leak fast (60× less at 1.5× the margin), but after AGC the
+  error depends on where in the quiet zone the leak lands, and it is not monotonic in
+  the margin (0.3 % at 1.5×, 8 % at 2×, 0.02 % at 3×, measured). Treat zooms of AGC data
+  next to much stronger events as approximate;
+- whole-trace ops (`demean`, `detrend`, per-trace normalization, the RMS that sets AGC's
+  ε) use the statistics of the decoded window, so they cannot match the whole trace
+  whatever the margin. Use the filters' trend removal instead of `demean` before a
+  low-cut.
+
 ## Display gain: CPU or GPU
 
 Viewers usually offer **fixed**, **normalized** and **AGC** display gain.
@@ -239,8 +289,8 @@ Viewers usually offer **fixed**, **normalized** and **AGC** display gain.
     `panelStatsWorkspace`), about 4 ms for the same panel, so recompute it when the data
     or the selection changes, not per frame.
 - **AGC, time-variant dB curves and filters** change sample values in a way that depends
-  on time, so they run on the CPU, in the plan. Until the pipeline lands (Phase 5), AGC
-  and normalization run on their own (`processSEG/gain/gain`):
+  on time, so they run on the CPU, in the plan (`agcOp`, `normalizeOp`, `gainCurveOp`,
+  `gainDbOp`). They also run on their own (`processSEG/gain/gain`):
 
   ```nim
   let agc = initAgcPlan(windowMs = 500, dtMs = 2, samples = 2001)  # agcRms or agcMeanAbs
@@ -258,7 +308,7 @@ Viewers usually offer **fixed**, **normalized** and **AGC** display gain.
   slower.
 
   AGC costs about 6.5 ms per 2000 × 2001 panel on one thread, whatever the window, so
-  an estimated 1.7 ms on 4 workers (not yet measured: the pool lands in 5.2). `normalize` (`initNormalizePlan(normRms | normMax |
+  about 1.7 ms on 4 workers (the pool scales 3.75× on 4 workers for a whole flow). `normalize` (`initNormalizePlan(normRms | normMax |
   normPercentile, samples, perTrace | perPanel)`) and `scaleDb` are the CPU forms of the
   fixed and normalized display gains.
 
@@ -288,13 +338,28 @@ or the processed buffer. It allocates nothing once the workspace is reserved.
 
 The viewer passes the chunk's rows and the user's velocity parameters, and processSEG
 fills one time per trace for each curve, reading each offset from the view
-(`moveoutTimesInto(meta.rows, lmo(velocity = 1800, t0Ms = 0), ticks)` *(sketch)*):
+(`processSEG/velocity/moveout`):
 
-- linear moveout, `t = t0 + |x| / v`, for first-break and refraction checks;
-- hyperbolic moveout, `t = sqrt(t0² + x² / v²)`, for reflections;
+```nim
+let first = linearMoveout(velocity = 1800, t0Ms = 20)
+var ticks = newSeq[float64](meta.len)               # once per chunk, reused
+moveoutTimesInto(meta.rows, first, ticks)           # ms, one per row
+moveoutColumnsInto(meta, hyperbolicMoveout(2200, t0Ms = 800), ticks)  # block columns
+let tag = f.keysRevision                            # stale when it changes
+```
+
+The column form applies each row's `t0Ms` and the window's `firstSample`, so the value
+is where to draw the tick over the block. Offsets keep their sign in the keys; the
+formulas use |x|, so both sides of a split spread get the same times. A NaN offset (no
+geometry yet) gives a NaN tick.
+
+- linear moveout, `t = t0 + |x| / v`, for first-break and refraction checks
+  (`linearMoveout`, `lmoTime`);
+- hyperbolic moveout, `t = sqrt(t0² + x² / v²)`, for reflections (`hyperbolicMoveout`,
+  `nmoTime`);
 - either kind from a velocity function or field instead of a constant velocity (later).
 
-The constant-velocity form ships early, with the pipeline. The viewer draws these ticks
+The constant-velocity form ships with the pipeline (Phase 5). The viewer draws these ticks
 and tags them with `keysRevision(f)`: an `applySurvey` or header edit makes them stale. If
 the ticks drift from the first breaks across a spread, the geometry is suspect.
 processSEG's QC module can also score this fit automatically, with an offset-binned or
@@ -339,6 +404,11 @@ offered upstream as one pull request:
 | F4 | **Done on the branch:** `PrefetchChunk.firstSample`, the prefetcher's window origin | `chunkMeta(c)` needs it, and a chunk did not record it |
 | F3 | (Optional) a SEG-Y trace written from `TraceKeys` plus overrides, with no template trace | A stack of SEG-D or SEG-2 input cannot be written as SEG-Y otherwise |
 
+Checked again for the pipeline, the pool and the viewer loop (task 5.4): nothing else is
+missing. For the batch path (Phase 7), the `transform` hook is not given the
+prefetcher's `firstSample`; the batch driver passes it through `user`, with the
+workspaces.
+
 ## Viewer checklist
 
 1. Open with `openSeismic`, using an index cache and a `progress` hook, with `keys = true`
@@ -349,14 +419,18 @@ offered upstream as one pull request:
    `c.firstSample` and `c.failedRows`, and copies nothing. For a direct read, pass a reused
    `var seq[int]` to `readTracesInto` and build the meta with the same arguments,
    `chunkMeta(f, traces[, samples], failed)`.
-4. Edit a `Pipeline` and `compile` it.
-5. Create one `ProcessPool` at start-up, then `pool.apply(plan, raw, processed, meta)`, tag
-   the result with `plan.generation`, and draw. (Or call `plan.apply` from your own threads,
+4. Edit a `Pipeline` and `compile` it, once per sample interval and row width in the
+   cache.
+5. Create one `ProcessPool` at start-up (`newProcessPool(workers)`), then
+   `pool.apply(plan, raw, processed, meta)` into a processed buffer allocated once per
+   cached chunk, tag the result with `plan.generation`, and draw. (Or call `plan.apply` from your own threads,
    each with its own `Workspace` and `reserve(plan)`.) Apply fixed or normalized gain as a
    shader uniform from `traceStats`, if the GPU is used.
-6. For zoom windows, decode with `requiredMargin(plan)`, and set `firstSample`.
-7. For overlays, fill moveout times from `meta.rows`, tag them with `keysRevision(f)`, and
-   draw the ticks.
+6. For zoom windows, decode with `plan.requiredMargin` samples each side (the prefetcher's
+   `firstSample` and `cols`; `chunkMeta(c)` picks up `c.firstSample`), process, and draw
+   the shown columns. See "Sample windows" for what the margin promises.
+7. For overlays, fill moveout columns with `moveoutColumnsInto(meta, curve, ticks)`, tag
+   them with `f.keysRevision`, and draw the ticks.
 8. Before `applySurvey` or a header edit, stop the prefetcher and any processing; after
    it, rebuild views and metas, and recompute anything tagged with an older revision.
 9. For a brute stack, run `bruteStack` on a background thread with a cancel hook.
