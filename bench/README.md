@@ -7,6 +7,11 @@ harness: warm-up, then 15 samples of at least 20 ms each (`-d:benchSamples`,
 `-d:benchWarmup`, `-d:benchMinSampleMs`), reporting the median and minimum per iteration
 and GB/s.
 
+After each run of a body the harness puts a compiler memory barrier (`clobberMemory`).
+Without it, gcc merged the repeated runs of an inlined in-place loop and reported twice the
+real bandwidth (scale in place: 140 GB/s instead of 75). A body that keeps all its results
+in locals also needs to write them somewhere the compiler must assume is read.
+
 Wall-clock numbers move by a few percent between runs: compare medians from several runs,
 and use cachegrind (`Ir` counts) to judge small changes.
 

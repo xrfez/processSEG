@@ -163,3 +163,9 @@ block t0_shifts_events:
   g.keys[0].t0Ms = 100
   g.addHyperbola(t0Ms = 400, velocity = 2000, freqHz = 20)
   doAssert g.argMaxAbs(0) == 150, "400 ms is sample (400 − 100)/2"
+
+block unsigned_offsets:
+  var g = shotGather[float64](0, splitSpread(2, 50, 50), cols = 10, dtMs = 1)
+  g.unsignOffsets()
+  doAssert g.keys[0].offset == 100 and g.keys[3].offset == 100
+  doAssert g.keys[0].rcvX - g.keys[0].srcX < 0, "the side stays in the coordinates"

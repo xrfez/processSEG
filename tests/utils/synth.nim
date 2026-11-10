@@ -17,8 +17,10 @@
 ## moveout time computed from each trace's |offset|.
 ##
 ## Conventions:
-## - offset is signed, `rcvX − srcX` (a split spread has both signs); moveout
-##   formulas use |offset|;
+## - offset is signed, `rcvX − srcX` (a split spread has both signs), as SEG-Y
+##   headers may hold it; `unsignOffsets` turns it into the distance parseSEG
+##   derives from coordinates (SEG-D Rev 3, SEG-2, survey joins). Moveout
+##   formulas use |offset|; the side of the source is `rcvX − srcX`;
 ## - an elevation static is `((srcZ − datum) + (rcvZ − datum)) / vReplacement`:
 ##   a station above the datum delays the event.
 
@@ -128,8 +130,9 @@ func len*[T](g: SynthGather[T]): int {.inline.} = g.keys.len
 func cols*[T](g: SynthGather[T]): int {.inline.} = g.data.shape[1]
 
 func rows*[T](g: SynthGather[T]): TraceRows =
-  ## The `TraceRows` view of `g`. It points into `g`: do not resize `g.keys` or
-  ## `g.numSamples` while it is in use.
+  ## The `TraceRows` view of `g`. It points into `g`: `g` must be a named
+  ## variable that outlives the view (never `cmpGather(...).rows`), and
+  ## `g.keys` and `g.numSamples` must not be resized while the view is in use.
   rowsOf(g.keys, g.numSamples)
 
 proc initSynthGather*[T: SampleType](keys: sink seq[TraceKeys], cols: int,
@@ -165,6 +168,12 @@ proc cmpGather*[T: SampleType](cmpX: float64, offsets: openArray[float64],
     keys[i].ensemble = cdp
     keys[i].channel = float64(i + 1)
   initSynthGather[T](keys, cols, dtMs)
+
+proc unsignOffsets*[T](g: var SynthGather[T]) =
+  ## Replaces every offset by its absolute value, as parseSEG's derived
+  ## geometry gives it (`hypot` of the source-receiver vector).
+  for k in g.keys.mitems:
+    k.offset = abs(k.offset)
 
 proc setLive*[T](g: var SynthGather[T], row, samples: int) =
   ## Cuts row `row` to `samples` live samples and zeroes the rest.

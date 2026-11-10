@@ -30,9 +30,10 @@ The processSEG core never opens a file, so it is testable on synthetic arrays an
 on data from anywhere. Two thin layers sit on top of it:
 
 - **Metadata adapters** (`processSEG/adapters`): `chunkMeta(c: PrefetchChunk)` and
-  `chunkMeta(f, traces, firstSample, failed)` for `readTracesInto` callers. They are O(1)
-  and copy nothing: a `ChunkMeta` wraps the chunk's `TraceRows` view, its interval, its
-  window origin and its failed rows.
+  `chunkMeta(f, traces, firstSample, failed)` for `readTracesInto` callers. They copy
+  nothing: a `ChunkMeta` wraps the chunk's `TraceRows` view, its interval, its window
+  origin and its failed rows. Building one costs a single pass over the rows, to check that
+  their intervals agree, and no allocation.
 - **Batch drivers** (`processSEG/batch`): jobs over a whole file, such as a brute stack or
   a first-break pass. They take a `SeismicFile` and run processing inside parseSEG's
   prefetcher, through its `transform` hook, with one `Workspace` per prefetch worker. They
@@ -63,9 +64,13 @@ Every per-trace value is read from parseSEG's `TraceRows` view when it is needed
   - `failed`: the rows that could not be decoded (parseSEG leaves them zero), from
     `PrefetchChunk.failedRows` or a caller's list. It is held as a pointer and a length, so
     the meta can be copied to another thread.
-- **Per-row values** come straight from the view:
-  - `traceKeys(row).offset`: signed, as in the file. Formulas use |x|; split-spread QC
-    uses the sign;
+- **Per-row values** come straight from the view. Kernels read them with `keysAt(row)`,
+  parseSEG's non-raising accessor (the meta checked `hasKeys` once); `traceKeys(row)` is
+  the same lookup for code that may raise:
+  - `.offset`: as in the file. SEG-Y header offsets may be signed; offsets parseSEG derives
+    from coordinates (SEG-D Rev 3, SEG-2, survey joins) are the unsigned source-receiver
+    distance. Formulas use |x|; split-spread QC takes the side from the coordinates
+    (`rcvX − srcX` along the line), not from the offset's sign;
   - `.t0Ms`: the time of the trace's sample 0;
   - `.srcX`, `.srcY`, `.srcZ`, `.rcvX`, `.rcvY`, `.rcvZ`, `.cmpX`, `.cmpY`, `.ensemble`
     (CDP), `.inline`, `.crossline`;
@@ -103,7 +108,7 @@ All of it arrives through `TraceKeys`; processSEG never reads header bytes itsel
   `applySurvey` on a file opened with `keys = true` (or after `ensureKeys`); the view then
   sees the joined keys. Without a join, moveout ticks, NMO and stacking have no offsets.
 - **SEG-D Rev 3 and SEG-2:** coordinates when the file has them; offsets are derived from
-  them.
+  them, as distances (never negative).
 - **Statics:** datum elevations, uphole times and the statics already applied are not in
   the keys. `traceStatics(f, traces)` reads them on demand, for elevation statics.
 - **Changes:** `applySurvey` and `HeaderEditor` writes refresh the stored keys and bump
@@ -239,7 +244,7 @@ offered upstream as one pull request:
 
 | # | Change | Why |
 |---|---|---|
-| F1 | A non-raising key accessor on `TraceRows`, for callers that checked `hasKeys` once | `traceKeys(rows, row)` raises `ValueError`, so a `{.raises: [].}` kernel or a `ChunkTransform` cannot call it |
+| F1 | **Done on the branch:** `keysAt(rows, row)`, the non-raising form of `traceKeys` for callers that checked `hasKeys` once (no keys is an `AssertionDefect` with bound checks on) | `traceKeys(rows, row)` raises `ValueError`, so a `{.raises: [].}` kernel or a `ChunkTransform` cannot call it |
 | F2 | A `readTracesInto` overload that fills a caller's failed-row list | Today its failed traces are reported only through a `DiagLog`, unlike the prefetcher's `failedRows` |
 | F3 | (Optional) a SEG-Y trace written from `TraceKeys` plus overrides, with no template trace | A stack of SEG-D or SEG-2 input cannot be written as SEG-Y otherwise |
 

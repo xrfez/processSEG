@@ -11,11 +11,18 @@
 
 import std/[algorithm, os, osproc, strutils]
 
+proc run(exe: string, args: openArray[string]): int =
+  ## Runs `exe` with `args` directly (no shell, so no quoting rules), with
+  ## this process's stdout and stderr; returns the exit code.
+  var p = startProcess(exe, args = args, options = {poParentStreams})
+  result = p.waitForExit()
+  p.close()
+
 proc main() =
   let
     testDir = currentSourcePath().parentDir
-    flags = commandLineParams().quoteShellCommand
-    nim = getCurrentCompilerExe().quoteShell
+    flags = commandLineParams()
+    nim = getCurrentCompilerExe()
   var tests: seq[string]
   for f in walkFiles(testDir / "t*.nim"):
     if f.extractFilename != "tester.nim":
@@ -25,9 +32,8 @@ proc main() =
     quit "FAILURE no tests found in " & testDir
   var failed: seq[string]
   for f in tests:
-    let cmd = nim & " c -r --hints:off " & flags & " " & f.quoteShell
-    echo "Running: ", f.extractFilename, " ", flags
-    if execShellCmd(cmd) != 0:
+    echo "Running: ", f.extractFilename, " ", flags.join(" ")
+    if run(nim, @["c", "-r", "--hints:off"] & flags & @[f]) != 0:
       failed.add f.extractFilename
   if failed.len > 0:
     quit "FAILURE " & $failed.len & " of " & $tests.len & " test files: " &

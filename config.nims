@@ -16,6 +16,7 @@ when defined(amd64) and not defined(baselineCpu):
     switch("passC", "-mcpu=x86_64_v3")
   else:
     switch("passC", "-march=x86-64-v3")
+  switch("define", "cpuTarget=x86-64-v3") # printed by the benchmarks
 
 const baseTarget = when defined(amd64): " --passC:-march=x86-64 " else: " "
 
@@ -68,20 +69,18 @@ task asan, "Run the test suite under AddressSanitizer (-d:useMalloc)":
   ## tests/config.nims turns -d:addressSanitizer into the ASan switches.
   selfExec tester & " -d:addressSanitizer"
 
-# Benchmarks: bench/b*.nim, built with these flags (plus the CPU target above),
-# which each benchmark prints with its machine line.
+# Benchmarks: bench/b*.nim, built with these flags plus the CPU target above
+# (`cpuTarget`); each benchmark prints both with its machine line.
 const benchFlags = "-d:danger --opt:speed --debuginfo:on --linedir:on"
 
 task bench, "Run the benchmarks in bench/ (danger build, flags and machine printed)":
   ## Builds and runs every bench/b*.nim. To change the sampling, build one by
   ## hand with the same flags plus e.g. -d:benchSamples=30.
-  let target = when defined(amd64) and not defined(baselineCpu): " -march=x86-64-v3" else: ""
-  let recorded = benchFlags & target
   for f in listFiles("bench"):
     if f.lastPathPart.startsWith("b") and f.endsWith(".nim") and
         f.lastPathPart != "benchutil.nim":
       selfExec "c -r --hints:off " & benchFlags & " " &
-        quoteShell("-d:benchFlags=" & recorded) & " " & quoteShell(f)
+        quoteShell("-d:benchFlags=" & benchFlags) & " " & quoteShell(f)
 
 proc nimSources(dir: string): seq[string] =
   ## Every .nim file under `dir`, recursively (NimScript has no walkDirRec).

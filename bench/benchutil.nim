@@ -4,7 +4,9 @@
 ## never quoted without them (`nim-performance`). A benchmark runs warm-up
 ## iterations, then `samples` timed samples; each sample repeats the body until
 ## it has run for at least `minSampleMs`, and the per-iteration time of the
-## sample is kept. The median and the minimum over samples are reported, with
+## sample is kept (the clock is read once per batch of iterations, the batch
+## doubling until the sample is long enough, so a short body is not dominated
+## by the clock). The median and the minimum over samples are reported, with
 ## throughput from the bytes one iteration touches.
 ##
 ##   let r = bench("copy f32 2000x2001", bytesPerIter = 2 * n * 4):
@@ -19,9 +21,21 @@ import std/[algorithm, monotimes, os, osproc, strformat, strutils, times]
 const
   benchFlags* {.strdefine.} = "(unknown flags)"
     ## The build flags, passed by the `nim bench` task as `-d:benchFlags=...`.
+  cpuTarget* {.strdefine.} = "default"
+    ## The CPU target the project's config.nims chose for this build.
   ccName = when defined(gcc): "gcc" elif defined(clang): "clang"
     elif defined(vcc): "vcc" else: "cc"
   ccVersion = staticExec(ccName & " --version").splitLines()[0]
+    ## The version of `ccName` on PATH: wrong for a compiler set with
+    ## `--gcc.exe` / `--clang.exe` (zig cc), which the benchmarks do not use.
+
+proc clobberMemory*() {.inline.} =
+  ## A compiler barrier: memory written before it must be written, and memory
+  ## read after it must be read again. `bench` calls it after every run of the
+  ## body, so the compiler cannot merge or interchange repeated runs (e.g. keep
+  ## an in-place loop's values in registers across a batch).
+  when defined(gcc) or defined(clang):
+    {.emit: "asm volatile(\"\" ::: \"memory\");".}
 
 type
   BenchResult* = object
@@ -51,7 +65,7 @@ proc cpuModel*(): string =
 proc machineLine*(): string =
   ## One line describing the machine, OS, compiler and flags.
   &"{cpuModel()} ({countProcessors()} threads), {hostOS}/{hostCPU}, " &
-    &"Nim {NimVersion}, {ccVersion}, flags: {benchFlags}"
+    &"Nim {NimVersion}, {ccVersion}, flags: {benchFlags}, cpu target: {cpuTarget}"
 
 proc printHeader*(title: string) =
   ## Prints the benchmark file's title and the machine line.
@@ -90,15 +104,20 @@ template bench*(benchName: string, bytesPerIter: int,
       minSampleMs {.intdefine: "benchMinSampleMs".} = 20
     for _ in 0..<warmup:
       body
+      clobberMemory()
     var perIter: seq[float64]
     var total = 0
     for _ in 0..<samples:
       var n = 0
+      var batch = 1
       let start = getMonoTime()
       var elapsed: int64
       while true:
-        body
-        inc n
+        for _ in 0..<batch:
+          body
+          clobberMemory()
+        n += batch
+        batch *= 2
         elapsed = inNanoseconds(getMonoTime() - start)
         if elapsed >= minSampleMs * 1_000_000:
           break
