@@ -30,10 +30,13 @@ The processSEG core never opens a file, so it is testable on synthetic arrays an
 on data from anywhere. Two thin layers sit on top of it:
 
 - **Metadata adapters** (`processSEG/adapters`): `chunkMeta(c: PrefetchChunk)` and
-  `chunkMeta(f, traces, firstSample, failed)` for `readTracesInto` callers. They copy
-  nothing: a `ChunkMeta` wraps the chunk's `TraceRows` view, its interval, its window
-  origin and its failed rows. Building one costs a single pass over the rows, to check that
-  their intervals agree, and no allocation.
+  `chunkMeta(f, traces, firstSample = 0, failed = [])` for `readTracesInto` callers
+  (`traces` a range or a list). They copy nothing: a `ChunkMeta` wraps the chunk's
+  `TraceRows` view, its interval (`intervalMs(rows)`, from the keys' `intervalUs`), its
+  window origin (`c.firstSample`) and its failed rows (`c.failedRows`, or the list filled
+  by `readTracesInto(..., failedRows)`). Building one costs a single pass over the rows, to
+  check that their intervals agree, and no allocation. A chunk's meta is valid until the
+  chunk is filled again.
 - **Batch drivers** (`processSEG/batch`): jobs over a whole file, such as a brute stack or
   a first-break pass. They take a `SeismicFile` and run processing inside parseSEG's
   prefetcher, through its `transform` hook, with one `Workspace` per prefetch worker. They
@@ -50,7 +53,10 @@ Every per-trace value is read from parseSEG's `TraceRows` view when it is needed
   return. Rows are zero-padded past a shorter trace's end. The kernels underneath take
   `var openArray[T]` rows, so a caller can also pass any contiguous buffer: `rowBlock`
   views a tensor (rank 2, C-contiguous, checked once) or a flat buffer as rows without
-  copying, and `sub` splits it for threads.
+  copying, `b.row(r, n)` is the live head of a row, and `sub` splits a block for threads.
+  Each kernel also has a block form on the tensor itself, in place (`samples.detrend(meta)`,
+  `samples.muteTop(meta, lmoMute(1800, padMs = -20), taperMs = 30)`), that visits the live
+  rows up to their live length.
 - **One sample interval per call.** A chunk passed to a plan has a single `dt`. SEG-D
   records can mix intervals across channel sets, so the viewer prefetches with
   `uniform = true` (chunks never span two channel sets or intervals), or splits a range
@@ -255,7 +261,8 @@ offered upstream as one pull request:
 | # | Change | Why |
 |---|---|---|
 | F1 | **Done on the branch:** `keysAt(rows, row)`, the non-raising form of `traceKeys` for callers that checked `hasKeys` once (no keys is an `AssertionDefect` with bound checks on) | `traceKeys(rows, row)` raises `ValueError`, so a `{.raises: [].}` kernel or a `ChunkTransform` cannot call it |
-| F2 | A `readTracesInto` overload that fills a caller's failed-row list | Today its failed traces are reported only through a `DiagLog`, unlike the prefetcher's `failedRows` |
+| F2 | **Done on the branch:** `readTracesInto(f, traces[, samples], dst, failedRows, row = 0)` fills a caller's `var seq[int]` (cleared, capacity kept, no log), as `PrefetchChunk.failedRows` | The other forms report failed traces only through a `DiagLog`, which allocates per failure |
+| F4 | **Done on the branch:** `PrefetchChunk.firstSample`, the prefetcher's window origin | `chunkMeta(c)` needs it, and a chunk did not record it |
 | F3 | (Optional) a SEG-Y trace written from `TraceKeys` plus overrides, with no template trace | A stack of SEG-D or SEG-2 input cannot be written as SEG-Y otherwise |
 
 ## Viewer checklist
@@ -264,8 +271,10 @@ offered upstream as one pull request:
    (or call `ensureKeys` before making any view). Join SPS or P1 geometry with
    `applySurvey` if needed (SEG-D Rev 1/2), before any reader starts.
 2. Prefetch raw chunks with `uniform = true`, and keep them in a raw cache.
-3. Make a `ChunkMeta` per chunk with `chunkMeta(c)`: it wraps `c.rows`, the interval and
-   `c.failedRows`, and copies nothing.
+3. Make a `ChunkMeta` per chunk with `chunkMeta(c)`: it wraps `c.rows`, the interval,
+   `c.firstSample` and `c.failedRows`, and copies nothing. For a direct read, pass a reused
+   `var seq[int]` to `readTracesInto` and build the meta with `chunkMeta(f, traces,
+   firstSample, failed)`.
 4. Edit a `Pipeline` and `compile` it.
 5. Create one `ProcessPool` at start-up, then `pool.apply(plan, raw, processed, meta)`, tag
    the result with `plan.generation`, and draw. (Or call `plan.apply` from your own threads,
