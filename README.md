@@ -50,6 +50,7 @@ default.
 - Run test suite: `nim test`
 - Run test suite in release and danger builds: `nim testRelease`
 - Run test suite under AddressSanitizer: `nim asan`
+- Run the benchmarks: `nim bench` (see `bench/README.md`)
 - Format codebase: `nim fmt`
 - Generate documentation: `nim docs`
 
