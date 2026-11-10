@@ -1,7 +1,32 @@
 # Proposed parseSEG changes for processSEG and the viewer
 
-Status: proposal, 2026-11-10, written against parseSEG 0.6.1 (`22fb75c`). It replaces
-P1–P4 in processSEG's `docs/integration.md`.
+Status: C1–C8 **landed in parseSEG 0.7.0** (`df3568d`). The follow-ups F1–F3 below are open.
+Originally written against parseSEG 0.6.1 (`22fb75c`), replacing P1–P4 in processSEG's
+`docs/integration.md`.
+
+## Follow-ups after the 0.7.0 review (open)
+
+- **F1. A non-raising key accessor (wanted for processSEG Phase 1).**
+  `traceKeys(r: TraceRows, row)` raises `ValueError` when the view has no keys. So a
+  `{.raises: [].}` kernel cannot call it, and neither can a `ChunkTransform` (which is
+  itself `raises: []`). Compiling such a kernel fails with "traceKeys(r, i) can raise an
+  unlisted exception: ref ValueError". Suggested fix: keep `traceKeys` as it is, and add
+  an accessor for callers that checked `hasKeys` once. It should treat a missing key
+  array as a precondition (an `AssertionDefect` under bound checks, like `traceOf`'s
+  `IndexDefect`), so its effect list stays empty. The name could be `keysAt(r, row)` or
+  `uncheckedKeys`.
+  *Accept:* a `{.raises: [].}` proc reads keys through a view and compiles, and the
+  missing-keys case is tested with bound checks on.
+- **F2. Failed rows from `readTracesInto` (low priority).** The prefetcher reports
+  `failedRows`, but `readTracesInto` reports failures only through a `DiagLog`. Add an
+  overload that fills a caller's `var seq[int]` (cleared, capacity reused) with the rows
+  left zero. *Accept:* it gives the same rows as the prefetcher on a truncated file.
+- **F3. Writing derived traces from another standard (later).** `writeTrace` needs a
+  template trace of the output's standard, so a stack computed from SEG-D or SEG-2 input
+  cannot be written as SEG-Y. A possible fix: a SEG-Y trace built from `TraceKeys` (the
+  coordinates, the scalars chosen by the writer, `cdp`, `offset`, `t0Ms`/delay) plus
+  overrides. *Accept:* a stack of a SEG-D demo file round-trips through `openSeismic` as
+  SEG-Y, with its keys.
 
 ## The goal: one per-trace data model
 
