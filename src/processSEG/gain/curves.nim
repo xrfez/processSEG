@@ -26,10 +26,20 @@
 ## record length, `(samples − 1)·dtMs`). A row whose times fall on the grid
 ## takes the factors as they are (one vectorized multiply); a row offset by
 ## a fraction of `dtMs` takes them linearly interpolated between grid points
-## (two loads and a multiply-add). The relative error of the factor is then
-## at most `(ΔdB · ln 10 / 20)² / 8`, with `ΔdB` the gain change over one
-## sample: 2.7e-6 (2e-5 dB) for 20 dB per second at 2 ms, and 0 on the grid
-## or where the curve is flat. Times outside the table use the curve itself
+## (two loads and a multiply-add). The relative error of a factor is then
+## at most `dt² · max|g''/g| / 8` over its grid interval, where the curve is
+## smooth there:
+## - knots and exponential curves: `(ΔdB · ln 10 / 20)² / 8`, `ΔdB` the gain
+##   change over one sample: 2.7e-6 (2e-5 dB) for 20 dB per second at 2 ms;
+## - `powerGain`: `|p(p − 1)| · (dt / t)² / 8`: 4e-4 (0.0035 dB) for `t²`
+##   at 50 ms and 2 ms;
+## - a knot or `minMs` between two grid points (the slope jumps there) adds
+##   a first-order error of up to `|Δs| · dt / 4`, with `s = g'/g` the
+##   relative slope on either side (`ln 10 / 20` per dB/ms): 0.1 % for a
+##   knot where the slope turns by 20 dB/s, at 2 ms. Knots on the dt grid
+##   of rows that start on it have none.
+##
+## It is 0 on the grid. Times outside the table use the curve itself
 ## (exact, but scalar and slower): widen `tMinMs .. tMaxMs` for rows that
 ## start before 0 or for windows past the record length.
 ##
@@ -116,8 +126,10 @@ func kind*(c: GainCurve): GainCurveKind {.inline, raises: [].} =
   c.kind
 
 func gainDbAt*(c: GainCurve, tMs: float64): float64 {.raises: [].} =
-  ## The gain at `tMs`, in dB. NaN for a NaN time.
+  ## The gain at `tMs`, in dB. NaN for a NaN time, or for a default
+  ## (unbuilt) curve.
   if tMs.isNaN: return NaN
+  if c.kind == gcKnots and c.knots.len == 0: return NaN
   case c.kind
   of gcKnots:
     let k = c.knots
@@ -153,6 +165,9 @@ proc initGainCurvePlan*(T: typedesc[SampleType], curve: GainCurve,
   if not (dtMs.finite and dtMs > 0):
     badCurve("dtMs must be finite and positive, got " & $dtMs)
   if samples < 1: badCurve("a gain curve plan needs samples ≥ 1, got " & $samples)
+  if curve.kind == gcKnots and curve.knots.len == 0:
+    badCurve("the curve has no knots: build it with knotGain, powerGain or " &
+      "exponentialGain")
   let hiMs = (if tMaxMs.isNaN: tMinMs + float64(samples - 1) *
       dtMs else: tMaxMs)
   if not (tMinMs.finite and hiMs.finite):
@@ -191,17 +206,21 @@ func tableMs*[T](p: GainCurvePlan[T]): Slice[float64] {.raises: [].} =
 
 # ------------------------------------------------------------------ kernels --
 
-proc mulTable[T](x {.noalias.}: ptr UncheckedArray[T],
-    tab {.noalias.}: ptr UncheckedArray[T], n: int) {.inline, raises: [].} =
+type Buf[T] = ptr UncheckedArray[T]
+
+# The two table kernels are `noinline` (one call per row) so that
+# tvectorized can check each loop on its own.
+
+proc mulTable[T](x {.noalias.}, tab {.noalias.}: Buf[T], n: int) {.noinline,
+    raises: [].} =
+  ## `x[j] *= tab[j]`.
   {.push boundChecks: off, overflowChecks: off.}
   for j in 0..<n:
     x[j] = x[j] * tab[j]
   {.pop.}
 
-proc mulTableLerp[T](x {.noalias.}: ptr UncheckedArray[T],
-    tab {.noalias.}: ptr UncheckedArray[T],
-
-n: int, f: T) {.inline, raises: [].} =
+proc mulTableLerp[T](x {.noalias.}, tab {.noalias.}: Buf[T], n: int,
+    f: T) {.noinline, raises: [].} =
   ## `x[j] *= tab[j] + f·(tab[j + 1] − tab[j])`; reads `tab[0 .. n]`.
   {.push boundChecks: off, overflowChecks: off.}
   for j in 0..<n:
@@ -256,6 +275,8 @@ proc applyGainCurve*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
   ## or has more columns than `plan.samples`.
   meta.checkShape(b)
   plan.checkPlan
+  if abs(meta.dtMs - plan.dtMs) > 1e-9 * plan.dtMs:
+    badCurve("the plan is for dtMs = " & $plan.dtMs & ", the rows have " & $meta.dtMs)
   if b.cols > plan.samples:
     badCurve("the block has " & $b.cols & " columns, the plan takes " &
       $plan.samples & " samples")

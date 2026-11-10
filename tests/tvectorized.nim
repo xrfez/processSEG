@@ -1,7 +1,8 @@
 ## The hot kernel loops compile to packed SIMD: builds `utils/veckernels.nim`
 ## in `-d:release` (bound and overflow checks on outside the kernels, the CPU
-## target from config.nims) and checks every instance of each kernel in the
-## disassembly. Runs on x86-64 Linux with gcc and binutils, in the debug suite
+## target from config.nims) and in `-d:danger` (the benchmarks' mode: GCC
+## vectorized a fused float sum + max in release and not in danger), and
+## checks every instance of each kernel in each build's disassembly. Runs on x86-64 Linux with gcc and binutils, in the debug suite
 ## only (the sub-build has its own flags); skipped elsewhere. To check the
 ## check, `PROCESSSEG_VEC_FLAGS="--passC:-fno-tree-vectorize
 ## --passC:-fno-tree-slp-vectorize"` builds the kernels scalar: every kernel
@@ -25,8 +26,8 @@ const
     "sumSq64", "maxAbs",
     # AGC: the gain loops (the block sums are serial add chains, scalar).
     "agcImpl",
-    # Gain curves: the table multiply, on and off the grid (both inline).
-    "applyAt"]
+    # Gain curves: the table multiply, on and off the grid.
+    "mulTable", "mulTableLerp"]
   # Non-generic kernels: their symbols carry their own module (and GCC clones
   # such as `.constprop.0` count too).
   moduleKernels = [("sosLanes", "ZfilterZiir")]
@@ -50,6 +51,8 @@ proc isPacked(insn: string): bool =
       return "%ymm" in insn or "%zmm" in insn
   true
 
+proc checkBuild(mode: string)
+
 proc main() =
   when not (defined(amd64) and defined(linux)) or defined(release) or
       defined(addressSanitizer):
@@ -58,13 +61,18 @@ proc main() =
   if findExe("objdump").len == 0 or findExe("nm").len == 0:
     echo "  skipped (objdump or nm missing)"
     return
+  for mode in ["-d:release", "-d:danger"]:
+    echo "  ", mode
+    checkBuild(mode)
+
+proc checkBuild(mode: string) =
   let
     here = currentSourcePath().parentDir
-    dir = getTempDir() / "processSEG_vectorized"
+    dir = getTempDir() / "processSEG_vectorized" / mode[3 .. ^1]
     bin = dir / "veckernels.bin"
   createDir(dir)
   let build = execCmdEx(quoteShell(getCurrentCompilerExe()) &
-    " c -f --hints:off -d:release " & getEnv("PROCESSSEG_VEC_FLAGS") &
+    " c -f --hints:off " & mode & " " & getEnv("PROCESSSEG_VEC_FLAGS") &
         " --path:" & quoteShell(here / ".." / "src") &
     " --nimcache:" & quoteShell(dir / "nc") & " -o:" & quoteShell(bin) & " " &
     quoteShell(here / "utils" / "veckernels.nim"))

@@ -17,12 +17,13 @@
 ## **Rows.** As everywhere: the block forms process the live rows, each up to
 ## its live length (`ChunkMeta.liveSamples`); dead, auxiliary and failed rows
 ## and the padding past a trace's end are left untouched. A NaN or Inf sample
-## stays in its own row (that row's statistics are non-finite).
+## stays in its own row: normalization and AGC leave such a row as it is.
 ##
 ## **Normalization** scales a trace (`perTrace`) or every live trace of the
 ## block by one factor (`perPanel`) so that its maximum |x|, RMS or a
 ## percentile of |x| (`NormStat`) becomes `target`. A trace or panel whose
-## statistic is 0 (all zero) or not finite is left as it is. A panel's
+## statistic is 0 (all zero) or not finite, or whose factor would not fit
+## the sample type (Inf in float32), is left as it is. A panel's
 ## statistic leaves out rows with a NaN or Inf (`panelStats`), and its factor
 ## is then applied to every live row. The panel percentile comes from
 ## `panelStats`'s histogram (within 0.4 %), a trace percentile is exact.
@@ -49,7 +50,11 @@
 ##   bench/README "Gain");
 ## - the gain step, `g` from the window mean, runs in the sample type (8
 ##   float32 lanes for float32 data) on means scaled by the trace's RMS, so
-##   it is near 1 and cannot overflow float32 whatever the data's scale;
+##   it is near 1 and cannot overflow float32 whatever the data's scale. A
+##   trace whose largest gain, `target / (rms·epsilon)`, does not fit the
+##   sample type (float32 data near 1e-30 with the defaults) is left as it
+##   is, with gain 1, rather than turning its silent samples into NaN, and
+##   so is a trace with a NaN or Inf sample (its RMS is not finite);
 ## - `requiredMargin` is `h`: a zoom window decoded with `h` extra samples
 ##   on each side matches the whole trace's AGC over the window, except that
 ##   ε comes from the decoded window's RMS.
@@ -106,6 +111,11 @@ proc badArg(msg: string) {.noinline, noreturn.} =
 
 func finitePositive(x: float64): bool {.inline.} =
   x.classify in {fcNormal, fcSubnormal} and x > 0
+
+func fitsIn(T: typedesc, x: float64): bool {.inline.} =
+  ## `x` is finite and positive in the sample type (a float64 factor of 1e40
+  ## is Inf in float32, and would make zeros NaN).
+  x.finitePositive and T(x).float64.finitePositive
 
 # ----------------------------------------------------------------- fixed dB --
 
@@ -166,6 +176,10 @@ func target*(p: NormalizePlan): float64 {.inline, raises: [].} =
   ## The value the statistic is brought to.
   p.target
 
+func percentile*(p: NormalizePlan): float64 {.inline, raises: [].} =
+  ## The percentile `normPercentile` uses.
+  p.percentile
+
 func samples*(p: NormalizePlan): int {.inline, raises: [].} =
   ## The longest trace the plan takes.
   p.samples
@@ -190,7 +204,7 @@ proc traceStatOf[T](x: openArray[T], p: NormalizePlan,
     except ValueError: NaN # the plan checked the percentile
 
 proc scaleToTarget[T](x: var openArray[T], level, target: float64) {.inline.} =
-  if level.finitePositive and (target / level).finitePositive:
+  if level.finitePositive and fitsIn(T, target / level):
     scale(x, target / level)
 
 proc normalize*[T: SampleType](x: var openArray[T], plan: NormalizePlan,
@@ -226,7 +240,7 @@ proc normalize*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
       of normMax: s.maxAbs
       of normRms: s.rms
       of normPercentile: s.clip
-    if level.finitePositive and (plan.target / level).finitePositive:
+    if level.finitePositive and fitsIn(T, plan.target / level):
       scale(b, meta, plan.target / level)
 
 proc normalize*[T: SampleType](samples: var Tensor[T], meta: ChunkMeta,
@@ -288,6 +302,14 @@ func mode*(p: AgcPlan): AgcMode {.inline, raises: [].} =
 func samples*(p: AgcPlan): int {.inline, raises: [].} =
   ## The longest trace the plan takes.
   p.samples
+
+func target*(p: AgcPlan): float64 {.inline, raises: [].} =
+  ## The level each window is brought to.
+  p.target
+
+func epsilon*(p: AgcPlan): float64 {.inline, raises: [].} =
+  ## ε relative to the trace RMS.
+  p.epsilon
 
 func dtMs*(p: AgcPlan): float64 {.inline, raises: [].} =
   ## The sample interval the plan was built for.
@@ -359,7 +381,14 @@ proc agcImpl[T](x: ptr UncheckedArray[T], n: int, plan: AgcPlan,
   blockSums(x, n, w, mode, s, p)
   # The gain step runs in the sample type (float32: 8 lanes, not 4), on
   # means scaled to the trace level: g = (target/rms) / (level/rms + epsilon).
-  type G = T
+  # The largest gain, target / (rms·epsilon), at a silent sample, must fit
+  # the sample type, or 0·Inf would make the silence NaN: otherwise the row
+  # is left as it is.
+  if not fitsIn(T, plan.target / rms / plan.epsilon):
+    when keep:
+      for i in 0..<n: g[i] = T(1)
+    return
+  type G = T # the type of the gain step (see the module documentation)
   let unit = (when mode == agcRms: 1 / (rms * rms) else: 1 / rms)
   let k = G(plan.target / rms)
   let eps = G(plan.epsilon)
@@ -424,6 +453,8 @@ proc agc*[T: SampleType](x: var openArray[T], plan: AgcPlan, ws: var Workspace,
 proc checkBlock[T](b: RowBlock[T], meta: ChunkMeta, plan: AgcPlan) =
   meta.checkShape(b)
   plan.checkPlan
+  if abs(meta.dtMs - plan.dtMs) > 1e-9 * plan.dtMs:
+    badArg("the plan is for dtMs = " & $plan.dtMs & ", the rows have " & $meta.dtMs)
   if b.cols > plan.samples:
     badArg("the block has " & $b.cols & " columns, the plan takes " &
       $plan.samples & " samples")
@@ -432,8 +463,8 @@ proc agc*[T: SampleType](b: RowBlock[T], meta: ChunkMeta, plan: AgcPlan,
     ws: var Workspace) =
   ## AGC on the live rows of `b` in place, each to its live length. `ws` must
   ## hold `plan.workspaceSize`. Raises `ValueError`, before any sample
-  ## changes, when `b` does not match `meta` or has more columns than
-  ## `plan.samples`.
+  ## changes, when `b` does not match `meta`, has more columns than
+  ## `plan.samples`, or the rows' `dtMs` is not the plan's.
   checkBlock(b, meta, plan)
   for r in 0..<b.len:
     if meta.isLive(r):

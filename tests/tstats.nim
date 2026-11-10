@@ -149,6 +149,18 @@ block panel_rows_and_nan_rows:
   var wrong = newSeq[TraceStats](3)
   doAssertRaises ValueError: traceStatsInto(g.data, meta, wrong)
 
+block panel_percentile_among_zeros:
+  # A muted panel with one spike: the p99 of |x| is 0, as a sort gives (bin 0
+  # is not interpolated into a subnormal, which 1/clip would blow up).
+  var g = cmpGather[float32](0, newSeq[float64](10), 100, dtMs = 2)
+  g.data[4, 30] = 5
+  let meta = initChunkMeta(g.rows, dtMs = 2)
+  var ws = initWorkspace()
+  ws.reserve(panelStatsWorkspace)
+  doAssert panelStats(g.data, meta, ws, clipPercentile = 99).clip == 0
+  doAssert panelStats(g.data, meta, ws, clipPercentile = 99.95).clip > 0
+  doAssert panelStats(g.data, meta, ws, clipPercentile = 100).clip == 5
+
 block trace_stats_liveness:
   var g = panelGather(rows = 4, cols = 50, seed = 5)
   g.keys[1].status = tsDead

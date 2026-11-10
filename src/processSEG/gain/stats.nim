@@ -25,7 +25,11 @@
 ## samples, from a histogram over the float32 bit pattern of `|x|` (65536
 ## bins, each `2⁻⁸` of its value wide, so a relative error under 0.4 %,
 ## 0.034 dB, over the whole float32 range, whatever the dynamic range of the
-## data), interpolated within the bin. `p = 100` gives the exact maximum. The
+## data), interpolated within the bin. Bin 0 holds `|x| < 4.6e-41` and reads
+## as 0, so a percentile that falls among the zeros of a muted or sparse
+## panel is 0, as a sort gives. float64 data is binned as float32: values
+## outside the float32 range (below about 1e-41 or above 3.4e38) are not
+## resolved. `p = 100` gives the exact maximum. The
 ## percentile of one trace, `percentileAbs`, is exact (selection on a copy).
 ## Percentiles are linear between order statistics, as numpy's default: with
 ## `N` samples sorted, rank `h = (N − 1)·p/100`.
@@ -225,13 +229,20 @@ proc histogramInto[T](x: openArray[T], h: ptr UncheckedArray[
     h[k] = h[k] + 1
   {.pop.}
 
+func usable(sumSq, mx: float64): bool {.inline.} =
+  ## A row a panel uses: finite samples, and a sum of squares that did not
+  ## overflow (float64 values beyond 1e154).
+  mx.classify notin {fcNan, fcInf} and sumSq != Inf
+
 func orderStat(h: ptr UncheckedArray[uint32], j: int, mx: float64): float64 =
   ## The estimated `j`-th smallest value (0-based) counted in `h`: in its bin,
   ## at its position among the bin's values; never above the maximum `mx`.
+  ## Bin 0 (`|x| < 4.6e-41`, the zeros of a muted or sparse panel) reads 0.
   var below = 0
   for k in 0..maxKey:
     let c = int(h[k])
     if below + c > j:
+      if k == 0: return 0
       let lo = binLow(k)
       let hi = min(binLow(k + 1), mx)
       return min(max(lo + (float64(j - below) + 0.5) / float64(c) * (hi - lo),
@@ -246,8 +257,8 @@ proc panelStats*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
   ## over their live samples, leaving out rows with a NaN or Inf (module
   ## documentation). `clip` is the `clipPercentile` of `|x|`, from a
   ## histogram in `ws` (which must hold `panelStatsWorkspace`); pass
-  ## `clipPercentile = NaN` to skip it (one pass over the samples instead of
-  ## two; `ws` is then not used). Raises `ValueError` when `b` does not match
+  ## `clipPercentile = NaN` to skip it (then one pass over the rows instead of
+  ## two, and `ws` is not used). Raises `ValueError` when `b` does not match
   ## `meta`, or for a percentile outside `0 .. 100`.
   meta.checkShape(b)
   checkPercentile(clipPercentile, allowNaN = true)
@@ -259,7 +270,7 @@ proc panelStats*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
     if not meta.isLive(r): continue
     let n = meta.liveSamples(r, b.cols)
     let (s, m) = sumSqMaxAbs(b.row(r, n))
-    if m.classify in {fcNan, fcInf} or s == Inf: continue
+    if not usable(s, m): continue
     sum += s
     mx = max(mx, m)
     result.samples += n
@@ -277,7 +288,8 @@ proc panelStats*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
   for r in first..last:
     if not meta.isLive(r): continue
     let n = meta.liveSamples(r, b.cols)
-    if maxAbs(b.row(r, n)).classify in {fcNan, fcInf}: continue
+    let (s, m) = sumSqMaxAbs(b.row(r, n))
+    if not usable(s, m): continue
     histogramInto(b.row(r, n), h)
   for k in 0..maxKey: # fold the sub-histograms into the first
     for w in 1..<histWays: h[k] = h[k] + h[w * histBins + k]

@@ -234,8 +234,8 @@ Viewers usually offer **fixed**, **normalized** and **AGC** display gain.
   - `traceStatsInto(samples, meta, stats)`: RMS and max |x| per row (NaN for dead,
     auxiliary and failed rows), about 0.9 ms for a 2000 × 2001 panel;
   - `panelStats(samples, meta, ws, clipPercentile = 99, rows = a .. b)`: RMS, max and a
-    percentile clip of |x| over the live rows (rows with a NaN or Inf are left out and
-    counted in `rows`), from a histogram with 0.4 % relative resolution (`ws` holds
+    percentile clip of |x| over the live rows (rows with a NaN or Inf are left out;
+    `rows` counts the rows used), from a histogram with 0.4 % relative resolution (`ws` holds
     `panelStatsWorkspace`), about 4 ms for the same panel, so recompute it when the data
     or the selection changes, not per frame.
 - **AGC, time-variant dB curves and filters** change sample values in a way that depends
@@ -258,7 +258,7 @@ Viewers usually offer **fixed**, **normalized** and **AGC** display gain.
   slower.
 
   AGC costs about 6.5 ms per 2000 × 2001 panel on one thread, whatever the window, so
-  about 1.7 ms on 4 workers. `normalize` (`initNormalizePlan(normRms | normMax |
+  an estimated 1.7 ms on 4 workers (not yet measured: the pool lands in 5.2). `normalize` (`initNormalizePlan(normRms | normMax |
   normPercentile, samples, perTrace | perPanel)`) and `scaleDb` are the CPU forms of the
   fixed and normalized display gains.
 

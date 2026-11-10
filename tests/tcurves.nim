@@ -91,6 +91,31 @@ block t0_shifts:
     let dDb = p.gainDbAt(ceil(t / 2) * 2) - p.gainDbAt(floor(t / 2) * 2)
     let bound = (dDb * ln(10.0) / 20) ^ 2 / 8
     doAssert abs(x[j] / p.factorAt(t) - 1) <= 1.01 * bound + 1e-12, $j
+  # A negative power: g''/g = p(p − 1)/t², larger than (g'/g)².
+  let inv = powerGain(-1, refMs = 100)
+  let ip = initGainCurvePlan(float64, inv, dtMs = 2, samples = 1001)
+  var y = ones(1001)
+  y.applyGainCurve(ip, startMs = 21)
+  for j in 0..<1001:
+    let t0 = floor((21 + float64(j) * 2) / 2) * 2
+    let bound = 2.0 * (2 / t0) ^ 2 / 8 # |p(p − 1)|·(dt/t)²/8 at the interval start
+    doAssert abs(y[j] / inv.factorAt(21 + float64(j) * 2) - 1) <= 1.01 * bound, $j
+  # A knot between grid points (1101 ms): first order there, within
+  # |Δs|·dt/4 (s = ln10/20 × dB per ms); second order elsewhere.
+  let k = knotGain([GainKnot(tMs: 0, dB: 0), GainKnot(tMs: 1101, dB: 20),
+    GainKnot(tMs: 2000, dB: 0)])
+  let kp = initGainCurvePlan(float64, k, dtMs = 2, samples = 1001)
+  var z = ones(1001)
+  z.applyGainCurve(kp, startMs = 1)
+  let s1 = ln(10.0) / 20 * 20 / 1101
+  let s2 = ln(10.0) / 20 * -20 / 899
+  var atKink = 0.0
+  for j in 0..<1001:
+    let t = 1 + float64(j) * 2
+    let err = abs(z[j] / k.factorAt(t) - 1)
+    if abs(t - 1101) < 2: atKink = max(atKink, err)
+    else: doAssert err <= (max(abs(s1), abs(s2)) * 2) ^ 2 / 8 * 1.01, $j
+  doAssert atKink > 1e-4 and atKink <= abs(s1 - s2) * 2 / 4 * 1.01, $atKink
   var nanT = ones(10)
   nanT.applyGainCurve(pp, startMs = NaN)
   doAssert nanT == ones(10), "a NaN start time leaves the trace alone"
@@ -123,6 +148,15 @@ block block_form_follows_each_rows_time:
   for j in 100..<300: doAssert w.data[5, j] == 0, "padding untouched"
   var wide = zeros[float32](6, 301)
   doAssertRaises ValueError: wide.applyGainCurve(meta, plan)
+
+block unbuilt_curves_and_dt:
+  var c: GainCurve # default: no knots
+  doAssert c.gainDbAt(10).isNaN and c.factorAt(10).isNaN
+  doAssertRaises ValueError: discard initGainCurvePlan(float32, c, 2, 10)
+  var g = cmpGather[float32](0, [0.0, 0], 50, dtMs = 4)
+  let meta = initChunkMeta(g.rows, dtMs = 4)
+  let plan = initGainCurvePlan(float32, powerGain(2), dtMs = 2, samples = 50)
+  doAssertRaises ValueError: g.data.applyGainCurve(meta, plan)
 
 block no_allocation:
   var g = cmpGather[float32](0, [0.0, 0, 0, 0], 500, dtMs = 2)

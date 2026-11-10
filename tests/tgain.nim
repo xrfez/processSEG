@@ -237,12 +237,14 @@ block agc_block_rows:
   agc(live2, plan, ws)
   for j in 0..<120: doAssert a[2, j] == live2[j], "AGC stops at the live length"
   for j in 120..<300: doAssert a[2, j] == 0 and gains[2, j] == 1
-  for j in 0..<300: doAssert a[3, j].isNaN, "NaN stays in its row"
+  for j in 0..<300: # a NaN row is left as it is, like normalize does
+    doAssert a[3, j] == g.data[3, j] or (j == 50 and a[3, j].isNaN)
+    doAssert gains[3, j] == 1
   # The plain form gives the same samples; removing the gain restores them.
   var b = g.data.clone()
   b.agc(meta, plan, ws)
-  for r in [0, 1, 2, 4]:
-    for j in 0..<300: doAssert b[r, j] == a[r, j]
+  for r in [0, 1, 2, 3, 4]:
+    for j in 0..<300: doAssert b[r, j] == a[r, j] or (r == 3 and j == 50)
   a.removeGain(meta, gains)
   for r in [0, 1, 2, 4]:
     for j in 0..<300: doAssert near(a[r, j], g.data[r, j], 1e-12), $r & " " & $j
@@ -269,6 +271,41 @@ block agc_zoom_margin:
   var win = full[a - m ..< b + m]
   agc(win, plan, ws)
   for j in a..<b: doAssert near(win[j - a + m], whole[j], 1e-7), $j
+
+block factors_that_do_not_fit_float32:
+  # A factor finite in float64 but Inf in float32 would make zeros NaN: the
+  # trace is left as it is (review 4.4 #2).
+  var ws = initWorkspace()
+  let big = initNormalizePlan(normMax, samples = 4, target = 1e20)
+  var x = @[1e-20'f32, 0, 0, 0]
+  normalize(x, big, ws)
+  doAssert x == @[1e-20'f32, 0, 0, 0]
+  for (target, level) in [(1e30, 1e-10), (1.0, 1e-39)]:
+    let plan = initAgcPlan(6, dtMs = 2, samples = 8, target = target)
+    ws.reserve(plan.workspaceSize)
+    var y = @[float32(level), 0, 0, 0, float32(level), 0, 0, 0]
+    let before = y
+    var g = newSeq[float32](8)
+    agc(y, plan, ws, g)
+    doAssert y == before, $target
+    for v in g: doAssert v == 1
+  # float64 data has the range: the same AGC works there.
+  let plan = initAgcPlan(6, dtMs = 2, samples = 8, target = 1e30)
+  ws.reserve(plan.workspaceSize)
+  var z = @[1e-10, 0, 0, 0, 1e-10, 0, 0, 0]
+  agc(z, plan, ws)
+  for v in z: doAssert v.classify in {fcNormal, fcZero}
+  doAssert z[0] > 1e29
+
+block plan_dt_must_match_the_rows:
+  var g = gather(2, 50)
+  let meta = initChunkMeta(g.rows, dtMs = 4)
+  let plan = initAgcPlan(40, dtMs = 2, samples = 50)
+  var ws = initWorkspace()
+  ws.reserve(plan.workspaceSize)
+  doAssertRaises ValueError: g.data.agc(meta, plan, ws)
+  doAssert plan.target == 1 and plan.epsilon == 1e-9
+  doAssert initNormalizePlan(normPercentile, 10, percentile = 95).percentile == 95
 
 block no_allocation:
   var g = gather(16, 500)

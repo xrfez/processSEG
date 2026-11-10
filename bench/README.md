@@ -130,14 +130,15 @@ nfft·log(nfft): halve the panel, halve the time.
 |---|---|---|
 | `traceStatsInto` (RMS and max per trace) | 0.86 ms | 18.7 |
 | `panelStats`, no clip | 0.96 ms | 16.7 |
-| `panelStats`, p99 clip (histogram) | 4.2 ms | 3.8 |
+| `panelStats`, p99 clip (histogram) | 4.5 ms | 3.5 |
 
 - The statistics are two vectorized passes per row (Σx² in eight float64 accumulators,
   then max |x| as an integer max of the bit patterns). One fused loop with a float max
   stayed scalar in `-d:danger` (1.7 ms); tvectorized builds in `-d:release`, where it was
   packed, so check danger builds by hand too.
 - The percentile clip is a scatter into a 65536-bin histogram, about 3 cycles a sample;
-  four interleaved sub-histograms took it from 5.1 to 4.2 ms. It is a value to recompute
+  four interleaved sub-histograms took it from 5.1 to 4.2 ms, and the 4.4 review's single
+  row filter for both passes (Σx² again) to 4.5 ms. It is a value to recompute
   when the data or the selection changes, not per frame.
 
 AGC and normalization (same run, 1 thread):
@@ -147,8 +148,8 @@ AGC and normalization (same run, 1 thread):
 | `agc` RMS, 100 ms window | 6.3 ms |
 | `agc` RMS, 500 ms window | 6.7 ms |
 | `agc` RMS, 2000 ms window | 6.7 ms |
-| `normalize` per panel, p99 | 5.2 ms |
-| `applyGainCurve` (knots, t0 on the grid) | 0.48 ms (67 GB/s) |
+| `normalize` per panel, p99 | 6.2 ms |
+| `applyGainCurve` (knots, t0 on the grid) | 0.57 ms (56 GB/s) |
 
 - AGC is O(n): the cost does not depend on the window. Each window sum is a block suffix
   plus a block prefix (no subtraction, for precision), built in one loop with two
