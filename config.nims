@@ -51,14 +51,22 @@ task zigDebug, "Build debug binary using Zig CC with debug symbols":
   ## Compiles debug binary using Zig toolchain preserving debug symbols.
   selfExec "c -d:zigcc --cc:clang --clang.exe:\"" & zigccExe & "\" --clang.linkerexe:\"" & zigccExe & "\" --debuginfo:on src/processSEG.nim"
 
+# Every test task builds the runner tests/tester.nim once, in debug; the runner
+# compiles and runs each tests/t*.nim with the flags given after it.
+const tester = "c -r --hints:off tests/tester.nim"
+
 task test, "Run test suite":
-  ## Executes unittest suite.
-  selfExec "c -r --verbosity:0 tests/test_all.nim"
+  ## Runs every tests/t*.nim in a debug build.
+  selfExec tester
 
 task testRelease, "Run the test suite in -d:release and -d:danger builds":
-  ## Executes unittest suite with the optimization levels the release builds use.
-  selfExec "c -r --verbosity:0 -d:release tests/test_all.nim"
-  selfExec "c -r --verbosity:0 -d:danger tests/test_all.nim"
+  ## Runs the suite with the optimization levels the release builds use.
+  selfExec tester & " -d:release"
+  selfExec tester & " -d:danger"
+
+task asan, "Run the test suite under AddressSanitizer (-d:useMalloc)":
+  ## tests/config.nims turns -d:addressSanitizer into the ASan switches.
+  selfExec tester & " -d:addressSanitizer"
 
 proc nimSources(dir: string): seq[string] =
   ## Every .nim file under `dir`, recursively (NimScript has no walkDirRec).

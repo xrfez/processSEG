@@ -19,7 +19,7 @@ edit the Atlas section of `nim.cfg` by hand: Atlas rewrites it.
 ## Directory Layout
 
 - `src/`: Source code modules.
-- `tests/`: Test suites.
+- `tests/`: Test suites (`tester.nim` runs every `t*.nim`; helpers go in `tests/utils/`).
 - `tools/`: Build helper wrappers (`tools/zigcc` for Zig CC invocations).
 - `deps/`: Atlas dependency checkouts (only `deps/atlas.config` is committed).
 - `bin/`: Compiled binary target directory.
@@ -49,6 +49,7 @@ default.
 
 - Run test suite: `nim test`
 - Run test suite in release and danger builds: `nim testRelease`
+- Run test suite under AddressSanitizer: `nim asan`
 - Format codebase: `nim fmt`
 - Generate documentation: `nim docs`
 
