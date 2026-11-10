@@ -1,4 +1,5 @@
 # Strict build configuration and task orchestrator for processseg
+import std/[os, strutils]
 
 switch("outdir", "bin")
 
@@ -66,3 +67,31 @@ task fmt, "Format codebase via nimpretty":
 task docs, "Generate HTML documentation":
   ## Emits HTML documentation into htmldocs directory.
   selfExec "doc --project --outdir:htmldocs src/processseg.nim"
+
+# ------------------------------------------------- parseSEG patch branch --
+# processSEG patches parseSEG in place, in the Atlas checkout deps/parseSEG,
+# on the branch `processseg-integration` (processSEG.nimble requires that
+# branch). The branch is later opened as a pull request against parseSEG.
+const
+  parseSEGDir = "deps/parseSEG"
+  parseSEGBranch = "processseg-integration"
+
+task parseSEGTest, "Run parseSEG's own test suite in deps/parseSEG (the patch branch)":
+  ## parseSEG's nim.cfg expects its dependencies in its own deps/: link
+  ## processSEG's Atlas checkouts there (deps/* is gitignored in parseSEG),
+  ## then run its `test` task without this project's config (--skipParentCfg).
+  for dir in listDirs("deps"):
+    let name = dir.lastPathPart
+    if name != "parseSEG" and not name.startsWith("."):
+      exec "ln -sfn ../../" & name & " " & parseSEGDir & "/deps/" & name
+  withDir parseSEGDir:
+    exec quoteShell(getCurrentCompilerExe()) & " --skipParentCfg test"
+
+task parseSEGBranch, "Put deps/parseSEG back on the patch branch after an atlas command":
+  ## `atlas install` checks out the branch head detached; new commits must go
+  ## on the branch, so switch to it (refuses if HEAD has moved off its head).
+  withDir parseSEGDir:
+    exec "test \"$(git rev-parse HEAD)\" = \"$(git rev-parse " & parseSEGBranch &
+      ")\" || { echo 'deps/parseSEG HEAD is not the head of " & parseSEGBranch &
+      "; check before switching'; exit 1; }"
+    exec "git switch " & parseSEGBranch

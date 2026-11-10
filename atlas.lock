@@ -99,7 +99,7 @@
       "# Dependencies",
       "",
       "requires \"nim >= 2.4.0\"",
-      "requires \"https://github.com/xrfez/parseSEG >= 0.7.0\"",
+      "requires \"https://github.com/xrfez/parseSEG#processseg-integration\"",
       "",
       ""
     ]
