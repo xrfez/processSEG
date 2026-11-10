@@ -48,7 +48,9 @@ Every per-trace value is read from parseSEG's `TraceRows` view when it is needed
 - **Samples:** `Tensor[float32]` (or `float64`) shaped `[traces, samples]`, row-major and
   C-contiguous, exactly what `readTraces`, `readTracesInto` and `PrefetchChunk.samples`
   return. Rows are zero-padded past a shorter trace's end. The kernels underneath take
-  `var openArray[T]` rows, so a caller can also pass any contiguous buffer.
+  `var openArray[T]` rows, so a caller can also pass any contiguous buffer: `rowBlock`
+  views a tensor (rank 2, C-contiguous, checked once) or a flat buffer as rows without
+  copying, and `sub` splits it for threads.
 - **One sample interval per call.** A chunk passed to a plan has a single `dt`. SEG-D
   records can mix intervals across channel sets, so the viewer prefetches with
   `uniform = true` (chunks never span two channel sets or intervals), or splits a range

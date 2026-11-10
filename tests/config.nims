@@ -17,3 +17,7 @@ when defined(addressSanitizer):
   else:
     switch("passC", "-fsanitize=address -fno-omit-frame-pointer")
     switch("passL", "-fsanitize=address -fno-omit-frame-pointer")
+
+# Allocation counting (`tests/utils/allocs.nim`): every test can check that a
+# steady state allocates nothing.
+switch("define", "nimAllocStats")
