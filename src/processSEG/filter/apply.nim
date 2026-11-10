@@ -46,16 +46,10 @@ import std/math
 import parseSEG
 import ../core/[rows, types, workspace]
 import ../fft/plan
-import design
+import design, edges
+export edges.TrendRemoval
 
 type
-  TrendRemoval* = enum
-    ## What is removed from a trace before it is padded and filtered (and
-    ## added back after, scaled by the gain at 0 Hz).
-    trNone   ## nothing
-    trMean   ## the mean
-    trLinear ## the least-squares line (also removes the mean)
-
   FilterPlan*[T: SampleType] = object
     ## A zero-phase filter for traces of up to `samples` samples; see the
     ## module documentation.
@@ -98,7 +92,7 @@ proc initFilterPlan*(T: typedesc[SampleType], spec: FilterSpec, dtMs: float64,
   result.pad = pad
   result.samples = samples
   result.dtMs = dtMs
-  result.dcGain = if spec.zeroDc: 0.0 else: spec.response(0)
+  result.dcGain = if spec.zeroDc: 0.0 else: spec.response(0, dtMs)
   result.trend = trend
 
 func requiredMargin*[T](plan: FilterPlan[T]): int {.inline, raises: [].} =
@@ -140,26 +134,6 @@ func workspaceSize*[T](plan: FilterPlan[T]): WorkspaceSize {.raises: [].} =
   else: result.f64 += extra
 
 # ------------------------------------------------------------------ kernels --
-
-proc trendOf[T](trend: TrendRemoval, x: Buf[T], n: int): (float64, float64) =
-  ## `(a, b)` of the trend `a + b·i` of `x[0 ..< n]` (n ≥ 1) to remove.
-  case trend
-  of trNone: (0.0, 0.0)
-  of trMean:
-    var s = 0.0
-    for i in 0..<n: s += float64(x[i])
-    (s / float64(n), 0.0)
-  of trLinear:
-    var sx, sxi = 0.0
-    for i in 0..<n:
-      sx += float64(x[i])
-      sxi += float64(i) * float64(x[i])
-    let nf = float64(n)
-    let mean = sx / nf
-    if n == 1: return (mean, 0.0)
-    let c = (nf - 1) / 2
-    let slope = (sxi - c * sx) / (nf * (nf * nf - 1) / 12)
-    (mean - slope * c, slope)
 
 proc packInto[T](plan: FilterPlan[T], x: Buf[T], n: int, a, b: float64,
     dst: Buf[T], stride: int) {.raises: [].} =

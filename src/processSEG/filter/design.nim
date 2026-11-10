@@ -5,7 +5,7 @@
 ## ```nim
 ## let bp = bandPass(Corners(f1: 4, f2: 8, f3: 60, f4: 80))   # Hz, cos² ramps
 ## let lc = butterLowCut(2, slopeDbPerOctave = 24).withNotch(50, widthHz = 2)
-## echo bp.response(6)                 # 0.5: the middle of a ramp is −6 dB
+## echo bp.response(6, dtMs = 2)       # 0.5: the middle of a ramp is −6 dB
 ## echo lc.impulseLength(dtMs = 2)     # samples on each side, 99.9 % energy
 ## ```
 ##
@@ -19,8 +19,13 @@
 ##   low-cut is a band-pass without high corners (`f3 = f4 = Inf`), a
 ##   high-cut one without low corners (`f1 = f2 = 0`).
 ## - **Butterworth magnitude** (`butterLowCut`, `butterHighCut`,
-##   `butterBandPass`): `1/(1 + (f/fc)^k)` for a high-cut and
-##   `1/(1 + (fc/f)^k)` for a low-cut, with `k = slope/6`. The slope is the
+##   `butterBandPass`): `1/(1 + (w(f)/w(fc))^k)` for a high-cut and
+##   `1/(1 + (w(fc)/w(f))^k)` for a low-cut, with `k = slope/6` and
+##   `w(f) = tan(π·f·dt)`, the frequency warp of the bilinear transform. This
+##   is exactly the magnitude of the digital Butterworth filters of
+##   `filter/iir`, so the FFT and IIR forms of a filter agree; below a tenth
+##   of the sample rate `w(f)/w(fc)` is `f/fc` within 3 %, and a high-cut is 0
+##   at Nyquist. The slope is the
 ##   **effective** one, in dB/octave, of what is applied: this is `|H|²` of
 ##   a Butterworth filter of `k/2` poles, as a forward-backward (zero-phase)
 ##   pass gives, so each pole counts 12 dB/octave, not 6 (D5). The corner
@@ -210,13 +215,19 @@ func withZeroDc*(spec: sink FilterSpec): FilterSpec =
 
 # ---------------------------------------------------------------- response --
 
+func warp(f, dtMs: float64): float64 {.inline.} =
+  ## The bilinear-transform frequency warp `tan(π·f·dt)`, `Inf` from Nyquist.
+  let x = PI * f * dtMs / 1000
+  if x >= PI / 2: Inf else: tan(x)
+
 func ramp(x: float64): float64 {.inline.} =
   ## sin²(π/2·x) for x in 0 .. 1, clamped outside.
   if x <= 0: 0.0 elif x >= 1: 1.0 else: sin(PI / 2 * x) ^ 2
 
-func response*(spec: FilterSpec, f: float64): float64 {.raises: [].} =
-  ## The gain of `spec` at `f` Hz (≥ 0), without the 0 Hz suppression of
-  ## `withZeroDc`, which acts on bin 0 only.
+func response*(spec: FilterSpec, f, dtMs: float64): float64 {.raises: [].} =
+  ## The gain of `spec` at `f` Hz (0 .. Nyquist) for samples `dtMs` apart
+  ## (the Butterworth forms depend on it, the others do not), without the
+  ## 0 Hz suppression of `withZeroDc`, which acts on bin 0 only.
   result = 1.0
   case spec.kind
   of rkTrapezoid:
@@ -224,10 +235,13 @@ func response*(spec: FilterSpec, f: float64): float64 {.raises: [].} =
     if c.hasLow: result *= ramp((f - c.f1) / (c.f2 - c.f1))
     if c.hasHigh: result *= 1 - ramp((f - c.f3) / (c.f4 - c.f3))
   of rkButterworth:
+    let wf = warp(f, dtMs)
     if spec.lowHz > 0:
-      result *= (if f <= 0: 0.0 else: 1 / (1 + pow(spec.lowHz / f, spec.lowSlope / 6)))
+      result *= (if f <= 0: 0.0 else:
+        1 / (1 + pow(warp(spec.lowHz, dtMs) / wf, spec.lowSlope / 6)))
     if spec.highHz < Inf:
-      result *= 1 / (1 + pow(f / spec.highHz, spec.highSlope / 6))
+      result *= (if wf == Inf: 0.0 else:
+        1 / (1 + pow(wf / warp(spec.highHz, dtMs), spec.highSlope / 6)))
   for n in spec.notches:
     result *= ramp(abs(f - n.freqHz) / (n.widthHz / 2))
 
@@ -238,7 +252,7 @@ proc responseInto*[T: SampleType](spec: FilterSpec, dtMs: float64, nfft: int,
   ## has `nfft div 2 + 1` values (an `AssertionDefect` otherwise).
   doAssert h.len == nfft div 2 + 1, "h needs nfft div 2 + 1 values"
   let df = 1000 / (float64(nfft) * dtMs)
-  for k in 0..<h.len: h[k] = T(spec.response(float64(k) * df))
+  for k in 0..<h.len: h[k] = T(spec.response(float64(k) * df, dtMs))
   if spec.zeroDc and h.len > 0: h[0] = T(0)
 
 func narrowestRampHz*(spec: FilterSpec): float64 {.raises: [].} =

@@ -7,14 +7,16 @@
 import std/[assertions, math]
 import processSEG
 
+const DT = 2.0 # ms
+
 func db(g: float64): float64 = 20 * log10(g)
 func near(a, b, tol: float64): bool = abs(a - b) <= tol
 
-proc sweep(spec: FilterSpec, lo, hi: float64, steps = 2000): (float64, float64) =
+proc sweep(spec: FilterSpec, lo, hi: float64, steps = 2000, dt = 2.0): (float64, float64) =
   ## The minimum and maximum gain over lo .. hi.
   result = (Inf, -Inf)
   for i in 0..steps:
-    let g = spec.response(lo + (hi - lo) * float64(i) / float64(steps))
+    let g = spec.response(lo + (hi - lo) * float64(i) / float64(steps), dt)
     result = (min(result[0], g), max(result[1], g))
 
 block trapezoid:
@@ -22,48 +24,58 @@ block trapezoid:
   let (pmin, pmax) = bp.sweep(8, 60)
   doAssert pmin == 1 and pmax == 1, "no passband ripple"
   doAssert bp.sweep(0, 4)[1] == 0 and bp.sweep(80, 250)[1] == 0, "stopband is 0"
-  doAssert near(db(bp.response(6)), db(0.5), 1e-9), "−6 dB mid-ramp (low)"
-  doAssert near(db(bp.response(70)), db(0.5), 1e-9), "−6 dB mid-ramp (high)"
+  doAssert near(db(bp.response(6, DT)), db(0.5), 1e-9), "−6 dB mid-ramp (low)"
+  doAssert near(db(bp.response(70, DT)), db(0.5), 1e-9), "−6 dB mid-ramp (high)"
   # Monotonic ramps.
   var prev = 0.0
   for i in 0..400:
-    let g = bp.response(4 + 4 * float64(i) / 400)
+    let g = bp.response(4 + 4 * float64(i) / 400, DT)
     doAssert g >= prev
     prev = g
   let lc = lowCut(0.5, 1)
-  doAssert lc.response(0) == 0 and near(lc.response(0.75), 0.5, 1e-15) and lc.response(400) == 1
+  doAssert lc.response(0, DT) == 0 and near(lc.response(0.75, DT), 0.5, 1e-15) and lc.response(400, DT) == 1
   let hc = highCut(60, 80)
-  doAssert hc.response(0) == 1 and near(hc.response(70), 0.5, 1e-15) and hc.response(80) == 0
-  doAssert lowCut(0, 2).response(0) == 0 and near(lowCut(0, 2).response(1), 0.5, 1e-15)
+  doAssert hc.response(0, DT) == 1 and near(hc.response(70, DT), 0.5, 1e-15) and hc.response(80, DT) == 0
+  doAssert lowCut(0, 2).response(0, DT) == 0 and near(lowCut(0, 2).response(1, DT), 0.5, 1e-15)
 
 block butterworth:
+  # At a fine interval the warp tan(π·f·dt) is linear: the analog shapes.
+  const fine = 0.01
   # Effective slope 24 dB/octave: |H|² of 2 poles, −6 dB at the corner.
   let hc = butterHighCut(50, slopeDbPerOctave = 24)
-  doAssert near(db(hc.response(50)), db(0.5), 1e-9)
+  doAssert near(db(hc.response(50, fine)), db(0.5), 1e-9)
   # Maximally flat: below fc/4, within 20·log10(1 + 4^−4) = 0.034 dB (k = 4).
-  doAssert db(hc.sweep(0, 12.5)[0]) >= -0.0339
+  doAssert db(hc.sweep(0, 12.5, dt = fine)[0]) >= -0.0339
   # Stopband: the asymptotic slope is 24 dB/octave (6 dB per unit of k).
-  let a1 = db(hc.response(400))
-  let a2 = db(hc.response(800))
+  let a1 = db(hc.response(400, fine))
+  let a2 = db(hc.response(800, fine))
   doAssert near(a1 - a2, 24.08, 0.01), $(a1 - a2)
   let lc = butterLowCut(4, slopeDbPerOctave = 36)
-  doAssert lc.response(0) == 0 and near(db(lc.response(4)), db(0.5), 1e-9)
-  doAssert near(db(lc.response(1)) - db(lc.response(0.5)), 36.12, 0.01)
+  doAssert lc.response(0, fine) == 0 and near(db(lc.response(4, fine)), db(0.5), 1e-9)
+  doAssert near(db(lc.response(1, fine)) - db(lc.response(0.5, fine)), 36.12, 0.01)
   let bp = butterBandPass(5, 80, 24, 48)
-  doAssert near(db(bp.response(5)), -6.02, 0.05) and near(db(bp.response(80)), -6.02, 0.05)
-  doAssert bp.response(20) > 0.99
+  doAssert near(db(bp.response(5, fine)), -6.02, 0.05) and near(db(bp.response(80, fine)), -6.02, 0.05)
+  doAssert bp.response(20, fine) > 0.99
+  # At 2 ms the warp matters near Nyquist: the corner stays −6 dB, a high-cut
+  # is 0 at Nyquist, and the gain follows tan(π·f·dt).
+  let h2 = butterHighCut(60, 24)
+  doAssert near(db(h2.response(60, DT)), db(0.5), 1e-9)
+  doAssert h2.response(250, DT) == 0
+  let w = tan(PI * 100 * 0.002) / tan(PI * 60 * 0.002)
+  doAssert near(h2.response(100, DT), 1 / (1 + w ^ 4), 1e-12)
+  doAssert near(butterLowCut(4).response(8, DT), butterLowCut(4).response(8, fine), 1e-3)
 
 block notch_and_zero_dc:
   let s = bandPass(Corners(f1: 2, f2: 4, f3: 100, f4: 120)).withNotch(50, 4)
-  doAssert s.response(50) == 0 and near(db(s.response(49)), db(0.5), 1e-9)
-  doAssert s.response(48) == 1 and s.response(52) == 1
+  doAssert s.response(50, DT) == 0 and near(db(s.response(49, DT)), db(0.5), 1e-9)
+  doAssert s.response(48, DT) == 1 and s.response(52, DT) == 1
   doAssert s.notches.len == 1
   let z = highCut(60, 80).withZeroDc
   var h = newSeq[float64](65)
   z.responseInto(dtMs = 2, nfft = 128, h)
   doAssert h[0] == 0 and h[1] == 1, "bin 0 only"
-  doAssert near(h[64], z.response(250), 0) and h[64] == 0
-  doAssert near(h[18], z.response(18 * 1000 / 256), 0)
+  doAssert near(h[64], z.response(250, DT), 0) and h[64] == 0
+  doAssert near(h[18], z.response(18 * 1000 / 256, DT), 0)
 
 block validation:
   for c in [Corners(f1: 8, f2: 4, f3: 60, f4: 80), Corners(f1: 4, f2: 4, f3: 60, f4: 80),

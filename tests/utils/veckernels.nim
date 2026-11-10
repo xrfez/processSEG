@@ -51,10 +51,23 @@ proc filterOnce() =
   let meta = initChunkMeta(g.rows, dtMs = 2)
   vec_filter_f32(rowBlock(g.data), meta, plan, ws)
 
+proc vec_iir_f32(b: RowBlock[float32], meta: ChunkMeta, plan: IirPlan[float32],
+    ws: var Workspace) {.exportc: "vec_iir_f32", noinline.} =
+  b.applyFilter(meta, plan, ws)
+
+proc iirOnce() =
+  let plan = initIirPlan(float32, butterBandPass(10, 100), 2, 50)
+  var ws = initWorkspace()
+  ws.reserve(plan.workspaceSize)
+  var g = cmpGather[float32](cmpX = 0, offsets = [0.0, 0.0], 50, 2)
+  let meta = initChunkMeta(g.rows, dtMs = 2)
+  vec_iir_f32(rowBlock(g.data), meta, plan, ws)
+
 when isMainModule:
   fftOnce(float32)
   fftOnce(float64)
   filterOnce()
+  iirOnce()
   var x = newSeq[float32](1000)
   var y = newSeq[float64](1000)
   let ramp = newSeq[float32](100)

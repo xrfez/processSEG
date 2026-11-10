@@ -21,6 +21,9 @@ const
     "pass2", "pass3", "pass4", "pass5", "forwardImpl", "inverseImpl",
     # Filter: the gain multiply of the lanes path (packing is strided, scalar).
     "gainLanes"]
+  # Non-generic kernels: their symbols carry their own module (and GCC clones
+  # such as `.constprop.0` count too).
+  moduleKernels = [("sosLanes", "ZfilterZiir")]
 
 proc isPacked(insn: string): bool =
   ## Packed arithmetic, compares or conversions on vector registers; not
@@ -62,13 +65,16 @@ proc main() =
   doAssert build.exitCode == 0, build.output
   let syms = execCmdEx("nm " & quoteShell(bin))
   doAssert syms.exitCode == 0, syms.output
-  for k in kernels:
+  var all: seq[(string, string)]
+  for k in kernels: all.add (k, "__veckernels")
+  for (k, m) in moduleKernels: all.add (k, m)
+  for (k, suffix) in all:
     var found = 0
     for line in syms.output.splitLines:
       let sym = line.splitWhitespace()
       if sym.len < 3: continue
       let name = sym[^1]
-      if not (name.startsWith(k & "_u") and name.endsWith("__veckernels")):
+      if not (name.startsWith(k & "_u") and name.split('.')[0].endsWith(suffix)):
         continue
       inc found
       let dis = execCmdEx("objdump -d --no-show-raw-insn --disassemble=" &
