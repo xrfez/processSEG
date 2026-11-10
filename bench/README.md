@@ -148,6 +148,7 @@ AGC and normalization (same run, 1 thread):
 | `agc` RMS, 500 ms window | 6.7 ms |
 | `agc` RMS, 2000 ms window | 6.7 ms |
 | `normalize` per panel, p99 | 5.2 ms |
+| `applyGainCurve` (knots, t0 on the grid) | 0.48 ms (67 GB/s) |
 
 - AGC is O(n): the cost does not depend on the window. Each window sum is a block suffix
   plus a block prefix (no subtraction, for precision), built in one loop with two

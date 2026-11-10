@@ -12,13 +12,14 @@
 ## - `processSEG/filter/apply`: `FilterPlan`, zero-phase FFT filtering with edge handling;
 ## - `processSEG/filter/iir`: `IirPlan`, Butterworth biquads, zero and minimum phase;
 ## - `processSEG/gain/gain`: fixed dB gain, normalization (`NormalizePlan`), AGC (`AgcPlan`);
+## - `processSEG/gain/curves`: time-variant gain (`GainCurve`, `GainCurvePlan`);
 ## - `processSEG/gain/stats`: per-trace and panel RMS, max and percentile clip;
 ## - `processSEG/adapters`: `chunkMeta` from a prefetch chunk or a trace read.
 
 import processSEG/core/[types, rows, workspace, basic, mute]
 import processSEG/fft/[plan, spectrum]
 import processSEG/filter/[design, apply, iir]
-import processSEG/gain/[gain, stats]
+import processSEG/gain/[gain, curves, stats]
 import processSEG/adapters
 export types, rows, workspace, basic, mute, plan, spectrum, design, apply, iir,
-    gain, stats, adapters
+    gain, curves, stats, adapters

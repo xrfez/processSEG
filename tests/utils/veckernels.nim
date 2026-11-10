@@ -34,6 +34,16 @@ proc agcOnce() =
   x[3] = 1
   vec_agc_f32(x, plan, ws)
 
+proc vec_curve_f32(x: var openArray[float32], plan: GainCurvePlan[float32],
+    startMs: float64) {.exportc: "vec_curve_f32", noinline.} =
+  x.applyGainCurve(plan, startMs)
+
+proc curveOnce() =
+  let plan = initGainCurvePlan(float32, powerGain(2), 2, 100)
+  var x = newSeq[float32](100)
+  vec_curve_f32(x, plan, 0)
+  vec_curve_f32(x, plan, 1)
+
 proc vec_taperPads_f32(x: var openArray[float32],
     ramp: openArray[float32]) {.exportc: "vec_taperPads_f32", noinline.} =
   taperPads(x, ramp)
@@ -87,6 +97,7 @@ when isMainModule:
   filterOnce()
   iirOnce()
   agcOnce()
+  curveOnce()
   var x = newSeq[float32](1000)
   var y = newSeq[float64](1000)
   let ramp = newSeq[float32](100)

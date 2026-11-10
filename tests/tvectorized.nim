@@ -24,7 +24,9 @@ const
     # Gain statistics: Σx² (eight accumulators), max |x| (integer max).
     "sumSq64", "maxAbs",
     # AGC: the gain loops (the block sums are serial add chains, scalar).
-    "agcImpl"]
+    "agcImpl",
+    # Gain curves: the table multiply, on and off the grid (both inline).
+    "applyAt"]
   # Non-generic kernels: their symbols carry their own module (and GCC clones
   # such as `.constprop.0` count too).
   moduleKernels = [("sosLanes", "ZfilterZiir")]

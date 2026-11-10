@@ -249,6 +249,14 @@ Viewers usually offer **fixed**, **normalized** and **AGC** display gain.
   let m = agc.requiredMargin              # half the window, for zoom windows
   ```
 
+  A time-variant gain (`knotGain([GainKnot(tMs: 0, dB: 0), GainKnot(tMs: 3000, dB: 18)])`,
+  `powerGain(2)` or `exponentialGain(dbPerS)`) is tabulated once per `dt` and record
+  length (`initGainCurvePlan(float32, curve, dtMs, samples)`), then
+  `samples.applyGainCurve(meta, plan)` multiplies each live row by the table at its own
+  times (`t0Ms`, `firstSample`): 0.5 ms per panel. Widen the table (`tMinMs`, `tMaxMs`) for
+  rows that start before 0 or windows past the record; times outside it are exact but
+  slower.
+
   AGC costs about 6.5 ms per 2000 × 2001 panel on one thread, whatever the window, so
   about 1.7 ms on 4 workers. `normalize` (`initNormalizePlan(normRms | normMax |
   normPercentile, samples, perTrace | perPanel)`) and `scaleDb` are the CPU forms of the

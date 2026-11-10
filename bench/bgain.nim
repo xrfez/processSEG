@@ -1,7 +1,7 @@
 ## Gain throughput (Phase 4) on a viewer panel, 2000 traces × 2001 samples of
 ## float32 at 2 ms, one thread: per-trace and panel statistics (with and
-## without the percentile histogram), AGC at three window lengths, and a panel
-## normalization.
+## without the percentile histogram), AGC at three window lengths, a panel
+## normalization and a time-variant gain curve.
 
 import std/strutils
 import benchutil
@@ -58,6 +58,12 @@ proc main() =
     g.data.normalize(meta, n99, ws)
   n.report
   echo "    ", n.ms
+  let curve = initGainCurvePlan(float32, knotGain([GainKnot(tMs: 0, dB: 0),
+    GainKnot(tMs: 4000, dB: 24)]), dtMs = dt, samples = ns)
+  let tv = bench("gain curve, t0 on the grid", 2 * bytes):
+    g.data.applyGainCurve(meta, curve)
+  tv.report
+  echo "    ", tv.ms
   doAssert sink > 0 and stats[0].rms > 0
 
 main()
