@@ -21,6 +21,10 @@ block plan_validation:
   doAssert near(sp.binHz(256), 250, 1e-9), "Nyquist at 2 ms"
   doAssert near(sp.binHz(1), 1000 / (512 * 2), 1e-12)
   doAssert initSpectrumPlan(float64, 100, 4, nfft = 1000).nfft == 1000
+  doAssert initSpectrumPlan(float32, 512, 2).nfft == 512, "a power of two stays"
+  doAssert initSpectrumPlan(float32, 1000, 2).nfft == 1024, "not 1000"
+  # A 60 s record at 1 ms (60001 samples) pads to 65536.
+  doAssert initSpectrumPlan(float32, 60001, 1).nfft == 65536
   for bad in [0, -3]:
     doAssertRaises ValueError: discard initSpectrumPlan(float32, bad, 2)
   for bad in [0.0, -1, NaN, Inf]:
@@ -52,11 +56,14 @@ block peak_within_one_bin:
 block amplitude_scale_on_a_bin:
   # A sinusoid of amplitude A on bin 40 reads A, whatever the taper and padding.
   var ws = initWorkspace()
-  for (taper, nfft) in [(0.0, 0), (0.1, 0), (0.5, 0), (0.5, 4096)]:
+  # (taper, nfft, bin); nfft 0 is 1024, and bin 160 of 4096 is bin 40 of it.
+  # The boxcar is unpadded (1000), so the window holds whole cycles.
+  for (taper, nfft, bin) in [(0.0, 1000, 40), (0.1, 0, 40), (0.5, 0, 40),
+      (0.5, 4096, 160)]:
     let sp = initSpectrumPlan(float64, 1000, dtMs = 1, taperFraction = taper,
       nfft = nfft)
     ws.reserve(sp.workspaceSize)
-    let f = sp.binHz(if nfft == 0: 40 else: 160) # same frequency, 40 Hz
+    let f = sp.binHz(bin)
     var x = newSeq[float64](1000)
     x.addSinusoid(1, f, amp = 2.5, phaseRad = 0.3)
     var amp, phase = newSeq[float64](sp.bins)
@@ -107,7 +114,8 @@ block average_over_live_rows:
   g.setLive(5, 100)
   let failed = @[4]
   let meta = initChunkMeta(g.rows, dtMs = 2, failed = failed)
-  let sp = initSpectrumPlan(float32, 400, dtMs = 2, taperFraction = 0.5)
+  let sp = initSpectrumPlan(float32, 400, dtMs = 2, taperFraction = 0.5,
+    nfft = 400)
   var ws = initWorkspace()
   ws.reserve(sp.workspaceSize)
   var amp = newSeq[float64](sp.bins)
@@ -166,7 +174,7 @@ block nan_rows_are_left_out:
     row.addSinusoid(2, 25.0, amp = 2)
     for j in 0..<400: g.data[r, j] = row[j]
   let meta = initChunkMeta(g.rows, dtMs = 2)
-  let sp = initSpectrumPlan(float32, 200, dtMs = 2)
+  let sp = initSpectrumPlan(float32, 200, dtMs = 2, nfft = 200)
   var ws = initWorkspace()
   ws.reserve(sp.workspaceSize)
   var amp, db = newSeq[float64](sp.bins)
@@ -190,7 +198,8 @@ block nan_rows_are_left_out:
 block short_windows_scale_like_full_ones:
   # Rows that end inside the window get their own taper end and Σw, so a
   # sinusoid on a bin still reads its amplitude.
-  let sp = initSpectrumPlan(float64, 400, dtMs = 1, taperFraction = 0.2)
+  let sp = initSpectrumPlan(float64, 400, dtMs = 1, taperFraction = 0.2,
+    nfft = 400)
   var ws = initWorkspace()
   ws.reserve(sp.workspaceSize)
   var amp, phase = newSeq[float64](sp.bins)
@@ -212,3 +221,36 @@ block short_windows_scale_like_full_ones:
   var avg = newSeq[float64](sp.bins)
   doAssert sp.averageAmplitudeInto(g.data, meta, 100, avg, ws) == 11
   doAssert peakBin(avg) == 20 and near(avg[20], 3, 0.05), $avg[20]
+
+block sixty_second_record_at_1_ms:
+  # 60001 samples at 1 ms pad to nfft 65536 (bin width 0.0153 Hz): the peak of
+  # each sinusoid is within one bin, a sinusoid on a bin reads its amplitude,
+  # and the average over a few rows agrees, with no allocation once reserved.
+  const win = 60001
+  let sp = initSpectrumPlan(float32, win, dtMs = 1)
+  doAssert sp.nfft == 65536 and sp.bins == 32769
+  var ws = initWorkspace()
+  ws.reserve(sp.workspaceSize)
+  var amp, phase = newSeq[float32](sp.bins)
+  for f in [0.37, 4.2, 61.7, 312.5, sp.binHz(1000)]:
+    var x = newSeq[float32](win)
+    x.addSinusoid(1, f, amp = 2)
+    sp.amplitudeInto(x, amp, phase, ws)
+    var k = 0
+    for i in 1..<amp.len:
+      if amp[i] > amp[k]: k = i
+    doAssert abs(sp.binHz(k) - f) <= sp.binHz(1), "f = " & $f & " peak at " &
+      $sp.binHz(k)
+    if f == sp.binHz(1000): doAssert near(amp[k], 2, 2e-3), $amp[k]
+  var g = cmpGather[float32](cmpX = 0, offsets = newSeq[float64](10), win, 1)
+  var row = newSeq[float32](win)
+  row.addSinusoid(1, sp.binHz(3000), amp = 1.5) # 45.8 Hz, on bin 3000
+  for r in 0..<10:
+    for j in 0..<win: g.data[r, j] = row[j]
+  let meta = initChunkMeta(g.rows, dtMs = 1)
+  var avg = newSeq[float64](sp.bins)
+  doAssert sp.averageAmplitudeInto(g.data, meta, 0, avg, ws) == 10
+  doAssert peakBin(avg) == 3000 and near(avg[3000], 1.5, 2e-3), $avg[3000]
+  let n = allocsIn:
+    discard sp.averageAmplitudeInto(g.data, meta, 0, avg, ws)
+  doAssert n == 0, $n & " allocations"

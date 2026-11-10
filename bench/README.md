@@ -61,3 +61,34 @@ How it got there (each step measured):
 An odd length runs a full-length complex FFT, so `nextFastLen` returns even lengths by
 default (2001 → 2048, not 2025). n = 1000 is the fastest per point because its work
 buffers (4 × 500 × 8 lanes × 4 B = 64 KB) nearly fit L1; at 2048 they are 256 KB (L2).
+
+### Long records (60 s at 1 ms)
+
+Same machine and flags, 200 traces, forward + inverse:
+
+| case | per trace and transform | ns per n·log₂n |
+|---|---|---|
+| f32 lanes n = 65536 (60001 samples padded to a power of two) | 233 µs | 0.22 |
+| f32 lanes n = 60000 (2⁵·3·5⁴) | 74 µs | 0.07 |
+| f32 one trace n = 65536 | 241 µs | 0.23 |
+
+A power-of-two length is about 3× slower than the 2·3·5 length near it at this size.
+Forward only, ns per n·log₂n and trace, from a sweep (5 samples each):
+
+| n | lanes | one trace |
+|---|---|---|
+| 32768 | 0.17 | 0.24 |
+| 61440 (2¹²·15) | 0.38 | 0.21 |
+| 60000 | 0.08 | 0.17 |
+| 65536 | 0.22 | 0.23 |
+| 122880 | 0.59 | 0.23 |
+| 131072 | 1.73 | 0.80 |
+
+- From m ≈ 30k complex points the 8-lane work buffers (4·m·8·4 B ≥ 4 MB) no longer fit
+  in cache, and batching stops paying.
+- Lengths with many factors of 2 alias in cache (Stockham strides of 2^k): 61440 and
+  131072 are the worst.
+- A 60 s record at 1 ms (65536) is still fine: about 0.12 ms per trace forward, so a
+  1000-trace spectrum average takes about 0.12 s on one thread.
+- Longer power-of-two records (131072 and up) would need a cache-blocked (four-step)
+  FFT; it is in PLAN.md "Later".

@@ -15,8 +15,10 @@
 ## **Window.** A plan covers `windowLen` samples, which are demeaned (unless
 ## `demean = false`), multiplied by a Tukey taper (a sin² ramp over
 ## `taperFraction` of the window at each end: 0 is a boxcar, 0.5 a Hann
-## window) and zero-padded to the FFT length `nfft` (by default
-## `nextFastLen(windowLen)`). Bin `k` is at `k / (nfft·dt)` Hz (`binHz`).
+## window) and zero-padded to the FFT length `nfft`. By default `nfft` is the
+## next power of two (`nextPowerOfTwo(windowLen)`, as most viewers do: a 60 s
+## record at 1 ms, 60001 samples, gives 65536); any 2·3·5-smooth length ≥ the
+## window may be passed instead. Bin `k` is at `k / (nfft·dt)` Hz (`binHz`).
 ##
 ## **Short windows.** A trace that ends inside the window (its live length)
 ## gives a shorter window, of `c` samples: it gets the same taper ramps, the
@@ -77,7 +79,7 @@ proc initSpectrumPlan*(T: typedesc[SampleType], windowLen: int, dtMs: float64,
     taperFraction = 0.1, nfft = 0, demean = true): SpectrumPlan[T] =
   ## A spectrum of windows of `windowLen` samples at `dtMs` ms, tapered over
   ## `taperFraction` (0 .. 0.5) of the window at each end and zero-padded to
-  ## `nfft` (0: `nextFastLen(windowLen)`). Raises `ValueError` for
+  ## `nfft` (0: `nextPowerOfTwo(windowLen)`). Raises `ValueError` for
   ## `windowLen < 1`, a `dtMs` that is not finite and positive, a taper
   ## fraction outside 0 .. 0.5, or an `nfft` shorter than the window or not
   ## 2·3·5-smooth.
@@ -87,7 +89,7 @@ proc initSpectrumPlan*(T: typedesc[SampleType], windowLen: int, dtMs: float64,
     badSpectrum("dtMs must be finite and > 0, got " & $dtMs)
   if not (taperFraction >= 0 and taperFraction <= 0.5):
     badSpectrum("taperFraction must be in 0 .. 0.5, got " & $taperFraction)
-  let n = if nfft == 0: nextFastLen(windowLen) else: nfft
+  let n = if nfft == 0: nextPowerOfTwo(windowLen) else: nfft
   if n < windowLen:
     badSpectrum("nfft " & $n & " is shorter than the window (" & $windowLen & ")")
   result.fft = initFftPlan(T, n) # raises for a length that is not smooth

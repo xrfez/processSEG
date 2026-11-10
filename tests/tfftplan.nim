@@ -107,6 +107,69 @@ block known_spectra:
     let want = if k == 3: 8.0 else: 0.0
     doAssert abs(re[k] - want) < 1e-13 and abs(im[k]) < 1e-13
 
+proc dftBin(x: openArray[float64], k: int): (float64, float64) =
+  ## One DFT bin, in float64 with the phase reduced exactly (j·k mod n).
+  let n = x.len
+  var ar, ai = 0.0
+  for j in 0..<n:
+    let a = -2 * PI * float64((j * k) mod n) / float64(n)
+    ar += x[j] * cos(a)
+    ai += x[j] * sin(a)
+  (ar, ai)
+
+block long_records:
+  # A 60 s record at 1 ms (60001 samples) pads to 65536; 60000 (2⁵·3·5⁴) and
+  # 131072 also work. f64 matches direct DFT bins, f32 matches f64, both
+  # round-trip, and the batched path matches the single one.
+  var rng = initRand(5)
+  var ws = initWorkspace()
+  for n in [60000, 65536, 131072]:
+    let x64 = signal(rng, n)
+    let p64 = initFftPlan(float64, n)
+    let p32 = initFftPlan(float32, n)
+    ws.reserve(p32.workspaceSize)
+    ws.reserve(p64.workspaceSize)
+    var r64, i64 = newSeq[float64](p64.bins)
+    p64.forward(x64, r64, i64, ws)
+    var top = 0.0
+    for k in 0..<p64.bins: top = max(top, hypot(r64[k], i64[k]))
+    for t in 0..<24:
+      let k = if t < 2: t * (p64.bins - 1) else: rng.rand(p64.bins - 1)
+      let (dr, di) = dftBin(x64, k)
+      let e = hypot(r64[k] - dr, i64[k] - di) / top
+      doAssert e <= 1e-12, "f64 n = " & $n & " bin " & $k & ": " & $e
+    var x32 = newSeq[float32](n)
+    for i in 0..<n: x32[i] = float32(x64[i])
+    var r32, i32 = newSeq[float32](p32.bins)
+    p32.forward(x32, r32, i32, ws)
+    let e32 = relErr(r32, i32, r64, i64)
+    doAssert e32 <= 1e-5, "f32 n = " & $n & ": " & $e32
+    var back64 = newSeq[float64](n)
+    p64.inverse(r64, i64, back64, ws)
+    var back32 = newSeq[float32](n)
+    p32.inverse(r32, i32, back32, ws)
+    for i in 0..<n:
+      doAssert abs(back64[i] - x64[i]) <= 1e-12
+      doAssert abs(float64(back32[i]) - x64[i]) <= 1e-5
+    # Lanes: lane l holds the signal scaled by l + 1.
+    var lx = newSeq[float32](n * fftLanes)
+    for j in 0..<n:
+      for l in 0..<fftLanes: lx[j * fftLanes + l] = x32[j] * float32(l + 1)
+    var lr, li = newSeq[float32](p32.bins * fftLanes)
+    p32.forwardLanes(lx, lr, li, ws)
+    var e = 0.0
+    for k in 0..<p32.bins:
+      for l in 0..<fftLanes:
+        let s = float32(l + 1)
+        e = max(e, hypot(float64(lr[k * fftLanes + l] - r32[k] * s),
+                         float64(li[k * fftLanes + l] - i32[k] * s)) / (top * s))
+    doAssert e <= 1e-5, "lanes n = " & $n & ": " & $e
+    p32.inverseLanes(lr, li, lx, ws)
+    for j in 0..<n:
+      for l in 0..<fftLanes:
+        doAssert abs(lx[j * fftLanes + l] / float32(l + 1) - x32[j]) <= 1e-5
+    echo "  n = ", n, ": f32 error ", e32
+
 block inverse_ignores_dc_and_nyquist_imag:
   var ws = initWorkspace()
   for n in [12, 15]:

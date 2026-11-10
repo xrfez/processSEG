@@ -225,7 +225,7 @@ toDbInto(amp, db)                       # 0 dB at the peak (or dbAbsolute)
 # x axis: sp.binHz(k), k in 0 ..< sp.bins
 ```
 
-The window is demeaned, Tukey-tapered and zero-padded; the average is over power across
+The window is demeaned, Tukey-tapered and zero-padded to the next power of two by default (a 60 s record at 1 ms, 60001 samples, gives nfft 65536, bins 0.015 Hz apart; pass `nfft` for another 2·3·5-smooth length); the average is over power across
 the live rows (dead, auxiliary and failed rows and padding past a trace's end are left
 out), and amplitudes are scaled so that a sinusoid of amplitude A on a bin reads A, also in a window shortened by a trace's end. The
 window is given in columns of the block: the viewer converts its time selection with the
