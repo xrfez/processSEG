@@ -14,6 +14,7 @@
 ## - `processSEG/gain/gain`: fixed dB gain, normalization (`NormalizePlan`), AGC (`AgcPlan`);
 ## - `processSEG/gain/curves`: time-variant gain (`GainCurve`, `GainCurvePlan`);
 ## - `processSEG/gain/stats`: per-trace and panel RMS, max and percentile clip;
+## - `processSEG/velocity/moveout`: LMO and NMO times for overlays (`Moveout`);
 ## - `processSEG/pipeline`: `Op`, `Pipeline`, `compile` → `PipelinePlan`, `apply`;
 ## - `processSEG/core/pool`: `ProcessPool`, persistent workers that apply plans;
 ## - `processSEG/adapters`: `chunkMeta` from a prefetch chunk or a trace read.
@@ -24,5 +25,6 @@ import processSEG/filter/[design, apply, iir]
 import processSEG/gain/[gain, curves, stats]
 import processSEG/[pipeline, adapters]
 import processSEG/core/pool
+import processSEG/velocity/moveout
 export types, rows, workspace, basic, mute, plan, spectrum, design, apply, iir,
-    gain, curves, stats, pipeline, adapters, pool
+    gain, curves, stats, pipeline, adapters, pool, moveout
