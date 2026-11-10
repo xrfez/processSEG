@@ -1,9 +1,9 @@
-## Core library module for processseg.
+## Core library module for processSEG.
 ## Implements exported types and library operations.
 
 type
   Context* = object
-    ## Operational state container for processseg.
+    ## Operational state container for processSEG.
     name*: string
     isActive*: bool
 

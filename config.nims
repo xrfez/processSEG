@@ -1,4 +1,4 @@
-# Strict build configuration and task orchestrator for processseg
+# Strict build configuration and task orchestrator for processSEG
 import std/[os, strutils]
 
 switch("outdir", "bin")
@@ -29,27 +29,27 @@ let zigccExe =
 
 task nimRelease, "Build native host-optimized binary (aggressive speed, march=native)":
   ## Compiles high-performance binary optimized strictly for the current host CPU.
-  selfExec "c -d:release -d:danger --opt:speed --passC:\"-march=native -mtune=native\" src/processseg.nim"
+  selfExec "c -d:release -d:danger --opt:speed --passC:\"-march=native -mtune=native\" src/processSEG.nim"
 
 task nimPortable, "Build portable binary for generic CPUs (stripped, baseline instructions)":
   ## Compiles stripped, portable binary targeting generic CPU baseline compatibility.
-  selfExec "c -d:release -d:baselineCpu --opt:size --passC:\"-mtune=generic\" --passL:\"-s\"" & baseTarget & "src/processseg.nim"
+  selfExec "c -d:release -d:baselineCpu --opt:size --passC:\"-mtune=generic\" --passL:\"-s\"" & baseTarget & "src/processSEG.nim"
 
 task nimDebug, "Build debug binary with stack traces and assertions":
   ## Compiles debug binary with full assertions, line tracing, and symbols.
-  selfExec "c --debuginfo:on --assertions:on --lineTrace:on --stackTrace:on src/processseg.nim"
+  selfExec "c --debuginfo:on --assertions:on --lineTrace:on --stackTrace:on src/processSEG.nim"
 
 task zigRelease, "Build native host-optimized binary using Zig CC (O3, march=native)":
   ## Compiles native binary using Zig toolchain with -O3 optimization for host CPU.
-  selfExec "c -d:zigcc --cc:clang --clang.exe:\"" & zigccExe & "\" --clang.linkerexe:\"" & zigccExe & "\" -d:release -d:danger --opt:speed --passC:\"-O3 -march=native\" src/processseg.nim"
+  selfExec "c -d:zigcc --cc:clang --clang.exe:\"" & zigccExe & "\" --clang.linkerexe:\"" & zigccExe & "\" -d:release -d:danger --opt:speed --passC:\"-O3 -march=native\" src/processSEG.nim"
 
 task zigPortable, "Build portable binary for generic CPUs using Zig CC (stripped, baseline instructions)":
   ## Compiles stripped binary using Zig toolchain targeting generic baseline CPUs and size reduction.
-  selfExec "c -d:zigcc --cc:clang --clang.exe:\"" & zigccExe & "\" --clang.linkerexe:\"" & zigccExe & "\" -d:release -d:baselineCpu --opt:size --passC:\"-Oz\" --passC:\"-mcpu=baseline\" --passL:\"-s\" src/processseg.nim"
+  selfExec "c -d:zigcc --cc:clang --clang.exe:\"" & zigccExe & "\" --clang.linkerexe:\"" & zigccExe & "\" -d:release -d:baselineCpu --opt:size --passC:\"-Oz\" --passC:\"-mcpu=baseline\" --passL:\"-s\" src/processSEG.nim"
 
 task zigDebug, "Build debug binary using Zig CC with debug symbols":
   ## Compiles debug binary using Zig toolchain preserving debug symbols.
-  selfExec "c -d:zigcc --cc:clang --clang.exe:\"" & zigccExe & "\" --clang.linkerexe:\"" & zigccExe & "\" --debuginfo:on src/processseg.nim"
+  selfExec "c -d:zigcc --cc:clang --clang.exe:\"" & zigccExe & "\" --clang.linkerexe:\"" & zigccExe & "\" --debuginfo:on src/processSEG.nim"
 
 task test, "Run test suite":
   ## Executes unittest suite.
@@ -60,13 +60,24 @@ task testRelease, "Run the test suite in -d:release and -d:danger builds":
   selfExec "c -r --verbosity:0 -d:release tests/test_all.nim"
   selfExec "c -r --verbosity:0 -d:danger tests/test_all.nim"
 
+proc nimSources(dir: string): seq[string] =
+  ## Every .nim file under `dir`, recursively (NimScript has no walkDirRec).
+  for f in listFiles(dir):
+    if f.endsWith(".nim"):
+      result.add f
+  for d in listDirs(dir):
+    result.add nimSources(d)
+
 task fmt, "Format codebase via nimpretty":
-  ## Formats source and test files in-place.
-  exec "nimpretty --indent:2 src/processseg.nim"
+  ## Formats every source, test and bench file in place.
+  for dir in ["src", "tests", "bench"]:
+    if dirExists(dir):
+      for f in nimSources(dir):
+        exec "nimpretty --indent:2 " & quoteShell(f)
 
 task docs, "Generate HTML documentation":
   ## Emits HTML documentation into htmldocs directory.
-  selfExec "doc --project --outdir:htmldocs src/processseg.nim"
+  selfExec "doc --project --outdir:htmldocs src/processSEG.nim"
 
 # ------------------------------------------------- parseSEG patch branch --
 # processSEG patches parseSEG in place, in the Atlas checkout deps/parseSEG,

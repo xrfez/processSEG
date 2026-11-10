@@ -2,7 +2,7 @@
 ## Exercises module functionality using the standard unittest framework.
 
 import std/unittest
-import ../src/processseg
+import ../src/processSEG
 
 suite "processseg test suite":
   test "basic initialization":

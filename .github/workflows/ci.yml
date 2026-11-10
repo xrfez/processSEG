@@ -36,12 +36,16 @@ jobs:
       # nimpretty has no check mode: format to a copy and fail on any diff.
       - name: Verify code formatting
         run: |
-          for f in src/*.nim tests/*.nim; do
+          # Every .nim file in src/, tests/ and bench/, subdirectories included.
+          shopt -s globstar nullglob
+          status=0
+          for f in src/**/*.nim tests/**/*.nim bench/**/*.nim; do
             out="$RUNNER_TEMP/fmt/$f"
             mkdir -p "$(dirname "$out")"
             nimpretty --indent:2 --out:"$out" "$f"
-            diff -u "$f" "$out"
+            diff -u "$f" "$out" || status=1
           done
+          exit $status
 
       - name: Run test suite
         run: nim test
