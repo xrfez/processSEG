@@ -28,7 +28,13 @@
 ## `Op` suffix (`demeanOp()`, while `demean(x)` is the kernel). An op's
 ## parameters are public fields, grouped per kind (`op.agc.windowMs`,
 ## `op.filter.spec`), so a flow can be edited in place; nothing is checked
-## until `compile`.
+## until `compile` (the specs and curves an op holds, such as `bandPass` or
+## `lmoMute`, check themselves when they are built).
+##
+## **Stale buffers.** A processed buffer is stale when the plan changed (its
+## `generation`) **or the keys did**: mutes read offsets, gain curves read
+## `t0Ms`, and every op reads the trace status. Tag buffers with both the
+## plan's generation and the file's `keysRevision`.
 ##
 ## **Rows.** As everywhere: every op processes the live rows, each up to its
 ## live length (`ChunkMeta`); dead, auxiliary and failed rows and the
@@ -55,7 +61,8 @@
 ## **Threads.** A plan is immutable: any number of threads may apply one
 ## plan at once, each with its own `Workspace` and disjoint output rows (see
 ## `ProcessPool` for a pool that does this). A plan holds seqs: share it by
-## reference or pointer, never copy it into a thread.
+## reference or pointer, never copy it into a thread (a copy allocates on
+## that thread).
 
 import std/[atomics, math]
 import parseSEG
@@ -73,8 +80,8 @@ type
     opGainDb     ## a fixed gain in dB (`gainDbOp`)
     opClip       ## clip to `lo .. hi` (`clipOp`)
     opPolarity   ## reverse the polarity (`polarityOp`)
-    opMuteTop    ## a top mute (`topMuteOp`)
-    opMuteBottom ## a bottom mute (`bottomMuteOp`)
+    opMuteTop    ## a top mute (`muteTopOp`)
+    opMuteBottom ## a bottom mute (`muteBottomOp`)
     opFilter     ## a zero-phase FFT filter (`filterOp`, `bandPassOp`)
     opIir        ## a Butterworth biquad filter (`iirOp`)
     opAgc        ## automatic gain control (`agcOp`)
@@ -198,12 +205,12 @@ func polarityOp*(): Op =
   ## Reverses the polarity.
   Op(kind: opPolarity)
 
-func topMuteOp*(curve: MuteCurve, taperMs = 0.0): Op =
+func muteTopOp*(curve: MuteCurve, taperMs = 0.0): Op =
   ## Zeroes each trace before its `curve` time, with a taper of `taperMs`
   ## on the muted side (`muteTop`).
   Op(kind: opMuteTop, mute: MuteParams(curve: curve, taperMs: taperMs))
 
-func bottomMuteOp*(curve: MuteCurve, taperMs = 0.0): Op =
+func muteBottomOp*(curve: MuteCurve, taperMs = 0.0): Op =
   ## Zeroes each trace after its `curve` time (`muteBottom`).
   Op(kind: opMuteBottom, mute: MuteParams(curve: curve, taperMs: taperMs))
 
@@ -304,13 +311,16 @@ proc compileOp[T](op: Op, dtMs: float64, samples: int): Step[T] =
   of opScale:
     if not op.factor.finite:
       raise newException(ValueError, "the factor must be finite, got " & $op.factor)
+    if not float64(T(op.factor)).finite:
+      raise newException(ValueError, "a factor of " & $op.factor &
+        " overflows " & $T)
     Step[T](kind: stScale, factor: op.factor)
   of opGainDb:
     if not op.dB.finite:
       raise newException(ValueError, "the gain must be finite, got " & $op.dB & " dB")
     let f = dbToFactor(op.dB)
-    if not f.finite:
-      raise newException(ValueError, "a gain of " & $op.dB & " dB overflows")
+    if not f.finite or not float64(T(f)).finite:
+      raise newException(ValueError, "a gain of " & $op.dB & " dB overflows " & $T)
     Step[T](kind: stScale, factor: f)
   of opClip:
     let c = op.clip
@@ -392,8 +402,43 @@ proc compile*(p: Pipeline, T: typedesc[SampleType], dtMs: float64,
   result.parts.add start ..< result.steps.len # one part even when empty
   result.generation = lastGeneration.fetchAdd(1) + 1
 
+proc requiredMargin*(p: Pipeline, dtMs: float64): int =
+  ## The `requiredMargin` of `p` compiled at `dtMs`, without compiling it:
+  ## it does not depend on the trace length, so a viewer can size a zoom
+  ## window's decode before building the plan for its width. Raises
+  ## `ValueError` as `compile` for an op that sets a margin (a filter, an
+  ## IIR filter or an AGC); other ops are not checked here.
+  if not dtMs.finite or dtMs <= 0:
+    raise newException(ValueError, "dtMs must be finite and positive, got " & $dtMs)
+  for i, op in p.ops:
+    try:
+      case op.kind
+      of opFilter:
+        op.filter.spec.validate(dtMs)
+        result += op.filter.spec.impulseLength(dtMs)
+      of opIir:
+        result += initIirPlan(float64, op.iir.spec, dtMs, 1, op.iir.phase,
+          op.iir.trend).requiredMargin
+      of opAgc:
+        let a = op.agc
+        result += initAgcPlan(a.windowMs, dtMs, 1, a.mode, a.target,
+          a.epsilon).requiredMargin
+      else: discard
+    except ValueError as e:
+      badOp(i, op.kind, e.msg)
+
+func decodeWindow*(shown: Slice[int], margin, traceLen: int): Slice[int] {.
+    raises: [].} =
+  ## The samples to decode for a zoom that shows samples `shown` of traces
+  ## `traceLen` samples long: `shown` widened by `margin` on each side and
+  ## clamped to `0 ..< traceLen`. Decode it (as the prefetcher's
+  ## `firstSample` and `cols`, or `readTracesInto`'s sample window), process
+  ## it, and draw columns `shown.a − result.a .. shown.b − result.a`.
+  max(0, shown.a - margin) .. min(traceLen - 1, shown.b + margin)
+
 func generation*[T](plan: PipelinePlan[T]): uint64 {.inline, raises: [].} =
-  ## The plan's id: larger for every later `compile` in the process.
+  ## The plan's id: never 0, and larger for every later `compile` in the
+  ## process, so 0 can mean "never processed".
   plan.generation
 
 func dtMs*[T](plan: PipelinePlan[T]): float64 {.inline, raises: [].} =
@@ -401,7 +446,9 @@ func dtMs*[T](plan: PipelinePlan[T]): float64 {.inline, raises: [].} =
   plan.dtMs
 
 func samples*[T](plan: PipelinePlan[T]): int {.inline, raises: [].} =
-  ## The longest trace (widest block) the plan takes.
+  ## The widest block the plan takes. Any narrower block works too (a zoom
+  ## window with its margin): there is no need to recompile for it, only
+  ## the cost of FFTs sized for `samples`.
   plan.samples
 
 func len*[T](plan: PipelinePlan[T]): int {.inline, raises: [].} =
@@ -425,8 +472,11 @@ proc reserve*[T](ws: var Workspace, plan: PipelinePlan[T]) =
 
 # -------------------------------------------------------------------- apply --
 #
-# The internals below are shared with `ProcessPool`: `checkApply` runs once on
-# the caller's thread, then `panelFactorOf` and `runPart` may run on workers.
+# The parts API below is what `ProcessPool` uses, and what a caller that splits
+# the rows over its own threads uses to keep per-panel normalizations right:
+# `checkApply` once on the caller's thread, then per part: `panelFactorOf` over
+# the whole block (one thread) if `partNeedsPanel`, then `runPart` on each
+# thread's rows (`RowBlock.sub`, `ChunkMeta.sub`).
 
 const tileBytes = 256 * 1024
 
@@ -435,13 +485,24 @@ func tileRows(cols, size: int): int =
   let r = tileBytes div max(1, cols * size)
   max(fftLanes, r div fftLanes * fftLanes)
 
-proc checkApply*[T](plan: PipelinePlan[T], dst: RowBlock[T], meta: ChunkMeta) =
-  ## Checks that `plan` can be applied to `dst` with `meta`, as `apply` does
-  ## before touching a sample. Raises `ValueError` otherwise. For callers
-  ## that split the work themselves (`ProcessPool`).
+proc checkApply*[T](plan: PipelinePlan[T], src, dst: RowBlock[T],
+    meta: ChunkMeta) =
+  ## Checks that `plan` can be applied from `src` (no rows: in place) into
+  ## `dst` with `meta`, as `apply` does before touching a sample: the shapes,
+  ## `dtMs`, the width, and that `src` and `dst` are the same block or do
+  ## not overlap. Raises `ValueError` otherwise.
   if plan.parts.len == 0:
     badApply("a PipelinePlan must come from compile")
   meta.checkShape(dst)
+  if src.len > 0:
+    if src.len != dst.len or src.cols != dst.cols:
+      badApply("src is " & $src.len & " × " & $src.cols & ", dst " & $dst.len &
+        " × " & $dst.cols)
+    let bytes = dst.len * dst.cols * sizeof(T)
+    let s0 = cast[uint](src.rowPtr(0))
+    let d0 = cast[uint](dst.rowPtr(0))
+    if s0 != d0 and s0 < d0 + uint(bytes) and d0 < s0 + uint(bytes):
+      badApply("src and dst overlap without being the same block")
   if abs(meta.dtMs - plan.dtMs) > 1e-9 * plan.dtMs:
     badApply("the plan is for dtMs = " & $plan.dtMs & ", the rows have " & $meta.dtMs)
   if dst.cols > plan.samples:
@@ -451,7 +512,7 @@ proc checkApply*[T](plan: PipelinePlan[T], dst: RowBlock[T], meta: ChunkMeta) =
 func partCount*[T](plan: PipelinePlan[T]): int {.inline, raises: [].} =
   ## The parts `apply` runs one after the other: 1, plus 1 per per-panel
   ## normalization after the first op. Each part but the first starts with
-  ## one. For `ProcessPool`.
+  ## one.
   plan.parts.len
 
 func partNeedsPanel*[T](plan: PipelinePlan[T], part: int): bool {.inline,
@@ -465,7 +526,12 @@ proc panelFactorOf*[T](plan: PipelinePlan[T], part: int, b: RowBlock[T],
     meta: ChunkMeta, ws: var Workspace): float64 {.raises: [].} =
   ## The factor of part `part`'s per-panel normalization over the whole
   ## block `b` (the data as the previous parts left it), or NaN when it
-  ## leaves the block alone. Needs `checkApply` first.
+  ## leaves the block alone. Needs `checkApply` first; an
+  ## `AssertionDefect` for a part that does not start with a per-panel
+  ## normalization, or a `ws` smaller than `plan.workspaceSize`.
+  doAssert part >= 0 and part < plan.parts.len and plan.partNeedsPanel(part),
+    "part " & $part & " has no per-panel normalization"
+  doAssert ws.fits(plan.ws), "reserve the workspace for the plan first"
   try:
     panelFactor(b, meta, plan.steps[plan.parts[part].a].norm, ws)
   except ValueError as e:
@@ -494,7 +560,10 @@ proc runPart*[T](plan: PipelinePlan[T], part: int, src, dst: RowBlock[T],
   ## `src` has rows, each tile is first copied from `src` (the same shape as
   ## `dst`), so pass it for the first part of a `src → dst` apply only. A
   ## finite `factor` (from `panelFactorOf`) scales the live rows first. `ws`
-  ## must hold `plan.workspaceSize`. Needs `checkApply` first.
+  ## must hold `plan.workspaceSize` (an `AssertionDefect` otherwise, as for
+  ## a part outside `0 ..< partCount`). Needs `checkApply` first.
+  doAssert part >= 0 and part < plan.parts.len, "no part " & $part
+  doAssert ws.fits(plan.ws), "reserve the workspace for the plan first"
   let r = plan.parts[part]
   let first = (if plan.partNeedsPanel(part): r.a + 1 else: r.a)
   let copy = src.len > 0
@@ -522,7 +591,7 @@ proc runPart*[T](plan: PipelinePlan[T], part: int, src, dst: RowBlock[T],
 
 proc applyBlocks[T](plan: PipelinePlan[T], src, dst: RowBlock[T],
     meta: ChunkMeta, ws: var Workspace) =
-  plan.checkApply(dst, meta)
+  plan.checkApply(src, dst, meta)
   doAssert ws.fits(plan.ws), "reserve the workspace for the plan first"
   for part in 0 ..< plan.parts.len:
     let from0 = part == 0 and src.len > 0
@@ -546,7 +615,8 @@ proc apply*[T: SampleType](plan: PipelinePlan[T], src, dst: RowBlock[T],
   ## otherwise), leaving `src` as it is. Rows that are not live are copied
   ## unchanged. The copy is fused into the first op, tile by tile. `src` and
   ## `dst` must not overlap, unless they are the same block (then it runs in
-  ## place). Raises as the in-place form.
+  ## place: raises `ValueError` for a partial overlap). Raises as the
+  ## in-place form. The caller reserves `ws`: `apply` never grows it.
   if src.len != dst.len or src.cols != dst.cols:
     badApply("src is " & $src.len & " × " & $src.cols & ", dst " & $dst.len &
       " × " & $dst.cols)

@@ -67,9 +67,12 @@ proc linearMoveout*(velocity: float64, t0Ms = 0.0): Moveout =
   Moveout(kind: mvLinear, velocity: velocity, t0Ms: t0Ms)
 
 proc hyperbolicMoveout*(velocity: float64, t0Ms = 0.0): Moveout =
-  ## Hyperbolic moveout at `velocity` with the zero-offset time `t0Ms`.
-  ## Raises `ValueError` as `linearMoveout`.
+  ## Hyperbolic moveout at `velocity` with the zero-offset time `t0Ms`
+  ## (≥ 0: a two-way time; a negative one would act as |t0Ms|). Raises
+  ## `ValueError` as `linearMoveout`, and for `t0Ms < 0`.
   checkMoveout(velocity, t0Ms)
+  if t0Ms < 0:
+    raise newException(ValueError, "a hyperbolic moveout needs t0Ms ≥ 0, got " & $t0Ms)
   Moveout(kind: mvHyperbolic, velocity: velocity, t0Ms: t0Ms)
 
 func kind*(m: Moveout): MoveoutKind {.inline, raises: [].} =
@@ -106,6 +109,13 @@ proc moveoutTimesInto*(rows: TraceRows, m: Moveout,
   checkLen(times.len, rows.len)
   for i in 0 ..< rows.len:
     times[i] = m.timeMs(rows.keysAt(i).offset)
+
+proc moveoutTimesInto*(meta: ChunkMeta, m: Moveout,
+    times: var openArray[float64]) =
+  ## `moveoutTimesInto(meta.rows, m, times)`: the times in ms for the rows
+  ## of a meta (which always has keys). Raises `ValueError` when
+  ## `times.len != meta.len`.
+  moveoutTimesInto(meta.rows, m, times)
 
 proc moveoutColumnsInto*(meta: ChunkMeta, m: Moveout,
     cols: var openArray[float64]) =

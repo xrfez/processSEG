@@ -26,6 +26,7 @@ type
     raw*: PrefetchChunk[float32]
     processed*: Tensor[float32]
     generation*: uint64
+    keysRevision*: int ## the keys revision `processed` was made with
     plan: int ## index into `plans`
     ticks*: seq[float64] ## moveout columns per row
     ticksRevision*: int  ## `keysRevision` the ticks were made from (-1: none)
@@ -40,6 +41,7 @@ type
     plans: seq[PipelinePlan[float32]]
     keys: seq[PlanKey]
     entries*: seq[Entry]
+    keysRevision*: int ## the current keys revision (the file's `keysRevision`)
     reprocessed*: int ## buffers processed by the last `frame`
     drawn*: float64   ## a checksum of what the last `frame` "drew"
 
@@ -72,6 +74,7 @@ proc load*(v: var ViewerSim, f: SeismicFile, traces: Slice[int],
     chunkTraces = 64, firstSample = 0, cols = -1, workers = 2) =
   ## Prefetches `traces` (uniform chunks) into the raw cache, appending
   ## entries. The views in the chunks point into `f`'s keys.
+  v.keysRevision = f.keysRevision
   var p = newPrefetcher[float32](f, traces, chunkTraces = chunkTraces,
     firstSample = firstSample, cols = cols, workers = workers, uniform = true)
   defer: p.close()
@@ -87,6 +90,14 @@ proc loadSynthetic*(v: var ViewerSim, rows: TraceRows, data: Tensor[float32],
     samples: data.clone(), failed: failed.len, failedRows: failed,
     firstSample: firstSample, rows: rows)
   v.addEntry(move c)
+
+proc refresh*(v: var ViewerSim, f: SeismicFile) =
+  ## After `applySurvey` or a header edit: keeps the raw samples (they did
+  ## not change), rebuilds each chunk's view (range mode, as `load` makes
+  ## them) and takes the new keys revision, so every buffer is stale.
+  for e in v.entries.mitems:
+    e.raw.rows = f.rowsOf(e.raw.first ..< e.raw.first + e.raw.count)
+  v.keysRevision = f.keysRevision
 
 proc clearCache*(v: var ViewerSim) =
   ## Drops every entry (after `applySurvey` their views are stale).
@@ -104,8 +115,10 @@ template edit*(v: var ViewerSim, body: untyped) =
   v.recompile
 
 func stale*(v: ViewerSim, e: Entry): bool =
-  ## The processed buffer was not made by the current plan.
-  e.generation != v.plans[e.plan].generation
+  ## The processed buffer was not made by the current plan, or from the
+  ## current keys (mutes read offsets, gain curves `t0Ms`, every op the
+  ## status).
+  e.generation != v.plans[e.plan].generation or e.keysRevision != v.keysRevision
 
 proc frame*(v: var ViewerSim) =
   ## One frame: reprocess every stale buffer from its raw chunk with the
@@ -114,10 +127,11 @@ proc frame*(v: var ViewerSim) =
   v.reprocessed = 0
   for e in v.entries.mitems:
     let plan = v.plans[e.plan].addr
-    if e.generation != plan[].generation:
+    if e.generation != plan[].generation or e.keysRevision != v.keysRevision:
       let meta = chunkMeta(e.raw)
       v.pool.apply(plan[], e.raw.samples, e.processed, meta)
       e.generation = plan[].generation
+      e.keysRevision = v.keysRevision
       inc v.reprocessed
   var s = 0.0
   for e in v.entries:
@@ -147,15 +161,16 @@ proc zoomWindow*(v: var ViewerSim, f: SeismicFile, traces: Slice[int],
     shown: Slice[int], marginScale = 1.0): Tensor[float32] =
   ## What a zoomed view of samples `shown` of `traces` draws: it decodes the
   ## window widened by the plan's `requiredMargin` on each side (clamped at
-  ## sample 0), processes it, and returns the columns of `shown`. The plan
-  ## for the widened width is compiled first, so its margin sets the decode.
+  ## sample 0 and the trace end), processes it, and returns the columns of
+  ## `shown`. The margin comes from the flow, before the plan for the
+  ## window's width is compiled.
   ## `marginScale` widens the margin (a viewer's choice; see the test).
   let dtMs = chunkMeta(f, traces).dtMs
   # The margin does not depend on the width; compile once to learn it.
-  let m = int(ceil(marginScale * float64(v.flow.compile(float32, dtMs,
-    shown.len).requiredMargin)))
-  let first = max(0, shown.a - m)
-  let cols = shown.b + m + 1 - first
+  let m = int(ceil(marginScale * float64(v.flow.requiredMargin(dtMs))))
+  let win = decodeWindow(shown, m, f.rowsOf(traces).numSamples(0))
+  let first = win.a
+  let cols = win.len
   var p = newPrefetcher[float32](f, traces, chunkTraces = traces.len,
     firstSample = first, cols = cols, uniform = true)
   defer: p.close()

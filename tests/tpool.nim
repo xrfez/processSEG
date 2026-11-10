@@ -29,7 +29,7 @@ proc flow(): Pipeline =
                 bandPassOp(Corners(f1: 4, f2: 8, f3: 60, f4: 80)),
                 normalizeOp(normRms, perPanel, target = 2),
                 agcOp(windowMs = 300),
-                topMuteOp(lmoMute(2500), taperMs = 20),
+                muteTopOp(lmoMute(2500), taperMs = 20),
                 normalizeOp(normPercentile, perPanel, percentile = 95),
                 gainDbOp(-3)])
 
@@ -98,6 +98,10 @@ block moves:
   var a = newProcessPool(2)
   var b = move a
   b.ping
+  doAssert a.workers == 0 and b.workers == 2
+  doAssertRaises AssertionDefect: a.ping
+  var never: ProcessPool
+  doAssert never.workers == 0
   var pools: seq[ProcessPool]
   pools.add newProcessPool(2)
   pools.add move b
@@ -167,3 +171,23 @@ block no_allocation_in_steady_state:
   doAssert allocsIn(pool.apply(plan, g.data, dst, meta)) == 0
   doAssert allocsIn(pool.apply(plan, dst, meta)) == 0
   doAssert allocsIn(pool.ping) == 0
+
+block float64_data:
+  var offs = newSeq[float64](37)
+  var g = cmpGather[float64](0, offs, 700, dtMs = 2)
+  for r in 0..<37:
+    var x = newSeq[float64](700)
+    x.addNoise(1, seed = 40 + r)
+    x.addDc(2)
+    for j in 0..<700: g.data[r, j] = x[j] * float64(1 + r)
+  let meta = initChunkMeta(g.rows, dtMs = 2)
+  let plan = flow().compile(float64, 2, 700)
+  var ws = initWorkspace()
+  ws.reserve(plan)
+  var want = zeros[float64](37, 700)
+  plan.apply(g.data, want, meta, ws)
+  var pool = newProcessPool(3)
+  var got = zeros[float64](37, 700)
+  pool.apply(plan, g.data, got, meta)
+  for r in 0..<37:
+    for j in 0..<700: doAssert got[r, j] == want[r, j]

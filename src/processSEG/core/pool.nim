@@ -24,10 +24,12 @@
 ## its factor is computed by one worker over every row, then the next part
 ## of the plan runs on all workers again.
 ##
-## **What crosses threads.** Tensors and seqs are reference counted without
-## atomics under ORC, so none crosses a thread: `apply` passes raw pointers
-## to the plan, the rows and the meta, and because it blocks until every
-## worker is done, they outlive the work.
+## **What crosses threads.** No managed value does: a tensor's storage is
+## reference counted without atomics, and copying a seq (a plan holds some)
+## allocates on the thread that copies it. `apply` passes raw pointers to the
+## plan, the rows and the meta, and because it blocks until every worker is
+## done, they outlive the work. Each worker's `Workspace` is its own thread's
+## variable.
 ##
 ## **Callers.** One job runs at a time per pool; a second caller (from
 ## another thread, through a pointer to the pool) waits for the first to
@@ -128,11 +130,15 @@ proc newProcessPool*(workers = 4): ProcessPool =
     sizeof(Thread[WorkerArg]) * workers))
   result.state = s
   for i in 0 ..< workers:
-    createThread(s.threads[i], workerLoop, WorkerArg(state: s, index: i))
+    try:
+      createThread(s.threads[i], workerLoop, WorkerArg(state: s, index: i))
+    except ResourceExhaustedError:
+      s.workers = i # =destroy joins only the threads that started
+      raise
 
 func workers*(p: ProcessPool): int {.inline, raises: [].} =
-  ## The number of worker threads.
-  p.state.workers
+  ## The number of worker threads (0 for a pool moved from or never made).
+  if p.state == nil: 0 else: p.state.workers
 
 proc run(s: ptr PoolState, fn: JobFn, ctx: pointer) {.raises: [].} =
   ## Runs `fn` on every worker and waits for all of them. The caller holds
@@ -153,7 +159,9 @@ proc runEmpty(ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
 
 proc ping*(p: ProcessPool) =
   ## Runs an empty job on every worker and waits: the pool's per-job
-  ## overhead, for benchmarks.
+  ## overhead, for benchmarks; also a way to check the workers are up. An
+  ## `AssertionDefect` for a pool moved from or never made.
+  doAssert p.state != nil, "a ProcessPool must come from newProcessPool"
   acquire p.state.call
   run(p.state, runEmpty, nil)
   release p.state.call
@@ -199,7 +207,7 @@ proc panelJob[T](ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
 proc applyBlocks[T](p: ProcessPool, plan: PipelinePlan[T], src,
     dst: RowBlock[T], meta: ChunkMeta) =
   doAssert p.state != nil, "a ProcessPool must come from newProcessPool"
-  plan.checkApply(dst, meta)
+  plan.checkApply(src, dst, meta)
   var ctx = ApplyCtx[T](plan: unsafeAddr plan, src: src, dst: dst, meta: meta,
     workers: p.state.workers)
   acquire p.state.call

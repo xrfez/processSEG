@@ -5,7 +5,7 @@
 ## and moveout ticks made stale by `applySurvey`.
 
 import std/[assertions, math, os]
-import parseSEG, processSEG
+import processSEG
 import utils/[allocs, demo, synth, viewersim]
 
 proc flow(): Pipeline =
@@ -152,6 +152,31 @@ block ticks_and_apply_survey:
   doAssert abs(meta.keys(0).offset - 500) < 1e-9
   let want = (20 + 1000 * 500 / 1800 - meta.t0Ms(0)) / meta.dtMs
   doAssert abs(v.entries[0].ticks[0] - want) < 1e-9
+
+block keys_change_marks_buffers_stale:
+  # A mute reads offsets: after a join the processed buffers are stale even
+  # though the plan is the same, and the raw cache is kept.
+  let path = getTempDir() / "processseg_viewer_record2.sgd"
+  copyFile(demoDir() / "record.sgd", path)
+  var f = openSeismic(path, keys = true)
+  defer: f.close()
+  var v = initViewerSim(initPipeline([muteTopOp(lmoMute(1800), taperMs = 10),
+                                      agcOp(windowMs = 200)]), workers = 2)
+  v.load(f, 0 ..< f.len)
+  v.frame
+  let before = v.entries[0].processed.clone()
+  var g: SurveyGeometry
+  g.addReceiver(10, 104, 1, 1000, 2000, 50)
+  g.addSource(20, 99.5, 1, 1300, 2400, 40)
+  doAssert f.applySurvey(g) == 1
+  v.refresh(f)
+  doAssert v.stale(v.entries[0])
+  v.frame
+  doAssert v.reprocessed == 1
+  doAssert maxDiff(v.entries[0].processed, singleThread(v.flow, v.entries[0])) == 0
+  doAssert maxDiff(v.entries[0].processed, before) > 0 # the mute now applies
+  v.frame
+  doAssert v.reprocessed == 0
 
 block line_sg2_ticks:
   var f = openSeismic(demoDir() / "line.sg2", keys = true)

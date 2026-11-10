@@ -67,6 +67,8 @@ block validation_and_allocation:
     doAssertRaises ValueError: discard linearMoveout(v)
     doAssertRaises ValueError: discard hyperbolicMoveout(v)
   doAssertRaises ValueError: discard linearMoveout(1000, t0Ms = NaN)
+  doAssertRaises ValueError: discard hyperbolicMoveout(1000, t0Ms = -1)
+  doAssert linearMoveout(1000, t0Ms = -50).timeMs(100) == 50 # a shift
   var g = cmpGather[float32](0, [100.0, 200], 10, dtMs = 2)
   let meta = initChunkMeta(g.rows, dtMs = 2)
   var short = newSeq[float64](1)
@@ -75,4 +77,7 @@ block validation_and_allocation:
   var t = newSeq[float64](2)
   let h = hyperbolicMoveout(2000)
   doAssert allocsIn(moveoutTimesInto(g.rows, h, t)) == 0
+  var t2 = newSeq[float64](2)
+  moveoutTimesInto(meta, h, t2)
+  doAssert t2 == t
   doAssert allocsIn(moveoutColumnsInto(meta, h, t)) == 0

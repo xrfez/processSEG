@@ -17,7 +17,8 @@ acts out the viewer loop it describes, as a test.
 Dependencies point one way: `viewer → processSEG → parseSEG`, and `viewer → parseSEG`
 directly. processSEG imports parseSEG for its tensor type (Arraymancer `Tensor[T]`, which
 parseSEG re-exports), for the per-trace data model (`TraceKeys` and the `TraceRows` view),
-and, in its adapter and batch modules only, for `SeismicFile` and the prefetcher.
+and, in its adapter and batch modules only, for `SeismicFile` and the prefetcher. The
+`processSEG` umbrella re-exports parseSEG, so a viewer needs only `import processSEG`.
 processSEG adds no C dependency: its FFT is pure Nim (mixed radix 2/3/4/5, batched across
 traces).
 
@@ -37,10 +38,20 @@ on data from anywhere. Two thin layers sit on top of it:
   the keys' `intervalUs`), its window origin (`c.firstSample` or `samples.a`) and its
   failed rows (`c.failedRows`, or the list filled by `readTracesInto(..., failedRows)`).
   Building one costs a single pass over the rows, to check that their intervals agree, and
-  no allocation. A chunk's meta is valid until the chunk is filled again. Headers without
+  no allocation. Headers without
   an interval (SEG-Y leaves it 0 at times) raise `ValueError` asking for `dtMs`, which
   every `chunkMeta` takes as an override.
-- **Batch drivers** (`processSEG/batch`): jobs over a whole file, such as a brute stack or
+
+  **A raw cache keeps chunks after the prefetcher is closed or seeks.** That is safe:
+  a chunk's `rows` view points into the file's index, so it stays valid while the file
+  is open and its index unchanged (parseSEG documents it as "until the prefetcher's
+  `close`" because the prefetcher keeps the index alive for a file closed under it).
+  Moving a chunk, or a cache entry holding it, into a growing `seq` keeps its
+  `failedRows` storage in place. A meta is cheap, so build it per apply
+  (`chunkMeta(c)`) rather than storing it. After `applySurvey` or a header edit, rebuild
+  the views (`c.rows = f.rowsOf(c.first ..< c.first + c.count)` for range-mode chunks;
+  selection-mode chunks map `first` through the selection) and keep the raw samples.
+- **Batch drivers** (`processSEG/batch`, *planned for Phase 7*): jobs over a whole file, such as a brute stack or
   a first-break pass. They take a `SeismicFile` and run processing inside parseSEG's
   prefetcher, through its `transform` hook, with one `Workspace` per prefetch worker. They
   report progress through a `Progress`-style hook that can cancel, and return in-memory
@@ -165,7 +176,7 @@ flow[2].agc.windowMs = 300                # a slider moved: edit the op, recompi
 ```
 
 - **Ops** are plain data: an `Op` variant built by `demeanOp`, `detrendOp`, `scaleOp`,
-  `gainDbOp`, `clipOp`, `polarityOp`, `topMuteOp`, `bottomMuteOp`, `filterOp`
+  `gainDbOp`, `clipOp`, `polarityOp`, `muteTopOp`, `muteBottomOp`, `filterOp`
   (`bandPassOp` for the common case), `iirOp`, `agcOp`, `normalizeOp` and `gainCurveOp`.
   Their parameters are public fields grouped per kind (`op.agc.windowMs`,
   `op.filter.spec`, `op.mute.taperMs`), and a `Pipeline` supports `add`, `insert`,
@@ -180,12 +191,20 @@ flow[2].agc.windowMs = 300                # a slider moved: edit the op, recompi
   operation (each tile is copied just before its first op), never a separate pass. `dst`
   is not resized: allocate it once per cached chunk. A batch job with no raw cache works in place.
 - **Recompiling is cheap** (microseconds to a few ms), so the viewer can recompile on every
-  slider event, or on a zoom that changes the trace length. `ws.reserve(plan)` is a no-op
-  when the workspace is already big enough. The viewer tags each processed buffer with the
-  plan's generation and reprocesses any buffer whose generation is stale. Generations
-  increase across every plan the process compiles, so "not equal to the current plan's"
-  means stale. Keep one plan per sample interval and row width: a uniform prefetch of a
-  mixed SEG-D file gives chunks at several intervals.
+  slider event. A plan takes any block up to `plan.samples` wide, so a zoom window needs
+  no recompile (one compiled for the window's width runs smaller FFTs). Keep one plan per
+  sample interval: a uniform prefetch of a mixed SEG-D file gives chunks at several
+  intervals. `ws.reserve(plan)` is a no-op when the workspace is already big enough;
+  `apply` never grows it (an `AssertionDefect` if it is too small).
+- **Stale buffers.** Tag each processed buffer with the plan's `generation` **and** the
+  file's `keysRevision`, and reprocess it when either differs: mutes read offsets, gain
+  curves read `t0Ms`, and every op reads the trace status, so a join or a header edit
+  changes the output of an unchanged plan. Generations are never 0 and increase across
+  every plan the process compiles, so 0 can mean "never processed".
+- **What allocates:** `compile`, `newProcessPool`, `reserve` when it grows, and the first
+  `pool.apply` after a plan needing more scratch than any before (each worker grows its
+  workspace). Every other `apply`, `pool.apply`, `chunkMeta(c)`, stats, spectrum and
+  moveout call allocates nothing.
 - **Threads.** processSEG offers three ways to run, from the simplest to the most control:
   1. **No threads.** `plan.apply(raw, processed, meta, ws)` on any thread. Kernels touch no
      globals, so several threads can each call `apply` with their own `Workspace`.
@@ -204,21 +223,29 @@ flow[2].agc.windowMs = 300                # a slider moved: edit the op, recompi
      parseSEG's decode workers while the chunk is still in cache, with one `Workspace` per
      worker passed through the `user` pointer.
 
-  Arraymancer tensors and Nim seqs are ref-counted, and the count is not atomic, so no
-  tensor, seq or plan value crosses a thread. The pool turns its arguments into raw
-  pointers internally, and because `pool.apply` blocks until every worker is done, the
-  data outlives the work. A viewer with its own job system uses the first form from each
-  of its threads instead.
+  No managed value crosses a thread: a tensor's storage is reference counted without
+  atomics, and copying a seq (a plan holds some) allocates on the thread that copies it.
+  The pool turns its arguments into raw pointers internally, and because `pool.apply`
+  blocks until every worker is done, the data outlives the work. A viewer with its own job
+  system uses the first form from each of its threads instead, on its own rows
+  (`RowBlock.sub`, `ChunkMeta.sub`). A per-panel normalization needs the whole panel: such
+  a viewer runs the plan part by part (`checkApply`, then per part `panelFactorOf` on
+  one thread if `partNeedsPanel`, then `runPart` on every thread's rows), as the pool
+  does.
 
 ## Sample windows and edge effects
 
 Filters and AGC need context beyond the samples on screen. A zoomed view that decodes
 only samples `a..b` would show edge artefacts at both ends of the window.
 
-- `requiredMargin(plan)` gives the extra samples to decode on each side. It comes from
-  the impulse-response length of the filters and from half the AGC window.
-- The viewer decodes `max(0, a − m) .. b + m` and sets `firstSample` in the `ChunkMeta`
-  to match. After processing, it draws `a..b`.
+- `plan.requiredMargin` gives the extra samples to decode on each side: the sum of the
+  filters' impulse-response lengths and the half AGC windows. `flow.requiredMargin(dtMs)`
+  gives the same number from the `Pipeline` without compiling it.
+- `decodeWindow(a .. b, m, traceLen)` is `max(0, a − m) .. min(traceLen − 1, b + m)`.
+  The viewer decodes it (the prefetcher's `firstSample` and `cols`, or
+  `readTracesInto`'s sample window; columns past a shorter trace's end come back zero
+  and are outside its live length), builds the meta (`chunkMeta(c)` picks up
+  `c.firstSample`), processes, and draws columns `a − w.a .. b − w.a`.
 
 At the true ends of a trace, processSEG does the edge handling itself:
 
@@ -252,7 +279,8 @@ without it.
 The impulse length `L` holds 99.9 % of the energy of the response or of its complement
 (a narrow low-cut ramp is long: 0.5–1 Hz at 2 ms is 881 samples, 1.8 s), each edge and
 notch measured on its own, so the narrowest one sets it. A window decoded with `m`
-samples each side matches the whole trace filtered to within 1 % of the peak (tested
+samples each side matches the whole trace filtered to within 1 % of the traces' peak,
+not the window's own (see below; tested
 for FFT and IIR filters, zero and minimum phase; a minimum-phase margin holds 99.99 % of
 its causal impulse, since its whole error comes from the history before the window).
 
@@ -365,7 +393,7 @@ the ticks drift from the first breaks across a spread, the geometry is suspect.
 processSEG's QC module can also score this fit automatically, with an offset-binned or
 two-segment fit, because land refractor velocities vary.
 
-## Batch results: brute stack
+## Batch results: brute stack (planned, Phase 7)
 
 `bruteStack(f, velocity, binning, flow, opts, progress)` reads the file through parseSEG.
 On each trace it runs the pre-stack flow (offset-variant mute, elevation statics, filter,
@@ -425,15 +453,18 @@ workspaces.
    `pool.apply(plan, raw, processed, meta)` into a processed buffer allocated once per
    cached chunk, tag the result with `plan.generation`, and draw. (Or call `plan.apply` from your own threads,
    each with its own `Workspace` and `reserve(plan)`.) Apply fixed or normalized gain as a
-   shader uniform from `traceStats`, if the GPU is used.
-6. For zoom windows, decode with `plan.requiredMargin` samples each side (the prefetcher's
-   `firstSample` and `cols`; `chunkMeta(c)` picks up `c.firstSample`), process, and draw
-   the shown columns. See "Sample windows" for what the margin promises.
+   shader uniform from `traceStatsInto` or `panelStats` (or `panelFactor`), if the GPU
+   is used.
+6. For zoom windows, decode `decodeWindow(shown, flow.requiredMargin(dtMs), traceLen)`
+   (the prefetcher's `firstSample` and `cols`; `chunkMeta(c)` picks up `c.firstSample`),
+   process, and draw the shown columns. See "Sample windows" for what the margin promises.
 7. For overlays, fill moveout columns with `moveoutColumnsInto(meta, curve, ticks)`, tag
-   them with `f.keysRevision`, and draw the ticks.
+   them with `f.keysRevision`, and draw the ticks (`moveoutTimesInto(meta, ...)` gives ms).
 8. Before `applySurvey` or a header edit, stop the prefetcher and any processing; after
-   it, rebuild views and metas, and recompute anything tagged with an older revision.
-9. For a brute stack, run `bruteStack` on a background thread with a cancel hook.
+   it, rebuild views and metas, and recompute anything tagged with an older revision:
+   ticks, bins and processed buffers (the raw samples stay valid).
+9. For a brute stack (Phase 7), run `bruteStack` on a background thread with a cancel
+   hook.
 
 ## Open questions
 

@@ -32,7 +32,7 @@ let failed = @[7, 64, 65]
 proc fullFlow(): Pipeline =
   initPipeline([demeanOp(),
                 bandPassOp(Corners(f1: 4, f2: 8, f3: 60, f4: 80)),
-                topMuteOp(lmoMute(2500, padMs = -20), taperMs = 20),
+                muteTopOp(lmoMute(2500, padMs = -20), taperMs = 20),
                 normalizeOp(normRms, perPanel, target = 2),
                 agcOp(windowMs = 300),
                 gainCurveOp(knotGain([GainKnot(tMs: 0, dB: 0),
@@ -44,7 +44,7 @@ proc fullFlow(): Pipeline =
                 gainDbOp(6),
                 polarityOp(),
                 detrendOp(),
-                bottomMuteOp(timeMute(3500), taperMs = 40),
+                muteBottomOp(timeMute(3500), taperMs = 40),
                 normalizeOp(normMax)])
 
 proc oneByOne[T](flow: Pipeline, x: var Tensor[T], meta: ChunkMeta) =
@@ -121,14 +121,17 @@ block compile_validates:
   rejects(scaleOp(NaN), "finite")
   rejects(gainDbOp(Inf), "finite")
   rejects(gainDbOp(1e6), "overflows")
+  rejects(gainDbOp(900), "overflows float32")   # fine in float64, Inf in float32
+  rejects(scaleOp(1e50), "overflows float32")
+  discard initPipeline([gainDbOp(900), scaleOp(1e50)]).compile(float64, 2, 10)
   rejects(clipOp(2, 1), "lo ≤ hi")
   rejects(clipOp(NaN, 1), "lo ≤ hi")
-  rejects(topMuteOp(timeMute(100), taperMs = -1), "taper")
+  rejects(muteTopOp(timeMute(100), taperMs = -1), "taper")
   rejects(filterOp(highCut(300, 400)), "Nyquist")
   rejects(iirOp(bandPass(Corners(f1: 4, f2: 8, f3: 60, f4: 80))), "Butterworth")
-  rejects(agcOp(windowMs = -1), "")
+  rejects(agcOp(windowMs = -1), "AGC window")
   rejects(normalizeOp(normPercentile, percentile = 101), "percentile")
-  rejects(gainCurveOp(GainCurve()), "")
+  rejects(gainCurveOp(GainCurve()), "no knots")
   doAssertRaises ValueError: discard initPipeline().compile(float32, 0, 10)
   doAssertRaises ValueError: discard initPipeline().compile(float32, NaN, 10)
   doAssertRaises ValueError: discard initPipeline().compile(float64, 2, 0)
@@ -280,4 +283,69 @@ block plan_shared_across_threads:
     createThread(threads[t], work, Job(plan: addr plan, src: src.sub(rows),
       dst: dst.sub(rows), meta: meta.sub(rows)))
   joinThreads(threads)
+  doAssert maxDiff(got, want) == 0
+
+block margins_and_zoom_windows:
+  let flow = initPipeline([demeanOp(),
+                           bandPassOp(Corners(f1: 4, f2: 8, f3: 60, f4: 80)),
+                           iirOp(butterLowCut(3), phase = ipMinimum),
+                           agcOp(windowMs = 300), gainDbOp(3)])
+  for dt in [1.0, 2.0, 4.0]:
+    doAssert flow.requiredMargin(dt) == flow.compile(float32, dt, 1500).requiredMargin
+  doAssert initPipeline([gainDbOp(3)]).requiredMargin(2) == 0
+  try:
+    discard initPipeline([demeanOp(), agcOp(windowMs = 1)]).requiredMargin(2)
+    doAssert false
+  except ValueError as e:
+    doAssert e.msg.startsWith("op 1 (opAgc): "), e.msg
+  doAssertRaises ValueError: discard flow.requiredMargin(0)
+  doAssert decodeWindow(800 .. 1200, 110, 2001) == 690 .. 1310
+  doAssert decodeWindow(50 .. 300, 110, 2001) == 0 .. 410
+  doAssert decodeWindow(1900 .. 2000, 110, 2001) == 1790 .. 2000
+  # A plan takes any narrower block.
+  var g = noisyGather[float32](10, 400, seed = 3)
+  let meta = initChunkMeta(g.rows, dtMs = 2)
+  let plan = flow.compile(float32, 2, 1500)
+  var ws = initWorkspace()
+  ws.reserve(plan)
+  plan.apply(g.data, meta, ws)
+
+block overlapping_blocks_and_part_preconditions:
+  var buf = newSeq[float32](12 * 50)
+  let whole = rowBlock(buf, 12, 50)
+  var g = noisyGather[float32](10, 50, seed = 4)
+  let meta = initChunkMeta(g.rows, dtMs = 2)
+  let plan = initPipeline([scaleOp(2)]).compile(float32, 2, 50)
+  var ws = initWorkspace()
+  ws.reserve(plan)
+  let a = whole.sub(0 .. 9)
+  let b = whole.sub(2 .. 11) # the same shape, 2 rows further on
+  doAssertRaises ValueError: plan.apply(a, b, meta, ws)
+  plan.apply(a, a, meta, ws) # the same block: in place
+  let flow = initPipeline([agcOp(windowMs = 20),
+                           normalizeOp(normRms, perPanel)])
+  let p2 = flow.compile(float32, 2, 50)
+  doAssert p2.partCount == 2 and not p2.partNeedsPanel(0) and p2.partNeedsPanel(1)
+  ws.reserve(p2)
+  # A Defect leaving a {.raises: [].} proc skips its cleanup, so catching one
+  # leaks its message: ASan builds leave these checks out.
+  when not defined(addressSanitizer):
+    var small = initWorkspace()
+    doAssertRaises AssertionDefect:
+      p2.runPart(0, RowBlock[float32](), rowBlock(g.data), meta, NaN, small)
+    doAssertRaises AssertionDefect:
+      discard p2.panelFactorOf(0, rowBlock(g.data), meta, ws)
+    doAssertRaises AssertionDefect:
+      p2.runPart(2, RowBlock[float32](), rowBlock(g.data), meta, NaN, ws)
+  # The parts API by hand gives what apply gives.
+  var want = g.data.clone()
+  p2.apply(want, meta, ws)
+  var got = g.data.clone()
+  let blk = rowBlock(got)
+  p2.checkApply(RowBlock[float32](), blk, meta)
+  for part in 0 ..< p2.partCount:
+    var f = NaN
+    if p2.partNeedsPanel(part): f = p2.panelFactorOf(part, blk, meta, ws)
+    for rows in [0 .. 4, 5 .. 9]: # as two threads would
+      p2.runPart(part, RowBlock[float32](), blk.sub(rows), meta.sub(rows), f, ws)
   doAssert maxDiff(got, want) == 0
