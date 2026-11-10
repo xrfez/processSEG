@@ -53,6 +53,9 @@ jobs:
       - name: Run test suite in release and danger builds
         run: nim testRelease
 
+      - name: Run test suite under AddressSanitizer
+        run: nim asan
+
       - name: Build the API docs
         run: nim docs
 

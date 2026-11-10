@@ -1,0 +1,245 @@
+## `ProcessPool`: persistent worker threads that apply a `PipelinePlan`
+## across the rows of a block (decision D6, the integration doc's
+## "Threading model").
+##
+## ```nim
+## var pool = newProcessPool(workers = 4)        # once: threads start here
+## let plan = flow.compile(float32, dtMs = 2, samples = 2001)
+## pool.apply(plan, raw, processed, meta)        # per frame or chunk; blocks
+## pool.apply(plan, samples, meta)               # in place
+## ```
+##
+## **Workers.** The threads start once, in `newProcessPool`, sleep on a
+## condition variable between jobs and are joined when the pool is
+## destroyed, so a job costs a wake-up and a join on a counter, not a thread
+## start. Each worker owns its `Workspace` and grows it to the plan's size on
+## its first job (`reserve` is a no-op after that): the caller never handles
+## workspaces.
+##
+## **A job.** `apply` validates its arguments on the caller's thread (it
+## raises `ValueError` as `PipelinePlan.apply` does, before any sample
+## changes), splits the rows into one contiguous range per worker and
+## returns when every worker is done. The result is identical to the
+## single-thread `apply`. A per-panel normalization needs the whole panel:
+## its factor is computed by one worker over every row, then the next part
+## of the plan runs on all workers again.
+##
+## **What crosses threads.** Tensors and seqs are reference counted without
+## atomics under ORC, so none crosses a thread: `apply` passes raw pointers
+## to the plan, the rows and the meta, and because it blocks until every
+## worker is done, they outlive the work.
+##
+## **Callers.** One job runs at a time per pool; a second caller (from
+## another thread, through a pointer to the pool) waits for the first to
+## finish. A pool cannot be copied; move it. Destroying it stops and joins
+## its workers, so it must not be destroyed while another thread is in
+## `apply`. A viewer that wants to abandon a frame checks `plan.generation`
+## before drawing.
+
+import std/locks
+import parseSEG
+import rows, types, workspace
+import ../pipeline
+
+type
+  JobFn = proc(ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
+      gcsafe, raises: [].}
+
+  WorkerArg = object
+    state: ptr PoolState
+    index: int
+
+  PoolState = object
+    lock: Lock   # guards everything below
+    wake: Cond   # a new job or stop, for the workers
+    done: Cond   # pending reached 0, for the caller
+    call: Lock   # one apply at a time
+    jobId: int   # bumped for each job; workers run each id once
+    pending: int # workers still on the current job
+    stop: bool
+    fn: JobFn
+    ctx: pointer
+    workers: int
+    threads: ptr UncheckedArray[Thread[WorkerArg]]
+
+  ProcessPool* = object
+    ## Persistent workers that apply plans; see the module documentation.
+    ## Build it with `newProcessPool`; it cannot be copied.
+    state: ptr PoolState
+
+proc `=destroy`*(p: ProcessPool) =
+  ## Stops the workers (they finish no job: the pool is idle when destroyed)
+  ## and joins them.
+  if p.state != nil:
+    let s = p.state
+    acquire s.lock
+    s.stop = true
+    broadcast s.wake
+    release s.lock
+    for i in 0 ..< s.workers:
+      joinThread(s.threads[i])
+    deinitCond s.wake
+    deinitCond s.done
+    deinitLock s.lock
+    deinitLock s.call
+    deallocShared s.threads
+    deallocShared s
+
+proc `=wasMoved`*(p: var ProcessPool) =
+  p.state = nil
+
+proc `=copy`*(dst: var ProcessPool, src: ProcessPool) {.error.}
+proc `=dup`*(src: ProcessPool): ProcessPool {.error.}
+
+proc workerLoop(a: WorkerArg) {.thread.} =
+  let s = a.state
+  var ws = initWorkspace()
+  var seen = 0
+  while true:
+    acquire s.lock
+    while not s.stop and s.jobId == seen:
+      wait s.wake, s.lock
+    if s.stop:
+      release s.lock
+      break
+    seen = s.jobId
+    let fn = s.fn
+    let ctx = s.ctx
+    release s.lock
+    fn(ctx, a.index, ws)
+    acquire s.lock
+    dec s.pending
+    if s.pending == 0:
+      signal s.done
+    release s.lock
+
+proc newProcessPool*(workers = 4): ProcessPool =
+  ## A pool of `workers` threads, started now. Raises `ValueError` for
+  ## `workers < 1`.
+  if workers < 1:
+    raise newException(ValueError, "a pool needs workers ≥ 1, got " & $workers)
+  let s = createShared(PoolState)
+  initLock s.lock
+  initLock s.call
+  initCond s.wake
+  initCond s.done
+  s.workers = workers
+  s.threads = cast[ptr UncheckedArray[Thread[WorkerArg]]](allocShared0(
+    sizeof(Thread[WorkerArg]) * workers))
+  result.state = s
+  for i in 0 ..< workers:
+    createThread(s.threads[i], workerLoop, WorkerArg(state: s, index: i))
+
+func workers*(p: ProcessPool): int {.inline, raises: [].} =
+  ## The number of worker threads.
+  p.state.workers
+
+proc run(s: ptr PoolState, fn: JobFn, ctx: pointer) {.raises: [].} =
+  ## Runs `fn` on every worker and waits for all of them. The caller holds
+  ## `s.call`.
+  acquire s.lock
+  s.fn = fn
+  s.ctx = ctx
+  s.pending = s.workers
+  inc s.jobId
+  broadcast s.wake
+  while s.pending > 0:
+    wait s.done, s.lock
+  release s.lock
+
+proc runEmpty(ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
+    gcsafe, raises: [].} =
+  discard
+
+proc ping*(p: ProcessPool) =
+  ## Runs an empty job on every worker and waits: the pool's per-job
+  ## overhead, for benchmarks.
+  acquire p.state.call
+  run(p.state, runEmpty, nil)
+  release p.state.call
+
+# -------------------------------------------------------------------- apply --
+
+type
+  ApplyCtx[T: SampleType] = object
+    plan: ptr PipelinePlan[T]
+    src, dst: RowBlock[T] # src has no rows for an in-place apply
+    meta: ChunkMeta
+    part: int
+    factor: float64
+    workers: int
+
+func workerRows(n, w, workers: int): Slice[int] {.inline.} =
+  (n * w div workers) .. (n * (w + 1) div workers) - 1
+
+proc partJob[T](ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
+    gcsafe, raises: [].} =
+  let c = cast[ptr ApplyCtx[T]](ctx)
+  let rows = workerRows(c.dst.len, worker, c.workers)
+  if rows.len == 0: return
+  try:
+    ws.reserve(c.plan[].workspaceSize)
+    let fromSrc = c.part == 0 and c.src.len > 0
+    let src = (if fromSrc: c.src.sub(rows) else: RowBlock[T]())
+    c.plan[].runPart(c.part, src, c.dst.sub(rows), c.meta.sub(rows), c.factor, ws)
+  except ValueError as e:
+    raiseAssert "checked by apply: " & e.msg
+
+proc panelJob[T](ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
+    gcsafe, raises: [].} =
+  if worker != 0: return
+  let c = cast[ptr ApplyCtx[T]](ctx)
+  try:
+    ws.reserve(c.plan[].workspaceSize)
+  except ValueError as e:
+    raiseAssert e.msg
+  let b = (if c.part == 0 and c.src.len > 0: c.src else: c.dst)
+  c.factor = c.plan[].panelFactorOf(c.part, b, c.meta, ws)
+
+proc applyBlocks[T](p: ProcessPool, plan: PipelinePlan[T], src,
+    dst: RowBlock[T], meta: ChunkMeta) =
+  doAssert p.state != nil, "a ProcessPool must come from newProcessPool"
+  plan.checkApply(dst, meta)
+  var ctx = ApplyCtx[T](plan: unsafeAddr plan, src: src, dst: dst, meta: meta,
+    workers: p.state.workers)
+  acquire p.state.call
+  for part in 0 ..< plan.partCount:
+    ctx.part = part
+    ctx.factor = NaN
+    if plan.partNeedsPanel(part):
+      run(p.state, panelJob[T], addr ctx)
+    run(p.state, partJob[T], addr ctx)
+  release p.state.call
+
+proc apply*[T: SampleType](p: ProcessPool, plan: PipelinePlan[T],
+    b: RowBlock[T], meta: ChunkMeta) =
+  ## Runs `plan` on the block `b` in place, its rows split across the
+  ## workers; blocks until they are done. Raises `ValueError`, before any
+  ## sample changes, as `PipelinePlan.apply` does.
+  p.applyBlocks(plan, RowBlock[T](), b, meta)
+
+proc apply*[T: SampleType](p: ProcessPool, plan: PipelinePlan[T], src,
+    dst: RowBlock[T], meta: ChunkMeta) =
+  ## Runs `plan` on `src` into `dst` (the same shape, not overlapping unless
+  ## the same block), its rows split across the workers; blocks until they
+  ## are done. Raises `ValueError` as the in-place form, and for a shape
+  ## mismatch.
+  if src.len != dst.len or src.cols != dst.cols:
+    raise newException(ValueError, "src is " & $src.len & " × " & $src.cols &
+      ", dst " & $dst.len & " × " & $dst.cols)
+  p.applyBlocks(plan, src, dst, meta)
+
+proc apply*[T: SampleType](p: ProcessPool, plan: PipelinePlan[T],
+    samples: var Tensor[T], meta: ChunkMeta) =
+  ## `apply` in place on a `[rows, cols]` tensor (C-contiguous; raises
+  ## `ValueError` otherwise).
+  meta.checkShape(samples)
+  p.apply(plan, rowBlock(samples), meta)
+
+proc apply*[T: SampleType](p: ProcessPool, plan: PipelinePlan[T],
+    src: Tensor[T], dst: var Tensor[T], meta: ChunkMeta) =
+  ## `apply` from `src` into `dst`, tensors of the same shape (C-contiguous;
+  ## raises `ValueError` otherwise). `dst` is not resized.
+  meta.checkShape(src)
+  meta.checkShape(dst)
+  p.apply(plan, rowBlock(src), rowBlock(dst), meta)

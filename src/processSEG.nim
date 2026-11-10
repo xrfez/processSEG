@@ -15,6 +15,7 @@
 ## - `processSEG/gain/curves`: time-variant gain (`GainCurve`, `GainCurvePlan`);
 ## - `processSEG/gain/stats`: per-trace and panel RMS, max and percentile clip;
 ## - `processSEG/pipeline`: `Op`, `Pipeline`, `compile` → `PipelinePlan`, `apply`;
+## - `processSEG/core/pool`: `ProcessPool`, persistent workers that apply plans;
 ## - `processSEG/adapters`: `chunkMeta` from a prefetch chunk or a trace read.
 
 import processSEG/core/[types, rows, workspace, basic, mute]
@@ -22,5 +23,6 @@ import processSEG/fft/[plan, spectrum]
 import processSEG/filter/[design, apply, iir]
 import processSEG/gain/[gain, curves, stats]
 import processSEG/[pipeline, adapters]
+import processSEG/core/pool
 export types, rows, workspace, basic, mute, plan, spectrum, design, apply, iir,
-    gain, curves, stats, pipeline, adapters
+    gain, curves, stats, pipeline, adapters, pool

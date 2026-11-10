@@ -159,3 +159,32 @@ AGC and normalization (same run, 1 thread):
   int32 counts (int64 → float64 has no packed form on AVX2), 9.2 / 10.5 / 13.3; the gain
   step in float32 on level-scaled means, 6.5 / 7.8 / 10.6; ascending affine indices in
   every range (no gathers), 6.3 / 6.7 / 6.7.
+
+## Process pool (task 5.2)
+
+`nim bench` (bench/bpool.nim), same machine and flags. The pool is created once, outside
+the timing. "ping" is an empty job on every worker (`pool.ping`); "empty plan" is
+`pool.apply` of an empty plan on one row, in place (argument checks included).
+
+| workers | ping | empty plan, 1 row |
+|---|---|---|
+| 1 | 6.4 µs | 6.8 µs |
+| 2 | 7.4 µs | 7.8 µs |
+| 4 | 8.3 µs | 8.0 µs |
+| 8 | 12.3 µs | 12.4 µs |
+
+So a job costs a wake-up and a join, microseconds, against milliseconds of work.
+
+A viewer pipeline, demean + band-pass 4-8-60-80 + AGC 500 ms, on a 2000 × 2001 float32
+panel, src → dst (the copy fused into the first op):
+
+| run | time per panel | speedup |
+|---|---|---|
+| `plan.apply`, 1 thread (no pool) | 32.2 ms | 1 |
+| pool, 1 worker | 32.5 ms | 0.99× |
+| pool, 2 workers | 16.5 ms | 1.95× |
+| pool, 4 workers | 8.6 ms | 3.75× |
+| pool, 8 workers | 4.3 ms | 7.44× |
+
+The tiled `apply` (every op on ~256 KB of rows while it is in cache) costs the same as the
+ops run one after another over the whole panel (23.6 ms band-pass + 6.5 ms AGC + demean).
