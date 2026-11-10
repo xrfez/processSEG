@@ -3,7 +3,7 @@
     "parseSEG": {
       "dir": "$deps/parseSEG",
       "url": "https://github.com/xrfez/parseSEG",
-      "commit": "22fb75c998555ac82feb18b5e1b4ff662f3cbe28",
+      "commit": "df3568d970567a0fa8f7f021fda0323a9a8ecfa1",
       "version": ""
     },
     "Arraymancer": {
@@ -99,7 +99,7 @@
       "# Dependencies",
       "",
       "requires \"nim >= 2.4.0\"",
-      "requires \"https://github.com/xrfez/parseSEG >= 0.6.1\"",
+      "requires \"https://github.com/xrfez/parseSEG >= 0.7.0\"",
       "",
       ""
     ]
