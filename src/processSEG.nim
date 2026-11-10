@@ -20,6 +20,7 @@
 ## - `processSEG/velocity/model`: velocity functions, Dix, fields (`VelocityField`);
 ## - `processSEG/velocity/formats`: VELF, HANDVEL and CSV velocity picks;
 ## - `processSEG/velocity/moveout`: LMO and NMO times for overlays (`Moveout`), LMO on samples;
+## - `processSEG/statics/elevation`: datum statics from elevations (`DatumStatics`);
 ## - `processSEG/pipeline`: `Op`, `Pipeline`, `compile` → `PipelinePlan`, `apply`;
 ## - `processSEG/core/pool`: `ProcessPool`, persistent workers that apply plans;
 ## - `processSEG/adapters`: `chunkMeta` from a prefetch chunk or a trace read.
@@ -31,6 +32,7 @@ import processSEG/gain/[gain, curves, stats]
 import processSEG/[pipeline, adapters]
 import processSEG/core/pool
 import processSEG/velocity/[model, formats, moveout]
+import processSEG/statics/elevation
 export types, rows, workspace, basic, mute, plan, spectrum, design,
     apply, iir, gain, curves, stats, pipeline, adapters, pool, shift, model,
-    formats, moveout
+    formats, moveout, elevation

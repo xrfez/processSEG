@@ -180,6 +180,12 @@ proc cmpGather*[T: SampleType](cmpX: float64, offsets: openArray[float64],
     keys[i].channel = float64(i + 1)
   initSynthGather[T](keys, cols, dtMs)
 
+proc clone*[T](g: SynthGather[T]): SynthGather[T] =
+  ## A deep copy of `g`. Assigning a gather shares its tensor (Arraymancer
+  ## tensors are shared on assignment), so tests that change a copy clone it.
+  result = g
+  result.data = g.data.clone
+
 proc unsignOffsets*[T](g: var SynthGather[T]) =
   ## Replaces every offset by its absolute value, as parseSEG's derived
   ## geometry gives it (`hypot` of the source-receiver vector).
