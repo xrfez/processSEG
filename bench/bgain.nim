@@ -1,6 +1,7 @@
 ## Gain throughput (Phase 4) on a viewer panel, 2000 traces × 2001 samples of
 ## float32 at 2 ms, one thread: per-trace and panel statistics (with and
-## without the percentile histogram).
+## without the percentile histogram), AGC at three window lengths, and a panel
+## normalization.
 
 import std/strutils
 import benchutil
@@ -43,6 +44,20 @@ proc main() =
     sink += panelStats(g.data, meta, ws, clipPercentile = 99).clip
   c.report
   echo "    ", c.ms
+  # AGC: the cost must not depend on the window (O(n)).
+  for windowMs in [100.0, 500.0, 2000.0]:
+    let plan = initAgcPlan(windowMs, dtMs = dt, samples = ns)
+    ws.reserve(plan.workspaceSize)
+    let r = bench("agc rms " & $int(windowMs) & " ms", 2 * bytes):
+      g.data.agc(meta, plan, ws)
+    r.report
+    echo "    ", r.ms
+  let n99 = initNormalizePlan(normPercentile, samples = ns, scope = perPanel)
+  ws.reserve(n99.workspaceSize)
+  let n = bench("normalize panel p99", 2 * bytes):
+    g.data.normalize(meta, n99, ws)
+  n.report
+  echo "    ", n.ms
   doAssert sink > 0 and stats[0].rms > 0
 
 main()

@@ -139,3 +139,21 @@ nfft·log(nfft): halve the panel, halve the time.
 - The percentile clip is a scatter into a 65536-bin histogram, about 3 cycles a sample;
   four interleaved sub-histograms took it from 5.1 to 4.2 ms. It is a value to recompute
   when the data or the selection changes, not per frame.
+
+AGC and normalization (same run, 1 thread):
+
+| operation | panel (median) |
+|---|---|
+| `agc` RMS, 100 ms window | 6.3 ms |
+| `agc` RMS, 500 ms window | 6.7 ms |
+| `agc` RMS, 2000 ms window | 6.7 ms |
+| `normalize` per panel, p99 | 5.2 ms |
+
+- AGC is O(n): the cost does not depend on the window. Each window sum is a block suffix
+  plus a block prefix (no subtraction, for precision), built in one loop with two
+  independent float64 add chains; that loop is serial and is most of the time.
+- How it got there: 11.9 / 17.2 / 28.2 ms at first (the cut windows at the trace ends ran
+  a scalar path with integer `div`/`mod`); closed forms per range, 9.3 / 11.1 / 16.3;
+  int32 counts (int64 → float64 has no packed form on AVX2), 9.2 / 10.5 / 13.3; the gain
+  step in float32 on level-scaled means, 6.5 / 7.8 / 10.6; ascending affine indices in
+  every range (no gathers), 6.3 / 6.7 / 6.7.

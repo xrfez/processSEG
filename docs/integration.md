@@ -239,7 +239,20 @@ Viewers usually offer **fixed**, **normalized** and **AGC** display gain.
     `panelStatsWorkspace`), about 4 ms for the same panel, so recompute it when the data
     or the selection changes, not per frame.
 - **AGC, time-variant dB curves and filters** change sample values in a way that depends
-  on time, so they run on the CPU, in the plan.
+  on time, so they run on the CPU, in the plan. Until the pipeline lands (Phase 5), AGC
+  and normalization run on their own (`processSEG/gain/gain`):
+
+  ```nim
+  let agc = initAgcPlan(windowMs = 500, dtMs = 2, samples = 2001)  # agcRms or agcMeanAbs
+  ws.reserve(agc.workspaceSize)
+  samples.agc(meta, agc, ws)              # in place; or (..., gains) to keep the gain
+  let m = agc.requiredMargin              # half the window, for zoom windows
+  ```
+
+  AGC costs about 6.5 ms per 2000 × 2001 panel on one thread, whatever the window, so
+  about 1.7 ms on 4 workers. `normalize` (`initNormalizePlan(normRms | normMax |
+  normPercentile, samples, perTrace | perPanel)`) and `scaleDb` are the CPU forms of the
+  fixed and normalized display gains.
 
 Both paths give the same picture: the CPU gain ops exist too, for exports and tests.
 

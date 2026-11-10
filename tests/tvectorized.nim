@@ -7,7 +7,7 @@
 ## --passC:-fno-tree-slp-vectorize"` builds the kernels scalar: every kernel
 ## must then fail.
 
-import std/[os, osproc, strutils]
+import std/[os, osproc, strutils, tables]
 
 const
   # Kernel instance symbols (`<name>_u<n>__veckernels`) that must hold packed
@@ -22,7 +22,9 @@ const
     # Filter: the gain multiply of the lanes path (packing is strided, scalar).
     "gainLanes",
     # Gain statistics: Σx² (eight accumulators), max |x| (integer max).
-    "sumSq64", "maxAbs"]
+    "sumSq64", "maxAbs",
+    # AGC: the gain loops (the block sums are serial add chains, scalar).
+    "agcImpl"]
   # Non-generic kernels: their symbols carry their own module (and GCC clones
   # such as `.constprop.0` count too).
   moduleKernels = [("sosLanes", "ZfilterZiir")]
@@ -71,14 +73,17 @@ proc main() =
   for k in kernels: all.add (k, "__veckernels")
   for (k, m) in moduleKernels: all.add (k, m)
   for (k, suffix) in all:
-    var found = 0
+    # An instance and its GCC parts and clones (`name.part.0`,
+    # `name.constprop.0`) count as one: a split function keeps its loops in
+    # the part, and its outer symbol is a thin wrapper.
+    var packedOf = initOrderedTable[string, int]()
     for line in syms.output.splitLines:
       let sym = line.splitWhitespace()
       if sym.len < 3: continue
       let name = sym[^1]
-      if not (name.startsWith(k & "_u") and name.split('.')[0].endsWith(suffix)):
+      let base = name.split('.')[0]
+      if not (name.startsWith(k & "_u") and base.endsWith(suffix)):
         continue
-      inc found
       let dis = execCmdEx("objdump -d --no-show-raw-insn --disassemble=" &
         name & " " & quoteShell(bin))
       doAssert dis.exitCode == 0, dis.output
@@ -87,8 +92,10 @@ proc main() =
         let cols = l.split('\t')
         if cols.len >= 2 and cols[1 .. ^1].join(" ").strip().isPacked:
           inc packed
-      doAssert packed > 0, name & " has no packed SIMD instructions"
-    doAssert found > 0, "no instance of " & k & " in the kernel build"
-    echo "  ", k, ": ", found, " instance(s) vectorized"
+      packedOf[base] = packedOf.getOrDefault(base) + packed
+    for base, packed in packedOf:
+      doAssert packed > 0, base & " has no packed SIMD instructions"
+    doAssert packedOf.len > 0, "no instance of " & k & " in the kernel build"
+    echo "  ", k, ": ", packedOf.len, " instance(s) vectorized"
 
 main()

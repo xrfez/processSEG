@@ -22,6 +22,18 @@ proc vec_traceStats_f32(x: openArray[float32]): TraceStats {.exportc: "vec_trace
 proc vec_traceStats_f64(x: openArray[float64]): TraceStats {.exportc: "vec_traceStats_f64", noinline.} =
   traceStats(x)
 
+proc vec_agc_f32(x: var openArray[float32], plan: AgcPlan,
+    ws: var Workspace) {.exportc: "vec_agc_f32", noinline.} =
+  agc(x, plan, ws)
+
+proc agcOnce() =
+  let plan = initAgcPlan(20, 2, 100)
+  var ws = initWorkspace()
+  ws.reserve(plan.workspaceSize)
+  var x = newSeq[float32](100)
+  x[3] = 1
+  vec_agc_f32(x, plan, ws)
+
 proc vec_taperPads_f32(x: var openArray[float32],
     ramp: openArray[float32]) {.exportc: "vec_taperPads_f32", noinline.} =
   taperPads(x, ramp)
@@ -74,6 +86,7 @@ when isMainModule:
   fftOnce(float64)
   filterOnce()
   iirOnce()
+  agcOnce()
   var x = newSeq[float32](1000)
   var y = newSeq[float64](1000)
   let ramp = newSeq[float32](100)
