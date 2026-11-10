@@ -18,11 +18,17 @@
 ## window) and zero-padded to the FFT length `nfft` (by default
 ## `nextFastLen(windowLen)`). Bin `k` is at `k / (nfft·dt)` Hz (`binHz`).
 ##
+## **Short windows.** A trace that ends inside the window (its live length)
+## gives a shorter window, of `c` samples: it gets the same taper ramps, the
+## end one at its own end (`w[j] = min(taper[j], taper[c−1−j])`), and its own
+## `Σw` below, so it is scaled like a full window and does not end in a step.
+##
 ## **Amplitude scale.** Amplitudes are one-sided and corrected for the taper:
 ## `|X[k]|·2/Σw` (`1/Σw` at 0 Hz and at Nyquist), with `Σw` the sum of the
 ## taper weights. A sinusoid of amplitude `A` whose frequency falls on a bin
 ## then reads `A` there, whatever the taper or padding (between bins, the
 ## taper's scalloping lowers the peak, by up to 1.4 dB for a Hann window).
+## The phase is measured from the first sample of the window.
 ##
 ## **dB scale** (`toDbInto`): `20·log10(amplitude / ref)`, where `ref` is the
 ## largest amplitude of the spectrum (`dbPeak`, the default: the peak is 0 dB
@@ -31,11 +37,19 @@
 ## a zero amplitude is never −∞.
 ##
 ## **Averaging** (`averageAmplitudeInto`) is over power: the result is
-## `sqrt(mean over traces of amplitude²)`, so dead or quiet traces do not
-## dominate, and the dB of the average is `10·log10` of the mean power. Only
-## live rows count; each is cut at its live length (samples past it are
-## zero), and a row with no live sample in the window is left out. The rows go
-## through the batched FFT, `fftLanes` at a time.
+## `sqrt(mean over traces of amplitude²)`, the RMS amplitude, so the dB of
+## the average is `10·log10` of the mean power (louder traces weigh more than
+## in a mean of amplitudes). Only live rows count (dead, auxiliary and failed
+## rows are left out, as are rows with no live sample in the window); a live
+## row of zeros counts, and lowers the average. A row with a NaN or infinite
+## sample in its window is left out too, so it cannot blank the panel; the
+## count of rows averaged is returned. The rows go through the batched FFT,
+## `fftLanes` at a time.
+##
+## **NaN.** `amplitudeInto` on a window holding a NaN gives NaN in every bin
+## of that trace (its mean and its FFT are NaN); `toDbInto` maps a NaN
+## amplitude to `floorDb`, and ignores NaN and +Inf when finding the peak (an
+## infinite amplitude is +Inf dB).
 
 import std/math
 import parseSEG
@@ -48,7 +62,6 @@ type
     ## documentation.
     fft: FftPlan[T]
     taper: seq[T] # windowLen weights
-    norm: seq[float64] # per-bin amplitude scale, 2/Σw (1/Σw at DC, Nyquist)
     dtMs: float64
     demean: bool
 
@@ -82,17 +95,16 @@ proc initSpectrumPlan*(T: typedesc[SampleType], windowLen: int, dtMs: float64,
   result.demean = demean
   result.taper = newSeq[T](windowLen)
   let ramp = int(round(taperFraction * float64(windowLen)))
-  var sum = 0.0
   for i in 0..<windowLen:
     let d = min(i, windowLen - 1 - i) # distance from the nearer end
     let w =
       if d >= ramp: 1.0
       else: sin(PI / 2 * float64(d + 1) / float64(ramp + 1)) ^ 2
     result.taper[i] = T(w)
-    sum += float64(T(w))
-  result.norm = newSeq[float64](result.fft.bins)
-  for k in 0..<result.fft.bins:
-    result.norm[k] = (if k == 0 or 2 * k == n: 1.0 else: 2.0) / sum
+
+func sides[T](sp: SpectrumPlan[T], k: int): float64 {.inline.} =
+  ## The one-sided factor of bin `k`: 1 at 0 Hz and at Nyquist, else 2.
+  if k == 0 or 2 * k == sp.fft.len: 1.0 else: 2.0
 
 func bins*[T](sp: SpectrumPlan[T]): int {.inline, raises: [].} =
   ## The number of frequency bins, `nfft div 2 + 1`.
@@ -145,27 +157,38 @@ proc toDbInto*(amp: openArray[float64], db: var openArray[float64],
   var r = 1.0
   if reference == dbPeak:
     r = 0.0
-    for a in amp: r = max(r, a)
+    for a in amp:
+      if a > r and a < Inf: r = a # NaN and Inf are not a peak
   for k in 0..<amp.len:
-    let v = if r > 0 and amp[k] > 0: 20 * log10(amp[k] / r) else: -Inf
+    let a = amp[k]
+    let v = if r > 0 and a > 0: 20 * log10(a / r) else: -Inf # NaN: the floor
     db[k] = max(v, floorDb)
 
 # -------------------------------------------------------------- one trace --
 
 proc windowInto[T](sp: SpectrumPlan[T], x: openArray[T],
-    dst: ptr UncheckedArray[T], stride: int) {.raises: [].} =
-  ## Demeans and tapers `x` (≤ windowLen samples, the rest zero) into
-  ## `dst[j·stride]`, j < nfft.
+    dst: ptr UncheckedArray[T], stride: int): float64 {.raises: [].} =
+  ## Demeans and tapers `x` (≤ windowLen samples, the rest zero; module
+  ## documentation, "Short windows") into `dst[j·stride]`, j < nfft. Returns
+  ## Σw, or NaN when `x` holds a NaN or infinite sample.
   let n = min(x.len, sp.taper.len)
-  var mean = 0.0
-  if sp.demean and n > 0:
-    for j in 0..<n: mean += float64(x[j])
-    mean /= float64(n)
-  let m = T(mean)
+  var sum = 0.0
+  for j in 0..<n: sum += float64(x[j])
+  let finite = sum - sum == 0 # false for a NaN or ±Inf sum
+  let m = if sp.demean and n > 0 and finite: T(sum / float64(n)) else: T(0)
+  var sw = 0.0
   {.push boundChecks: off.}
-  for j in 0..<n: dst[j * stride] = (x[j] - m) * sp.taper[j]
+  if n == sp.taper.len:
+    for j in 0..<n: dst[j * stride] = (x[j] - m) * sp.taper[j]
+    for j in 0..<n: sw += float64(sp.taper[j])
+  else:
+    for j in 0..<n:
+      let w = min(sp.taper[j], sp.taper[n - 1 - j])
+      dst[j * stride] = (x[j] - m) * w
+      sw += float64(w)
   for j in n..<sp.fft.len: dst[j * stride] = T(0)
   {.pop.}
+  if finite: sw else: NaN
 
 proc amplitudeInto*[T: SampleType](sp: SpectrumPlan[T], x: openArray[T],
     amp, phase: var openArray[T], ws: var Workspace) {.raises: [].} =
@@ -177,13 +200,13 @@ proc amplitudeInto*[T: SampleType](sp: SpectrumPlan[T], x: openArray[T],
   doAssert amp.len == nb and phase.len == nb, "amp and phase need bins values"
   let at = sp.fft.workspaceSize.elems(T)
   let xw = ws.scratch(T, sp.fft.len + 2 * nb, at)
-  sp.windowInto(x, xw, 1)
+  let sw = sp.windowInto(x, xw, 1)
   let re = cast[ptr UncheckedArray[T]](addr xw[sp.fft.len])
   let im = cast[ptr UncheckedArray[T]](addr xw[sp.fft.len + nb])
   sp.fft.forward(xw.toOpenArray(0, sp.fft.len - 1), re.toOpenArray(0, nb - 1),
     im.toOpenArray(0, nb - 1), ws)
   for k in 0..<nb:
-    amp[k] = T(hypot(float64(re[k]), float64(im[k])) * sp.norm[k])
+    amp[k] = T(hypot(float64(re[k]), float64(im[k])) * sp.sides(k) / sw)
     phase[k] = T(arctan2(float64(im[k]), float64(re[k])))
 
 # ---------------------------------------------------------- averaged panel --
@@ -195,16 +218,16 @@ proc averageAmplitudeInto*[T: SampleType](sp: SpectrumPlan[T], b: RowBlock[T],
   ## window `firstCol ..< firstCol + windowLen` of the live rows of `b` in
   ## `rows` (clipped to the block), into `amp` (`bins` values). Returns the
   ## number of rows averaged; with none, `amp` is all zero. `ws` must hold
-  ## `sp.workspaceSize`. Raises `ValueError` when `b` does not match `meta`,
-  ## for a negative `firstCol` or when `amp.len != bins`; no sample of `b`
+  ## `sp.workspaceSize`. Raises `ValueError` when `b` does not match `meta`
+  ## or for a negative `firstCol`; an `amp.len != bins` is an
+  ## `AssertionDefect`, as in the other spectrum procs. No sample of `b`
   ## changes.
   meta.checkShape(b)
   let nb = sp.fft.bins
   let n = sp.fft.len
   if firstCol < 0:
     badSpectrum("firstCol must be ≥ 0, got " & $firstCol)
-  if amp.len != nb:
-    badSpectrum("amp needs " & $nb & " values, got " & $amp.len)
+  doAssert amp.len == nb, "amp needs bins values"
   let at = sp.fft.workspaceSize.elems(T)
   let xw = ws.scratch(T, n * fftLanes + 2 * nb * fftLanes, at)
   let re = cast[ptr UncheckedArray[T]](addr xw[n * fftLanes])
@@ -216,6 +239,7 @@ proc averageAmplitudeInto*[T: SampleType](sp: SpectrumPlan[T], b: RowBlock[T],
   let hi = min(rows.b, b.len - 1)
   var lane = 0
   var used = 0
+  var scale: array[fftLanes, float64] # 1/Σw² of each lane's window
 
   template flush() =
     if lane > 0:
@@ -229,7 +253,7 @@ proc averageAmplitudeInto*[T: SampleType](sp: SpectrumPlan[T], b: RowBlock[T],
         for l in 0..<lane:
           let r = float64(re[k * fftLanes + l])
           let i = float64(im[k * fftLanes + l])
-          s += r * r + i * i
+          s += (r * r + i * i) * scale[l]
         acc[k] += s
       lane = 0
 
@@ -239,14 +263,16 @@ proc averageAmplitudeInto*[T: SampleType](sp: SpectrumPlan[T], b: RowBlock[T],
     if live <= firstCol: continue
     let last = min(live, firstCol + sp.taper.len)
     let src = b.rowPtr(r)
-    sp.windowInto(src.toOpenArray(firstCol, last - 1),
+    let sw = sp.windowInto(src.toOpenArray(firstCol, last - 1),
       cast[ptr UncheckedArray[T]](addr xw[lane]), fftLanes)
+    if not (sw > 0): continue # a NaN or Inf sample: the lane is reused
+    scale[lane] = 1 / (sw * sw)
     inc lane
     inc used
     if lane == fftLanes: flush()
   flush()
   for k in 0..<nb:
-    amp[k] = if used > 0: sqrt(acc[k] / float64(used)) * sp.norm[k] else: 0.0
+    amp[k] = if used > 0: sqrt(acc[k] / float64(used)) * sp.sides(k) else: 0.0
   used
 
 proc averageAmplitudeInto*[T: SampleType](sp: SpectrumPlan[T],

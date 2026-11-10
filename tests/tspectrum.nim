@@ -134,7 +134,7 @@ block average_over_live_rows:
   doAssert one[k] == 0
   doAssertRaises ValueError:
     discard sp.averageAmplitudeInto(g.data, meta, -1, one, ws)
-  doAssertRaises ValueError:
+  doAssertRaises AssertionDefect:
     discard sp.averageAmplitudeInto(g.data, meta, 0, one.toOpenArray(0, 3), ws)
 
 block many_rows_and_partial_windows:
@@ -157,3 +157,58 @@ block many_rows_and_partial_windows:
     for _ in 0..<3:
       discard sp.averageAmplitudeInto(g.data, meta, 160, amp, ws)
   doAssert n == 0, $n & " allocations"
+
+block nan_rows_are_left_out:
+  # A NaN or Inf in one row's window must not blank the average.
+  var g = gather(rows = 4, cols = 400)
+  for r in 0..<4:
+    var row = newSeq[float32](400)
+    row.addSinusoid(2, 25.0, amp = 2)
+    for j in 0..<400: g.data[r, j] = row[j]
+  let meta = initChunkMeta(g.rows, dtMs = 2)
+  let sp = initSpectrumPlan(float32, 200, dtMs = 2)
+  var ws = initWorkspace()
+  ws.reserve(sp.workspaceSize)
+  var amp, db = newSeq[float64](sp.bins)
+  for bad in [NaN, Inf, -Inf]:
+    g.data[2, 10] = bad
+    doAssert sp.averageAmplitudeInto(g.data, meta, 0, amp, ws) == 3
+    for a in amp: doAssert a == a and a < Inf
+    doAssert near(amp[peakBin(amp)], 2, 0.02) # 25 Hz is bin 10 of 200 at 2 ms
+    doAssert sp.averageAmplitudeInto(g.data, meta, 200, amp, ws) == 4,
+      "outside the window, the bad sample does not matter"
+  # One trace with a NaN: NaN in that trace only, and dB at the floor.
+  var x = newSeq[float32](200)
+  x[3] = NaN
+  var a32, p32 = newSeq[float32](sp.bins)
+  sp.amplitudeInto(x, a32, p32, ws)
+  doAssert a32[5].isNaN
+  toDbInto([NaN, 1.0, Inf, 0.1], db.toOpenArray(0, 3))
+  doAssert db[0] == -120 and db[1] == 0 and db[2] == Inf and near(db[3], -20, 1e-12),
+    "NaN is the floor; Inf is not the peak"
+
+block short_windows_scale_like_full_ones:
+  # Rows that end inside the window get their own taper end and Σw, so a
+  # sinusoid on a bin still reads its amplitude.
+  let sp = initSpectrumPlan(float64, 400, dtMs = 1, taperFraction = 0.2)
+  var ws = initWorkspace()
+  ws.reserve(sp.workspaceSize)
+  var amp, phase = newSeq[float64](sp.bins)
+  # 300 samples of a 400-sample window: 50 Hz is bin 20 of nfft 400 at 1 ms
+  # and 15 whole cycles of the 300 samples.
+  var x = newSeq[float64](300)
+  x.addSinusoid(1, 50, amp = 3)
+  sp.amplitudeInto(x, amp, phase, ws)
+  doAssert peakBin(amp) == 20 and near(amp[20], 3, 0.03), $amp[20]
+  # The same through the average, float64 plan (its accumulator follows the
+  # window buffers in the float64 scratch), rows cut at different lengths.
+  var g = cmpGather[float64](cmpX = 0, offsets = newSeq[float64](11), 500, 1)
+  for r in 0..<11:
+    var row = newSeq[float64](500)
+    row.addSinusoid(1, 50, amp = 3)
+    for j in 0..<500: g.data[r, j] = row[j]
+    if r mod 2 == 1: g.setLive(r, 300 + 100 * (r mod 3)) # windows of 200 or 300
+  let meta = initChunkMeta(g.rows, dtMs = 1)
+  var avg = newSeq[float64](sp.bins)
+  doAssert sp.averageAmplitudeInto(g.data, meta, 100, avg, ws) == 11
+  doAssert peakBin(avg) == 20 and near(avg[20], 3, 0.05), $avg[20]

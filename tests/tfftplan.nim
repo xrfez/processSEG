@@ -67,7 +67,7 @@ proc checkType(T: typedesc, tol: float64) =
   for n in fastLens(4096):
     let p = initFftPlan(T, n)
     doAssert p.len == n and p.bins == n div 2 + 1
-    ws.reserve(p.workspaceSize(lanes = 1))
+    ws.reserve(p.workspaceSize(batched = false))
     let x64 = signal(rng, n)
     var x = newSeq[T](n)
     for i in 0..<n: x[i] = T(x64[i])
@@ -124,37 +124,62 @@ block inverse_ignores_dc_and_nyquist_imag:
     if n == 12: doAssert abs(bim[^1]) < 1e-14
     else: doAssert abs(bim[^1] - 7) < 1e-13
 
-block lanes_match_single:
-  var rng = initRand(5)
+proc lanesMatchSingle(T: typedesc, rows: int, tol: float64) =
+  ## The lanes path against the one-trace path, with different data in every
+  ## lane (`rows` of them; the rest of the batch is zero), and back.
+  var rng = initRand(5 + rows)
   var ws = initWorkspace()
   for n in [1, 2, 3, 5, 8, 30, 125, 2025, 2048]:
-    let p = initFftPlan(float32, n)
+    let p = initFftPlan(T, n)
     ws.reserve(p.workspaceSize)
-    let rows = fftLanes - 3 # a partial batch: the other lanes are zero
-    var t = newSeq[float32](rows * n)
-    for v in t.mitems: v = float32(rng.rand(-1.0..1.0))
+    var t = newSeq[T](rows * n)
+    for v in t.mitems: v = T(rng.rand(-1.0..1.0))
     let b = rowBlock(t, rows, n)
-    var x = newSeq[float32](n * fftLanes)
+    var x = newSeq[T](n * fftLanes)
     gatherLanes(b, 0, x)
-    var re, im = newSeq[float32](p.bins * fftLanes)
+    var re, im = newSeq[T](p.bins * fftLanes)
     p.forwardLanes(x, re, im, ws)
-    var r1, i1 = newSeq[float32](p.bins)
+    var r1, i1 = newSeq[T](p.bins)
+    let lim = tol * sqrt(float64(n))
     for l in 0..<fftLanes:
       if l < rows:
         p.forward(b.row(l), r1, i1, ws)
       else:
         for k in 0..<p.bins: (r1[k] = 0; i1[k] = 0)
       for k in 0..<p.bins:
-        doAssert abs(re[k * fftLanes + l] - r1[k]) <= 1e-6 * sqrt(float32(
-            n)) and
-          abs(im[k * fftLanes + l] - i1[k]) <= 1e-6 * sqrt(float32(n)),
-          "n = " & $n & " lane " & $l & " bin " & $k
-    var y = newSeq[float32](n * fftLanes)
+        doAssert abs(float64(re[k * fftLanes + l] - r1[k])) <= lim and
+          abs(float64(im[k * fftLanes + l] - i1[k])) <= lim,
+          $T & " n = " & $n & " lane " & $l & " bin " & $k
+    var y = newSeq[T](n * fftLanes)
     p.inverseLanes(re, im, y, ws)
-    var res = newSeq[float32](rows * n)
+    var res = newSeq[T](rows * n)
     scatterLanes(y, rowBlock(res, rows, n), 0)
     for i in 0..<t.len:
-      doAssert abs(res[i] - t[i]) < 1e-5, "n = " & $n & " round trip"
+      doAssert abs(float64(res[i] - t[i])) < 10 * tol, $T & " n = " & $n &
+        " round trip"
+
+block lanes_match_single:
+  lanesMatchSingle(float32, fftLanes, 1e-6) # a full batch
+  lanesMatchSingle(float32, fftLanes - 3, 1e-6) # a partial one
+  lanesMatchSingle(float64, fftLanes, 1e-14)
+  lanesMatchSingle(float64, 1, 1e-14)
+
+block nan_stays_in_its_lane:
+  for n in [60, 64, 45]:
+    let p = initFftPlan(float32, n)
+    var ws = initWorkspace()
+    ws.reserve(p.workspaceSize)
+    var x = newSeq[float32](n * fftLanes)
+    for i in 0..<x.len: x[i] = float32(i mod 7)
+    x[5 * fftLanes + 3] = NaN
+    var re, im = newSeq[float32](p.bins * fftLanes)
+    p.forwardLanes(x, re, im, ws)
+    p.inverseLanes(re, im, x, ws)
+    for j in 0..<n:
+      for l in 0..<fftLanes:
+        let v = x[j * fftLanes + l]
+        if l == 3: doAssert v.isNaN
+        else: doAssert abs(v - float32((j * fftLanes + l) mod 7)) < 1e-4
 
 block gather_pads_and_clips:
   var t = @[1'f32, 2, 3, 4, 5, 6]
@@ -193,6 +218,30 @@ block unreserved_workspace:
     var re, im = newSeq[float64](p.bins)
     doAssertRaises IndexDefect:
       p.forward(x, re, im, ws)
-    ws.reserve(p.workspaceSize(lanes = 1))
-    doAssertRaises IndexDefect:
-      p.forward(x, re.toOpenArray(0, 3), im, ws)
+
+block wrong_lengths_and_default_plans:
+  # Always checked, in every build mode.
+  let p = initFftPlan(float64, 64)
+  var ws = initWorkspace()
+  ws.reserve(p.workspaceSize(batched = false))
+  doAssert ws.fits(p.workspaceSize(batched = false)) and
+    not ws.fits(p.workspaceSize)
+  var x = newSeq[float64](64)
+  var re, im = newSeq[float64](p.bins)
+  p.forward(x, re, im, ws) # one lane is enough for the one-trace path
+  doAssertRaises AssertionDefect:
+    p.forward(x, re.toOpenArray(0, 3), im, ws)
+  doAssertRaises AssertionDefect:
+    p.inverse(re, im, x.toOpenArray(0, 62), ws)
+  doAssertRaises AssertionDefect:
+    p.forwardLanes(x, re, im, ws)
+  var none: FftPlan[float64]
+  var empty: seq[float64]
+  var one = newSeq[float64](1)
+  doAssertRaises AssertionDefect:
+    none.forward(empty, one, one, ws)
+  var lanes = newSeq[float64](3)
+  doAssertRaises AssertionDefect:
+    gatherLanes(rowBlock(x, 8, 8), 0, lanes)
+  doAssertRaises AssertionDefect:
+    gatherLanes(rowBlock(x, 8, 8), -1, x)

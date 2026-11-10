@@ -227,9 +227,9 @@ toDbInto(amp, db)                       # 0 dB at the peak (or dbAbsolute)
 
 The window is demeaned, Tukey-tapered and zero-padded; the average is over power across
 the live rows (dead, auxiliary and failed rows and padding past a trace's end are left
-out), and amplitudes are scaled so that a sinusoid of amplitude A on a bin reads A. The
+out), and amplitudes are scaled so that a sinusoid of amplitude A on a bin reads A, also in a window shortened by a trace's end. The
 window is given in columns of the block: the viewer converts its time selection with the
-meta's time axis (`sampleTimeMs`). It does not change the samples, so it runs on the raw
+meta's time axis (`sampleTimeMs`). Rows with a NaN or Inf sample in the window are left out (the returned count says how many rows were used). It does not change the samples, so it runs on the raw
 or the processed buffer. It allocates nothing once the workspace is reserved.
 
 ## Overlays: moveout ticks for geometry checks
