@@ -146,9 +146,12 @@ block refused_traces:
   doAssert acc.addLive(1, [0'f32, 0, 0, 0]) and acc.foldAt(1, 0) == 0
   doAssert liveSpan([0'f32, 0, 3, 0, 4, 0]) == 2 .. 4
   doAssert liveSpan([0'f32, 0]).len == 0
-  doAssertRaises AssertionDefect: discard acc.add(2, [1'f32])
-  doAssertRaises AssertionDefect: discard acc.add(0, [1'f32, 1, 1, 1, 1])
-  doAssertRaises AssertionDefect: discard acc.add(0, [1'f32, 1], 1, 3)
+  # A Defect leaving a {.raises: [].} proc skips its cleanup, so catching one
+  # leaks its message: ASan builds leave these checks out.
+  when not defined(addressSanitizer):
+    doAssertRaises AssertionDefect: discard acc.add(2, [1'f32])
+    doAssertRaises AssertionDefect: discard acc.add(0, [1'f32, 1, 1, 1, 1])
+    doAssertRaises AssertionDefect: discard acc.add(0, [1'f32, 1], 1, 3)
   doAssert acc.add(0, [5'f32, 5]) # shorter than the stack: from sample 0
   doAssert acc.sumAt(0, 0) == 5 and acc.foldAt(0, 3) == 1
 
@@ -158,6 +161,8 @@ block validation_memory_allocation:
   doAssertRaises ValueError: discard initStackAccumulator[float32](1, 10, dt, NaN)
   doAssertRaises ValueError: discard initStackAccumulator[float32](high(
       int) div 2, 10, dt)
+  doAssertRaises ValueError: discard initStackAccumulator[float32](1, high(
+      int) div 4, dt)
   doAssert stackMemory(float32, 10_000, 2001) == 160_080_000
   doAssert stackMemory(float64, 2, 3) == 72
   var acc = initStackAccumulator[float32](8, 500, dt)

@@ -24,25 +24,41 @@
 ## 2D field by the bin's CDP number, a 3D field by its inline and
 ## crossline numbers. A `VelocityFunction` serves every bin.
 ##
-## **Traces.** Only live traces are stacked (`ChunkMeta.isLive`). A trace
-## outside every bin, with a NaN offset or `t0Ms`, or with a NaN or
-## infinite sample is skipped and counted in `StackResult.skipped`. Every
-## live trace must have one sample interval (a mixed SEG-D record: select
-## the traces of one channel set). The traces need not be sorted.
+## **Traces.** Only live traces are stacked (`ChunkMeta.isLive`). A live
+## trace is skipped, and counted in `StackResult.skipped`, when it falls
+## outside every bin, has a NaN offset or `t0Ms`, a NaN static (with
+## `useStatics`), no sample interval in its headers, or a NaN or infinite
+## sample, or when the stretch mute leaves nothing of it. Traces that could
+## not be decoded are counted in `failed` (their diagnostics are dropped:
+## read them with parseSEG if needed). The live traces with an interval
+## must all have the same one (a mixed SEG-D record: select the traces of
+## one channel set), and the stack and the flow are sized by the longest
+## of them. The traces need not be sorted.
+##
+## **Reproducibility.** With several workers, which worker stacks which
+## chunk, and so the order of the float sums, changes from run to run: two
+## runs agree to rounding, not bit for bit. One worker is deterministic.
+##
+## **Cost.** A `VelocityField` is read for a bin whenever a worker moves to
+## another bin (the last bin's column is cached), so CDP-sorted input reads
+## it once per CDP and shot-sorted input about once per trace
+## (`samples` interpolations each).
 ##
 ## **Progress and cancel.** `progress(done, total)` is called on the
-## calling thread after every chunk with the traces done and the total, and
+## calling thread after every chunk with the **traces** done and the total
+## (parseSEG's `Progress` type, which elsewhere counts bytes), and
 ## once at the end with `done == total`; returning false stops the workers
 ## and raises parseSEG's `SegCancelledError`.
 ##
 ## **Memory.** Each worker owns a full stack accumulator, merged at the
 ## end, so the job holds `workers` accumulators, `bins × samples ×
 ## (sizeof(T) + 4)` bytes each, plus the result (the same again), the
-## prefetch ring (`maxRingBytes`) and each worker's flow scratch
-## (`bruteStackMemory` adds these up). Use fewer workers for a large 3D
-## stack.
+## prefetch ring (`maxRingBytes`, at least `workers + 1` chunks, plus the
+## chunk the consumer holds) and each worker's flow scratch
+## (`bruteStackMemory` estimates the total). Use fewer workers for a large
+## 3D stack.
 
-import std/math
+import std/[atomics, math]
 import parseSEG
 import core/[rows, types, workspace]
 import pipeline
@@ -74,7 +90,8 @@ type
     dtMs*: float64       ## Sample interval, in ms.
     startMs*: float64    ## Time of sample 0, in ms.
     stacked*: int        ## Traces stacked.
-    skipped*: int        ## Live traces not stacked (no bin, NaN, non-finite).
+    skipped*: int        ## Live traces not stacked (see the module documentation).
+    failed*: int         ## Traces that could not be decoded.
 
 proc initBruteStackOptions*(flow = initPipeline(), nmo = initNmoParams(),
     norm = fnFold, workers = 1): BruteStackOptions =
@@ -86,13 +103,17 @@ proc initBruteStackOptions*(flow = initPipeline(), nmo = initNmoParams(),
 
 func bruteStackMemory*(T: typedesc[SampleType], bins, samples, inSamples,
     workers: int, chunkTraces = 256, maxRingBytes = 4 shl 20): int =
-  ## An upper bound of the memory a `bruteStack` holds, in bytes: `workers`
-  ## accumulators and the result (`stackMemory` each), the prefetch ring,
-  ## and each worker's scratch (an estimate: the flow's FFT scratch is
-  ## bounded by 16 lane rows of a 4× padded trace).
+  ## An estimate of the memory a `bruteStack` holds, in bytes: `workers`
+  ## accumulators and the result (`stackMemory` each), the prefetch ring
+  ## and the consumer's chunk, and each worker's scratch (taken as 16 lane
+  ## rows of a 4× padded trace, which bounds the FFT filters' scratch, plus
+  ## 1 MiB for a percentile histogram; a flow of several long filters may
+  ## need more: `plan.workspaceSize` is exact). Raises `OverflowDefect` for
+  ## sizes beyond `int`.
   let stacks = (workers + 1) * stackMemory(T, bins, samples)
-  let ring = max(maxRingBytes, (workers + 1) * chunkTraces * inSamples * sizeof(T))
-  let scratch = workers * (16 * 4 * inSamples * 8 + 2 * samples * 8)
+  let chunk = chunkTraces * inSamples * sizeof(T)
+  let ring = max(maxRingBytes, (workers + 1) * chunk) + chunk
+  let scratch = workers * (16 * 4 * inSamples * 8 + (1 shl 20) + 2 * samples * 8)
   stacks + ring + scratch
 
 type
@@ -120,9 +141,12 @@ type
     staticsInterp: ShiftInterp
     nmo: NmoParams
     dtMs, startMs: float64
+    intervalUs: float64
     states: ptr UncheckedArray[WorkerState[T]]
+    anyFailed: Atomic[bool] # a worker failed: the consumer stops
 
-proc note[T](s: var WorkerState[T], msg: string) {.raises: [].} =
+proc note[T](job: ptr Job[T], s: var WorkerState[T], msg: string) {.raises: [].} =
+  job.anyFailed.store(true)
   if s.failed: return
   s.failed = true
   s.msgLen = min(msg.len, s.msg.len)
@@ -154,14 +178,16 @@ proc stackChunk[T](worker: int, samples: ptr UncheckedArray[T], rows, cols: int,
     let meta = initChunkMeta(traces, job.dtMs, 0, failed)
     let b = rowBlock(samples.toOpenArray(0, rows * cols - 1), rows, cols)
     if job.useStatics:
-      applyStatics(b, meta, job.statics, job.staticsInterp)
+      applyStatics(b, meta, job.statics, job.staticsInterp) # NaN: untouched
     {.cast(gcsafe).}:
       job.plan[].apply(b, meta, s.ws)
     for r in 0 ..< rows:
       if not meta.isLive(r): continue
       let k = meta.keys(r)
       let bin = job.binning[].binOf(k)
-      if bin < 0 or k.offset.isNaN or k.t0Ms.isNaN:
+      if bin < 0 or k.offset.isNaN or k.t0Ms.isNaN or
+          k.intervalUs != job.intervalUs or
+          (job.useStatics and job.statics.staticMs(k).isNaN):
         inc s.skipped
         continue
       {.cast(gcsafe).}:
@@ -169,29 +195,31 @@ proc stackChunk[T](worker: int, samples: ptr UncheckedArray[T], rows, cols: int,
       let n = meta.liveSamples(r, cols)
       discard nmoInto(b.row(r, n), meta.sampleTimeMs(r, 0), s.row, job.startMs,
         job.dtMs, k.offset, s.vel, job.nmo)
-      if s.acc.addLive(bin, s.row): inc s.stacked else: inc s.skipped
+      if liveSpan(s.row).len > 0 and s.acc.addLive(bin, s.row): inc s.stacked
+      else: inc s.skipped
   except CatchableError as e:
-    s.note(e.msg)
+    job.note(s, e.msg)
 
-proc liveInterval(f: SeismicFile, traces: Slice[int]): float64 =
-  # The one sample interval of the live traces, in ms.
+proc liveTraces(f: SeismicFile, traces: Slice[int]): (float64, int) =
+  # The one sample interval of the live traces (in µs) and their longest
+  # length; traces without an interval are left out (and skipped later).
   let rows = f.rowsOf(traces)
   var us = NaN
+  var longest = 0
   for i in 0 ..< rows.len:
     let k = rows.keysAt(i)
     if k.status notin {tsLive, tsUnknown}: continue
     let x = k.intervalUs
-    if not (x > 0 and x < Inf):
-      raise newException(ValueError, "trace " & $(traces.a + i) &
-        " has no sample interval in its headers (" & $x & " µs)")
+    if not (x > 0 and x < Inf): continue
     if us.isNaN: us = x
     elif x != us:
       raise newException(ValueError, "the live traces have different sample " &
         "intervals (" & $us & " and " & $x & " µs, trace " & $(traces.a + i) &
         "): stack the traces of one interval (one channel set)")
+    longest = max(longest, rows.numSamples(i))
   if us.isNaN:
-    raise newException(ValueError, "no live traces to stack")
-  us / 1000
+    raise newException(ValueError, "no live traces with a sample interval to stack")
+  (us, longest)
 
 proc checkOptions(o: BruteStackOptions) =
   if o.workers <= 0 or o.chunkTraces <= 0 or o.maxRingBytes <= 0:
@@ -212,8 +240,8 @@ proc runStack[T](f: SeismicFile, traces: Slice[int], binning: Binning,
     raise newException(ValueError, "bruteStack needs stored keys: open the " &
       "file with keys = true (or call ensureKeys)")
   checkOptions(opts)
-  let dtMs = liveInterval(f, traces)
-  let inSamples = f.maxSamples(traces)
+  let (intervalUs, inSamples) = liveTraces(f, traces)
+  let dtMs = intervalUs / 1000
   let samples = if opts.samples > 0: opts.samples else: inSamples
   let plan = opts.flow.compile(T, dtMs, max(inSamples, 1))
   # Everything the workers use is allocated here, on the calling thread.
@@ -232,10 +260,12 @@ proc runStack[T](f: SeismicFile, traces: Slice[int], binning: Binning,
   job.staticsInterp = opts.staticsInterp
   job.nmo = opts.nmo
   job.dtMs = dtMs
+  job.intervalUs = intervalUs
   job.startMs = opts.startMs
   job.states = cast[ptr UncheckedArray[WorkerState[T]]](addr states[0])
   let total = int64(traces.len)
   var done = 0'i64
+  var failed = 0
   block run:
     var p = newPrefetcher[T](f, traces, chunkTraces = opts.chunkTraces,
       depth = opts.workers + 2, cols = inSamples, workers = opts.workers,
@@ -245,6 +275,8 @@ proc runStack[T](f: SeismicFile, traces: Slice[int], binning: Binning,
     var c: PrefetchChunk[T]
     while p.nextInto(c):
       done += int64(c.count)
+      failed += c.failed
+      if job.anyFailed.load: break
       if progress != nil and done < total and not progress(done, total):
         raiseCancelled("bruteStack cancelled")
   for s in states:
@@ -259,6 +291,7 @@ proc runStack[T](f: SeismicFile, traces: Slice[int], binning: Binning,
     fold: newTensor[int32](binning.len, samples))
   states[0].acc.stackInto(result.data, opts.norm)
   states[0].acc.foldInto(result.fold)
+  result.failed = failed
   for s in states:
     result.stacked += s.stacked
     result.skipped += s.skipped

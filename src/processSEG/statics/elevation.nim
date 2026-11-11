@@ -17,7 +17,8 @@
 ##
 ## with elevations in the file's units and `vReplacement` in those units per
 ## second. A source buried at `srcDepth` below the surface (from parseSEG's
-## `traceStatics`) counts at `srcZ − srcDepth`.
+## `traceStatics`) counts at `srcZ − srcDepth`, a buried receiver at
+## `rcvZ − rcvDepth`.
 ##
 ## **Header columns.** parseSEG reads the SEG-Y datum, depth and statics
 ## fields on demand (`traceStatics`; NaN where unknown, and for SEG-D and
@@ -30,7 +31,11 @@
 ## on its own.
 ##
 ## **NaN.** An unknown elevation or velocity gives a NaN static, and a NaN
-## static leaves its row alone: nothing defaults it.
+## static leaves its row alone: nothing defaults it (`bruteStack` skips
+## such traces).
+##
+## **Batch.** `bruteStack` takes a `DatumStatics` only; per-trace datums
+## and header statics are for callers that apply `applyStatics` themselves.
 ##
 ## Uphole and refraction (weathering) statics are not computed here.
 
@@ -79,12 +84,14 @@ func staticMs*(d: DatumStatics, k: TraceKeys, st: TraceStatics): float64 {.
     raises: [].} =
   ## The datum static of a trace with its header columns: the trace's own
   ## `srcDatum` and `rcvDatum` where they are finite (else `d.datumZ`), and
-  ## the source at `srcZ − srcDepth` where `srcDepth` is finite.
+  ## the source at `srcZ − srcDepth` and the receiver at `rcvZ − rcvDepth`
+  ## where those depths are finite.
   let srcDatum = if st.srcDatum.isNaN: d.datumZ else: st.srcDatum
   let rcvDatum = if st.rcvDatum.isNaN: d.datumZ else: st.rcvDatum
   let srcZ = if st.srcDepth.isNaN: k.srcZ else: k.srcZ - st.srcDepth
+  let rcvZ = if st.rcvDepth.isNaN: k.rcvZ else: k.rcvZ - st.rcvDepth
   stationStaticMs(srcZ, srcDatum, d.vReplacement) +
-    stationStaticMs(k.rcvZ, rcvDatum, d.vReplacement)
+    stationStaticMs(rcvZ, rcvDatum, d.vReplacement)
 
 func headerStaticMs*(st: TraceStatics): float64 {.inline, raises: [].} =
   ## The source plus group static the headers record, in ms; NaN when both
@@ -116,6 +123,15 @@ proc staticsInto*(meta: ChunkMeta, d: DatumStatics,
   checkLen(staticsMs.len, meta.len, "staticsMs")
   for i in 0 ..< meta.len:
     staticsMs[i] = d.staticMs(meta.keys(i), statics[i])
+
+proc headerStaticsInto*(statics: openArray[TraceStatics],
+    staticsMs: var openArray[float64]) =
+  ## Fills `staticsMs[i]` with `headerStaticMs(statics[i])`, for
+  ## `applyStatics` with the statics the headers record. Raises `ValueError`
+  ## when the lengths differ.
+  checkLen(staticsMs.len, statics.len, "staticsMs")
+  for i in 0 ..< statics.len:
+    staticsMs[i] = headerStaticMs(statics[i])
 
 proc applyStatics*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
     staticsMs: openArray[float64], interp = siLinear) =

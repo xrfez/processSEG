@@ -6,7 +6,7 @@
 ## var acc = initStackAccumulator[float32](bins = b.len, samples = 2001, dtMs = 2)
 ## for r in 0 ..< meta.len:                      # traces in any order
 ##   if meta.isLive(r) and bins[r] >= 0:
-##     discard acc.addLive(bins[r], samples.row(r))
+##     discard acc.addLive(bins[r], block.row(r))   # block = rowBlock(samples)
 ## var stack = newTensor[float32](acc.bins, acc.samples)
 ## acc.stackInto(stack, fnFold)                  # sum / fold, per sample
 ## ```
@@ -65,7 +65,7 @@ proc initStackAccumulator*[T: SampleType](bins, samples: int, dtMs: float64,
   if bins < 0 or samples < 0:
     raise newException(ValueError, "bins and samples must be ≥ 0, got " &
       $bins & " × " & $samples)
-  if samples > 0 and bins > high(int) div (samples * (sizeof(T) + 4)):
+  if samples > 0 and bins > high(int) div (sizeof(T) + 4) div samples:
     raise newException(ValueError, "a stack of " & $bins & " × " & $samples &
       " samples is too large")
   if dtMs.classify notin {fcNormal, fcSubnormal} or dtMs <= 0:

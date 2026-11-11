@@ -431,8 +431,11 @@ zeros do not count.
   chunk, on the calling thread; returning false stops the workers and raises
   `SegCancelledError`. A viewer runs `bruteStack` on a background thread of its own.
 - **Result:** a `StackResult`: `data` (`[bins, samples]`, normalized by fold, √fold or
-  not), `fold` (`[bins, samples]`, int32), `binning`, `dtMs`, `startMs`, `stacked` and
-  `skipped` (live traces outside every bin, with a NaN offset or t0, or non-finite).
+  not), `fold` (`[bins, samples]`, int32), `binning`, `dtMs`, `startMs`, `stacked`,
+  `skipped` (live traces outside every bin, with a NaN offset, t0 or static, no
+  interval, non-finite samples, or fully stretch-muted) and `failed` (traces that could
+  not be decoded). With several workers the sums are added in a varying order: runs agree
+  to rounding, not bit for bit.
 - **Memory:** `workers + 1` stacks of bins × samples × (sizeof(T) + 4) bytes, plus the
   prefetch ring and the flow's scratch (`bruteStackMemory`). A float32 3D stack of
   100 000 bins × 2001 samples is 1.6 GB per copy: use one or two workers for it.

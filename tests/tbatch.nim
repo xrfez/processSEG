@@ -244,11 +244,42 @@ block demo_files:
   let gres = bruteStack(sg2, float32, cdpBinning(1, 10), constantVelocity(1500))
   doAssert gres.stacked == 0 and gres.skipped == sg2.len
 
+block decode_failures_counted:
+  # Traces whose samples lie past the end of the file fail to decode: they
+  # are counted, not stacked.
+  var f = openSeismic(flat.path, keys = true)
+  for t in [5, 6, 100]: f.index.entries[t].offset = int64(getFileSize(flat.path))
+  let res = bruteStack(f, float32, binning, vel)
+  doAssert res.failed == 3 and res.stacked == flat.traces - 3 and res.skipped == 0
+
+block skipped_traces:
+  # A NaN static (unknown elevation) with statics on, and a trace with no
+  # interval, are skipped; a trace fully stretch-muted is skipped too.
+  var f = openSeismic(flat.path, keys = true)
+  f.index.keys[7].rcvZ = NaN
+  f.index.keys[8].intervalUs = NaN
+  var opts = initBruteStackOptions()
+  opts.useStatics = true
+  opts.statics = datumStatics(100, 2000)
+  let res = bruteStack(f, float32, binning, vel, opts)
+  doAssert res.skipped == 2 and res.stacked == flat.traces - 2
+  opts = initBruteStackOptions(nmo = initNmoParams(maxStretch = 1e-6))
+  opts.samples = 50 # 100 ms: every trace (none at zero offset) is muted
+  let muted = bruteStack(f, float32, binning, vel, opts)
+  doAssert muted.stacked == 0 and muted.skipped == flat.traces
+
 block memory_bound:
   let m = bruteStackMemory(float32, bins = 1000, samples = 2001,
     inSamples = 2001, workers = 4)
   doAssert m >= 5 * stackMemory(float32, 1000, 2001)
-  doAssert m == 5 * stackMemory(float32, 1000, 2001) + max(4 shl 20, 5 * 256 *
-      2001 * 4) + 4 * (16 * 4 * 2001 * 8 + 2 * 2001 * 8)
+  let chunk = 256 * 2001 * 4
+  let ring = max(4 shl 20, 5 * chunk) + chunk
+  let scratch = 4 * (16 * 4 * 2001 * 8 + (1 shl 20) + 2 * 2001 * 8)
+  doAssert m == 5 * stackMemory(float32, 1000, 2001) + ring + scratch
+  # The scratch term bounds what a typical flow reserves.
+  let plan = initPipeline([bandPassOp(Corners(f1: 4, f2: 8, f3: 60, f4: 80)),
+    agcOp(500), normalizeOp(normPercentile, perPanel)]).compile(float32, 2, 2001)
+  let w = plan.workspaceSize
+  doAssert w.f32 * 4 + w.f64 * 8 + w.u32 * 4 <= 16 * 4 * 2001 * 8 + (1 shl 20)
 
 removeDir(dir)

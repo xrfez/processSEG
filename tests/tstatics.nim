@@ -82,11 +82,18 @@ block header_columns:
   doAssert near(d.staticMs(k, st), -5) # 10 m above its own datum, 0 m
   st.srcDepth = 10
   doAssert near(d.staticMs(k, st), 0) # the buried source sits on its datum
+  st.rcvDepth = 4
+  doAssert near(d.staticMs(k, st), 2) # the receiver 4 m below its datum
+  st.rcvDepth = NaN
   doAssert headerStaticMs(st).isNaN
   st.srcStatic = -4
   doAssert headerStaticMs(st) == -4
   st.rcvStatic = 1.5
   doAssert headerStaticMs(st) == -2.5
+  var hs = newSeq[float64](2)
+  headerStaticsInto([st, initTraceStatics()], hs)
+  doAssert hs[0] == -2.5 and hs[1].isNaN
+  doAssertRaises ValueError: headerStaticsInto([st], hs)
   # The column form.
   var g = cmpGather[float32](0, [100.0, 200], 10, dtMs = 2)
   g.keys[0].srcZ = 130

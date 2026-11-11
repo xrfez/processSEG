@@ -34,6 +34,7 @@
 
 import std/math
 import parseSEG
+import ../core/types
 
 type
   BinningKind* = enum
@@ -221,6 +222,10 @@ proc binsInto*(rows: TraceRows, b: Binning, bins: var openArray[int]) =
       " elements, the rows " & $rows.len)
   for i in 0 ..< rows.len:
     bins[i] = b.binOf(rows.keysAt(i))
+
+proc binsInto*(meta: ChunkMeta, b: Binning, bins: var openArray[int]) =
+  ## `binsInto(meta.rows, b, bins)`.
+  binsInto(meta.rows, b, bins)
 
 proc location*(b: Binning, bin: int): BinLocation =
   ## What bin `bin` stands for: its CDP number (2D), its inline and

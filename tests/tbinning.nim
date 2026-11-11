@@ -101,6 +101,21 @@ block rotated_grid:
     doAssert b.binOf(keysAt(10_000 + 6 * 12.5 * vx, 20_000 + 6 * 12.5 * vy)) == -1
     doAssert b.binOf(keysAt(10_000 - 13 * ux, 20_000 - 13 * uy)) == -1
 
+block grid_handedness_pinned:
+  # Azimuth 0: crosslines increase to the north (+y); clockwise inlines to
+  # the east (+x), anticlockwise to the west.
+  let cw = gridBinning(0, 0, 0, crosslineSpacing = 25, inlineSpacing = 12.5,
+    inlines = 2, crosslines = 2)
+  let ccw = gridBinning(100, 0, 0, 25, 12.5, 2, 2, clockwise = false)
+  doAssert cw.binOf(keysAt(0, 25)) == 1 and cw.binOf(keysAt(12.5, 0)) == 2
+  doAssert cw.binOf(keysAt(-12.5, 0)) == -1
+  doAssert ccw.binOf(keysAt(87.5, 0)) == 2 and ccw.binOf(keysAt(112.5, 0)) == -1
+  # Azimuth 90: crosslines to the east, clockwise inlines to the south.
+  let east = gridBinning(0, 0, 90, 25, 12.5, 2, 2)
+  doAssert east.binOf(keysAt(25, 0)) == 1 and east.binOf(keysAt(0, -12.5)) == 2
+  doAssert abs(east.location(3).x - 25) < 1e-12 and abs(east.location(3).y +
+      12.5) < 1e-12
+
 block header_inline_crossline:
   let b = inlineCrosslineBinning(1001, 3, 10, 4, inlineStep = 2,
     crosslineStep = 5)
@@ -133,6 +148,10 @@ block validation_and_allocation:
   var g = cmpGather[float32](0, [100.0, 200], 4, 2, cdp = 2)
   var bins = newSeq[int](2)
   doAssert allocsIn(binsInto(g.rows, b, bins)) == 0
+  doAssert bins == @[1, 1]
+  let meta = initChunkMeta(g.rows, dtMs = 2)
+  bins = @[0, 0]
+  binsInto(meta, b, bins)
   doAssert bins == @[1, 1]
   var short = newSeq[int](1)
   doAssertRaises ValueError: binsInto(g.rows, b, short)
