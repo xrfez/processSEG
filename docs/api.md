@@ -364,6 +364,7 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `intervalMs(rows: TraceRows)` | The rows' common interval from their keys' `intervalUs` (`ValueError` when unknown, 0 or mixed). |
 | `chunkMeta(c: PrefetchChunk[T], dtMs = NaN)` | The meta of a prefetch chunk: its rows, interval, `firstSample` and `failedRows`, in place. `dtMs` overrides headers without an interval. |
 | `chunkMeta(f, traces: Slice[int] \| openArray[int], [samples: Slice[int],] failed = [], dtMs = NaN)` | The meta of a `readTracesInto` of a range or list (and sample window), with its `failedRows` list. |
+| `pilotFromTrace(f, trace, T = float64, t0Ms = NaN, dtMs = NaN): Pilot[T]` | A recorded pilot (aux sweep or ground-force trace) from a file: samples, interval and start time from its keys, `sweep` from the SEG-Y sweep fields (trace header, else binary) when they describe a linear or exponential sweep. |
 
 ## vibroseis/taper: sweep-end tapers
 
@@ -388,3 +389,18 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `sweepSamples(spec, T = float64): seq[T]`, `sweepInto(spec, x: var openArray[T])` | The sweep, `amplitude·taper·sin(φ₀ + 2π∫f)`. |
 | `frequencyAt(spec, tMs)`, `phaseAt(spec, tMs)` | The instantaneous frequency; the phase in radians (closed-form laws; NaN for the dB laws). |
 | `segySweepType(spec)` | SEG-Y sweep type: 1 linear, 3 exponential, 4 other. |
+
+## vibroseis/pilot: generated and recorded pilots
+
+| Proc | What |
+|---|---|
+| `Pilot[T]` (`samples`, `dtMs`, `t0Ms`, `sweep: Option[SweepSpec]`); `len`, `lengthMs` | A pilot: sample `j` at `t0Ms + j·dtMs` from the time break. (`std/options` is re-exported.) |
+| `generatePilot(spec, T = float64)` | The pilot of a sweep, from 0 ms, `sweep` set. |
+| `initPilot(samples, dtMs, t0Ms = 0, sweep = none(SweepSpec))`, `validate(pilot)` | A pilot from the caller's samples; `ValueError` for fewer than 2 samples, non-finite or all-zero samples, a bad `dtMs` or `t0Ms`, a sweep at another interval. |
+| `pilotFromRow(meta, data, row, t0Ms = NaN, sweep = none(SweepSpec))` | A recorded pilot from a block row: its live samples, `meta.dtMs`, `sampleTimeMs(row, 0)` as `t0Ms`. |
+| `pilotKeys(pilot): TraceKeys` | Keys for parseSEG's `writeTrace`: interval, start time, trace code 6 (sweep), auxiliary. |
+| `sweepOverrides(spec, binary = false): seq[HeaderOverride]` | The SEG-Y sweep fields (start/end Hz, length, type, taper lengths and type) as `trace.` overrides, or `binary.` fields for `HeaderEditor.setFileField`. |
+| `sweepFromHeaders(f1Hz, f2Hz, lengthMs, sweepType, taperStartMs, taperEndMs, taperType, dtMs): Option[SweepSpec]` | The sweep SEG-Y fields describe (linear or exponential only). |
+| `resamplePilot(pilot, dtMs, cutoffFraction = 0.9, halfWidth = 24)` | Band-limited resampling (Kaiser-windowed sinc at `cutoffFraction` of the lower Nyquist); refuses a sweep above the cutoff. |
+| `InstrumentPhase` (`ipMinimumPhase`, `ipZeroPhase`), `InstrumentFilter` (`highCutHz`, `highSlopeDbPerOctave`, `lowCutHz`, `lowSlopeDbPerOctave`, `phase`) | A recorder's filters as Butterworth responses (SEG-Y bytes 141-152). |
+| `applyInstrumentFilter(pilot, filter)` | The pilot through the recorder's filters from rest (causal for minimum phase), same length. |
