@@ -14,10 +14,15 @@ with no hidden allocation and no hidden threads.
   runs a plan across cores.
 - **Pre-stack:** mutes, datum statics, LMO and NMO (stretch mute), velocity functions and
   fields (VELF, HANDVEL, CSV), CMP binning (2D, 3D), stacking in any order with per-sample
-  fold, a brute stack of a whole file, written as SEG-Y.
+  fold, a brute stack of a whole file, written as SEG-Y (or described by `stackKeys` for
+  parseSEG's writer).
 - **QC:** geometry checks (header offset against coordinates), first-break pickers
   (STA/LTA, modified energy ratio, modified Coppens) with a confidence per pick, and a
-  robust per-shot refraction fit that flags swapped receivers.
+  robust per-shot refraction fit that flags swapped receivers; windowed and coherence SNR.
+- **Vibroseis:** sweep generation (linear, dB/octave, dB/Hz, exponential, table; nine taper
+  shapes), generated or recorded pilots (resampling, instrument filters, SEG-Y sweep
+  headers), correlation and sweep deconvolution, vertical and diversity stacking of
+  repeated sweeps, and continuous node recordings cut into records at shot times.
 
 float32 and float64 throughout; units are ms, Hz, dB and distance units per second.
 

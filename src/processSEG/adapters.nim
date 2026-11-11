@@ -24,14 +24,19 @@
 ## channel sets. A chunk whose rows disagree raises `ValueError`: prefetch with
 ## `uniform = true`, or split the traces with `uniformRuns`.
 ##
+## `pilotFromTrace` reads a recorded pilot (an auxiliary sweep or
+## ground-force trace) into a `Pilot`, with its sweep from the SEG-Y sweep
+## fields when they describe one.
+##
 ## **Lifetimes.** A meta holds the chunk's view and failed rows, so it is
 ## valid until the chunk is next filled (`next`, `nextInto`) or its
 ## prefetcher closed, and a meta of a trace list (`rowsOf(f, list)`) needs the
 ## list, and `failed`, to outlive it. See `core/types` for the rest.
 
-import std/math
+import std/[math, options]
 import parseSEG
 import core/types
+import vibroseis/[sweep, pilot]
 
 proc noInterval(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
@@ -114,3 +119,51 @@ proc chunkMeta*(f: SeismicFile, traces: openArray[int], samples: Slice[int],
   ## `Slice` forms.
   checkWindow(samples)
   metaOf(f.rowsOf(traces), dtMs, samples.a, failed)
+
+proc pilotFromTrace*(f: SeismicFile, trace: int, T: typedesc[SampleType] = float64,
+    t0Ms = NaN, dtMs = NaN): Pilot[T] =
+  ## The pilot recorded in trace `trace` of `f` (opened with keys): its
+  ## samples, its interval (from its keys unless `dtMs` is given) and its
+  ## start time (`TraceKeys.t0Ms` unless `t0Ms` is given). For SEG-Y, the
+  ## sweep fields of the trace header (bytes 127-140) give `sweep` when
+  ## they describe a linear or exponential sweep (`sweepFromHeaders`), else
+  ## those of the binary header; other standards give none. Raises
+  ## `ValueError` for a trace outside the file, a file without keys, an
+  ## unknown interval or start time without an override, or a pilot
+  ## `validate` rejects; parseSEG's errors for a trace that cannot be read.
+  if trace notin 0 ..< f.len:
+    raise newException(ValueError, "trace " & $trace & " is outside 0 ..< " & $f.len)
+  let rows = f.rowsOf(trace .. trace)
+  let dt = if dtMs.isNaN: intervalMs(rows) else: dtMs
+  let k = rows.keysAt(0)
+  let t0 = if t0Ms.isNaN: k.t0Ms else: t0Ms
+  if t0.isNaN:
+    raise newException(ValueError, "trace " & $trace & " has no start time: pass t0Ms")
+  let data = f.readTraces(trace .. trace, T)
+  let n = min(rows.numSamples(0), data.shape[1])
+  var s = newSeq[T](n)
+  for j in 0 ..< n: s[j] = data[0, j]
+  var sweep = none(SweepSpec)
+  if f.kind == skSegy:
+    template field(pre, name: string): float64 =
+      f.traceField(trace, pre & name).toFloat
+    proc fromBinary(f: SeismicFile, name: string): float64 =
+      let b = f.index.segy.binary
+      case name
+      of "sweepFreqStart": float64(b.sweepFreqStart)
+      of "sweepFreqEnd": float64(b.sweepFreqEnd)
+      of "sweepLength": float64(b.sweepLength)
+      of "sweepType": float64(b.sweepType)
+      of "sweepTaperStart": float64(b.sweepTaperStart)
+      of "sweepTaperEnd": float64(b.sweepTaperEnd)
+      else: float64(b.taperType)
+    sweep = sweepFromHeaders(field("trace.", "sweepFreqStart"), field("trace.", "sweepFreqEnd"),
+      field("trace.", "sweepLength"), field("trace.", "sweepType"),
+      field("trace.", "sweepTaperStart"), field("trace.", "sweepTaperEnd"),
+      field("trace.", "taperType"), dt)
+    if sweep.isNone:
+      sweep = sweepFromHeaders(f.fromBinary("sweepFreqStart"), f.fromBinary("sweepFreqEnd"),
+        f.fromBinary("sweepLength"), f.fromBinary("sweepType"),
+        f.fromBinary("sweepTaperStart"), f.fromBinary("sweepTaperEnd"),
+        f.fromBinary("taperType"), dt)
+  initPilot(s, dt, t0, sweep)

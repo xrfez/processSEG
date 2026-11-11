@@ -214,7 +214,10 @@ For threads, give each its own accumulator and `merge` them at the end.
 optional datum statics, the pre-stack flow (`opts.flow`, a `Pipeline`), NMO onto the
 stack's time axis, and stacks into the trace's bin. Velocities come from a function, or
 from a field read at each bin's location. `writeStack` saves the result as SEG-Y, one
-trace per bin, whatever the input standard.
+trace per bin, whatever the input standard. To write it your own way (other options,
+extra header overrides, some bins only), give parseSEG's `writeTrace(w, keys, samples,
+overrides)` each bin's `stackKeys(res, bin)` and `stackOverrides(res, bin)`: processSEG
+describes its results and parseSEG writes them.
 
 ```nim
 import std/math

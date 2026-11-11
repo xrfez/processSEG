@@ -7,6 +7,7 @@
 ## let plan = flow.compile(float32, dtMs = 2, samples = 2001)
 ## pool.apply(plan, raw, processed, meta)        # per frame or chunk; blocks
 ## pool.apply(plan, samples, meta)               # in place
+## pool.correlateInto(corr, raw, correlated, meta) # vibroseis correlation
 ## ```
 ##
 ## **Workers.** The threads start once, in `newProcessPool`, sleep on a
@@ -42,6 +43,7 @@ import std/locks
 import parseSEG
 import rows, types, workspace
 import ../pipeline
+import ../vibroseis/correlate
 
 type
   JobFn = proc(ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
@@ -256,3 +258,43 @@ proc apply*[T: SampleType](p: ProcessPool, plan: PipelinePlan[T],
   meta.checkShape(src)
   meta.checkShape(dst)
   p.apply(plan, rowBlock(src), rowBlock(dst), meta)
+
+# -------------------------------------------------------------- correlation --
+
+type
+  CorrCtx[T: SampleType] = object
+    plan: ptr CorrelationPlan[T]
+    src, dst: RowBlock[T]
+    meta: ChunkMeta
+    workers: int
+
+proc corrJob[T](ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
+    gcsafe, raises: [].} =
+  let c = cast[ptr CorrCtx[T]](ctx)
+  let rows = workerRows(c.dst.len, worker, c.workers)
+  if rows.len == 0: return
+  try:
+    ws.reserve(c.plan[].workspaceSize)
+    c.plan[].correlateInto(c.src.sub(rows), c.dst.sub(rows), c.meta.sub(rows), ws)
+  except ValueError as e:
+    raiseAssert "checked by correlateInto: " & e.msg
+
+proc correlateInto*[T: SampleType](p: ProcessPool, plan: CorrelationPlan[T],
+    src, dst: RowBlock[T], meta: ChunkMeta) =
+  ## Vibroseis correlation of `src` into `dst` with the rows split across the
+  ## workers; blocks until they are done. Raises `ValueError` as
+  ## `CorrelationPlan.correlateInto` does, before any sample changes.
+  doAssert p.state != nil, "a ProcessPool must come from newProcessPool"
+  plan.checkCorrelate(src, dst, meta) # on the caller's thread
+  var ctx = CorrCtx[T](plan: unsafeAddr plan, src: src, dst: dst, meta: meta,
+    workers: p.state.workers)
+  acquire p.state.call
+  run(p.state, corrJob[T], addr ctx)
+  release p.state.call
+
+proc correlateInto*[T: SampleType](p: ProcessPool, plan: CorrelationPlan[T],
+    src: Tensor[T], dst: var Tensor[T], meta: ChunkMeta) =
+  ## The tensor form of the pooled correlation.
+  meta.checkShape(src)
+  meta.checkShape(dst)
+  p.correlateInto(plan, rowBlock(src), rowBlock(dst), meta)

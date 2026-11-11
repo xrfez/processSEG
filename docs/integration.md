@@ -462,7 +462,9 @@ zeros do not count.
   prefetch ring and the flow's scratch (`bruteStackMemory`). A float32 3D stack of
   100 000 bins × 2001 samples is 1.6 GB per copy: use one or two workers for it.
 
-The viewer shows the result as an in-memory dataset. `writeStack(path, res, opts)` saves
+The viewer shows the result as an in-memory dataset; processSEG describes results and
+parseSEG writes them (D14): `stackKeys(res, bin)` and `stackOverrides(res, bin)` give each
+bin's headers for parseSEG's `writeTrace`. As a convenience, `writeStack(path, res, opts)` saves
 it as SEG-Y, whatever the input standard, one trace per bin (patch F3: headers built from
 `TraceKeys`, no template trace): the bin's CDP number (3D: its 1-based index), inline and
 crossline, centre as CDP X/Y, offset 0, `startMs` and `dtMs`, the largest per-sample fold

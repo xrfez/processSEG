@@ -54,12 +54,14 @@
 ## guideT0Ms + 1000·|offset| / guideVelocity`. A guided pick needs the
 ## offset: a NaN offset gives no pick.
 ##
-## **Confidence.** `snrDb` is 10·log₁₀ of the mean energy of the
-## `snrWindowMs` after the pick over that of the `snrWindowMs` ending
-## `windowMs / 2` before it (a guard gap, so a pick a little late does not
-## count the break as noise; each window cut by the trace's ends; a pick
-## with nothing before the gap has a NaN `snrDb` and confidence 0), and `confidence` maps it linearly from `lowDb` (0)
-## to `highDb` (1), clamped. The same measure serves every picker, so
+## **Confidence.** `snrDb` is the windowed SNR of `qc/snr` (`windowSnrDb`,
+## `seRatio`, no floor) of the filtered trace: 10·log₁₀ of the mean energy
+## of the `snrWindowMs` after the pick over that of the `snrWindowMs`
+## ending `windowMs / 2` before it (a guard gap, so a pick a little late
+## does not count the break as noise; each window cut by the trace's ends,
+## each mean energy plus `1e-6` of the trace's; a pick with nothing before
+## the gap has a NaN `snrDb` and confidence 0), and `confidence` maps it
+## linearly from `lowDb` (0) to `highDb` (1), clamped. The same measure serves every picker, so
 ## confidences compare across methods. Noise alone gives about 0 dB, a
 ## clear break well above `highDb`.
 ##
@@ -83,6 +85,7 @@ import parseSEG
 import ../core/[rows, types, workspace]
 import ../filter/[design, iir]
 import ../fft/plan as fftplan
+import snr
 
 type
   PickMethod* = enum
@@ -335,15 +338,13 @@ proc pickRow[T](plan: FirstBreakPlan[T], src: ptr UncheckedArray[T], n: int,
   let beta = pr.stabilization * mean * float64(plan.w)
   let col = argmaxAttribute(pr.pickMethod, p, a, n, lo, hi, plan.w, plan.lta, beta, eps)
   if col < 0: return
-  let k1 = min(plan.snr, n - col)
   let gapEnd = max(0, col - plan.w div 2) # guard gap: a pick a little late
-  let k0 = min(plan.snr, gapEnd)
-  let after = (p[col + k1] - p[col]) / float64(max(k1, 1))
-  let before = (p[gapEnd] - p[gapEnd - k0]) / float64(max(k0, 1))
   result.col = float64(col)
   result.timeMs = origin + float64(col) * dt
-  if k0 > 0: # else nothing before the gap: no SNR, confidence 0
-    let snr = 10 * log10((after + eps) / (before + eps))
+  # Nothing before the gap (an empty noise window): NaN, confidence 0.
+  let snr = windowSnrDb(x.toOpenArray(0, n - 1), col ..< min(n, col + plan.snr),
+    max(0, gapEnd - plan.snr) ..< gapEnd, seRatio, floorDb = -Inf, stabilization = eps)
+  if not snr.isNaN:
     result.snrDb = snr
     result.confidence = clamp((snr - pr.lowDb) / (pr.highDb - pr.lowDb), 0.0, 1.0)
 

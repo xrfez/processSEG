@@ -273,6 +273,20 @@ block demo_files:
   var bad = sres
   bad.fold = newTensor[int32](1, 1)
   doAssertRaises(ValueError): discard writeStack(stackPath, bad)
+  # D14: the same file written by hand from stackKeys and stackOverrides.
+  let handPath = getTempDir() / "processseg_tbatch_hand_stack.sgy"
+  block:
+    var w = openSeismicWriter(handPath, SegyOutputOptions(traceSorting: 4))
+    for bin in 0 ..< empty.data.shape[0]:
+      w.writeTrace(empty.stackKeys(bin), empty.data[bin, _].toFlatSeq,
+        overrides = empty.stackOverrides(bin))
+    doAssert not w.close().isFatal
+  discard writeStack(stackPath, empty)
+  doAssert readFile(handPath) == readFile(stackPath)
+  removeFile(handPath)
+  doAssert empty.maxFold(1) == 0 and empty.maxFold(0) == 1
+  doAssertRaises(ValueError): discard empty.stackKeys(2)
+  doAssertRaises(ValueError): discard bad.stackOverrides(0)
   # line.sg2: SEG-2 has no CDP numbers, so header-CDP bins take none.
   var sg2 = openSeismic(d / "line.sg2", keys = true)
   let gres = bruteStack(sg2, float32, cdpBinning(1, 10), constantVelocity(1500))

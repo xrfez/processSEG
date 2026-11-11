@@ -1,0 +1,127 @@
+## Pilots (tasks 10.3 and 10.3b): generated and recorded pilots, the SEG-Y
+## sweep fields round trip through parseSEG, resampling and instrument
+## filters.
+
+import std/[assertions, math, os]
+import parseSEG, processSEG
+
+block generated:
+  let spec = linearSweep(8, 80, 8000, 2, initSweepTaper(250, 300, tpLinear))
+  let p = generatePilot(spec, float32)
+  doAssert p.len == 4001 and p.dtMs == 2 and p.t0Ms == 0 and p.lengthMs == 8000
+  doAssert p.sweep.isSome and p.sweep.get.f1Hz == 8
+  doAssert p.samples == spec.sweepSamples(float32)
+
+block validation:
+  doAssertRaises(ValueError): discard initPilot(@[1.0], 2)
+  doAssertRaises(ValueError): discard initPilot(@[0.0, 0.0, 0.0], 2)
+  doAssertRaises(ValueError): discard initPilot(@[1.0, NaN], 2)
+  doAssertRaises(ValueError): discard initPilot(@[1.0, 1.0], 0)
+  doAssertRaises(ValueError): discard initPilot(@[1.0, 1.0], 2, t0Ms = NaN)
+  let s = linearSweep(8, 80, 100, 2)
+  doAssertRaises(ValueError): discard initPilot(@[1.0, 1.0], 1, sweep = some(s))
+  doAssert initPilot(@[1.0, -1.0], 2, 0.6).t0Ms == 0.6
+
+block sweep_overrides:
+  let spec = linearSweep(8.4, 79.6, 12000, 2, initSweepTaper(250, 500, tpCos2))
+  let o = spec.sweepOverrides
+  doAssert o.len == 7 and o[0].name == "trace.sweepFreqStart"
+  doAssert o[0].value.toFloat == 8 and o[1].value.toFloat == 80
+  doAssert o[2].value.toFloat == 12000 and o[3].value.toFloat == 1
+  doAssert o[4].value.toFloat == 250 and o[5].value.toFloat == 500 and o[6].value.toFloat == 2
+  doAssert spec.sweepOverrides(binary = true)[3].name == "binary.sweepType"
+  # A sweep over 32.767 s does not fit the int16 length field.
+  doAssertRaises(ValueError): discard linearSweep(8, 80, 40000, 2).sweepOverrides
+
+block round_trip_through_segy:
+  # Written with parseSEG from pilotKeys and sweepOverrides, read back as a pilot.
+  let spec = linearSweep(6, 90, 6000, 2, initSweepTaper(200, 400, tpLinear))
+  let p = generatePilot(spec, float32)
+  let path = getTempDir() / "processseg_tpilot.sgy"
+  block:
+    var w = openSeismicWriter(path, SegyOutputOptions())
+    w.writeTrace(p.pilotKeys, p.samples, overrides = spec.sweepOverrides)
+    doAssert not w.close().isFatal
+  var f = openSeismic(path, keys = true)
+  doAssert f.traceKeys(0).status == tsAuxiliary and f.traceKeys(0).traceCode == 6
+  let back = pilotFromTrace(f, 0, float32)
+  doAssert back.samples == p.samples and back.dtMs == 2 and back.t0Ms == 0
+  doAssert back.sweep.isSome
+  let s = back.sweep.get
+  doAssert s.law == slLinear and s.f1Hz == 6 and s.f2Hz == 90 and s.lengthMs == 6000
+  doAssert s.taper.startMs == 200 and s.taper.endMs == 400 and s.taper.shape == tpLinear
+  # The same through a meta, as a viewer holds the trace (no sweep fields).
+  let data = f.readTraces(0 .. 0, float32)
+  let meta = chunkMeta(f, 0 .. 0)
+  let r = pilotFromRow(meta, data, 0)
+  doAssert r.samples == p.samples and r.dtMs == 2 and r.t0Ms == 0 and r.sweep.isNone
+  doAssertRaises(ValueError): discard pilotFromRow(meta, data, 1)
+  doAssertRaises(ValueError): discard pilotFromTrace(f, 1)
+  f.close()
+  # Other sweep types give no sweep from the headers.
+  doAssert sweepFromHeaders(8, 80, 8000, 4, 0, 0, 1, 2).isNone
+  doAssert sweepFromHeaders(8, 80, 8000, 3, 0, 0, 3, 2).get.law == slExponential
+  removeFile(path)
+
+block from_row_window_and_t0:
+  var keys = @[initTraceKeys()]
+  keys[0].t0Ms = -1.5
+  keys[0].intervalUs = 2000
+  let counts = @[6]
+  let failed: seq[int] = @[]
+  var data = zeros[float64](1, 8)
+  for j in 0 ..< 6: data[0, j] = float64(j + 1)
+  let meta = initChunkMeta(rowsOf(keys, counts), dtMs = 2, firstSample = 1, failed = failed)
+  let p = pilotFromRow(meta, data, 0)
+  # Column 0 is trace sample 1: t0 = −1.5 + 2; the live length is 6 − 1.
+  doAssert p.t0Ms == 0.5 and p.len == 5
+  doAssert pilotFromRow(meta, data, 0, t0Ms = 3).t0Ms == 3
+
+proc maxDiff(a, b: seq[float64], skip: int): float64 =
+  for j in skip ..< min(a.len, b.len) - skip: result = max(result, abs(a[j] - b[j]))
+
+block resample_down_and_up:
+  # 0.5 ms → 2 ms, against the sweep generated at 2 ms; the sweep stays
+  # below 0.8 · 250 Hz, the cutoff is 0.9 · 250 Hz.
+  let taper = initSweepTaper(200, 200)
+  let fine = generatePilot(linearSweep(8, 160, 4000, 0.5, taper, maxNyquistFraction = 0.2))
+  let coarse = fine.resamplePilot(2)
+  let want = generatePilot(linearSweep(8, 160, 4000, 2, taper))
+  doAssert coarse.len == want.len and coarse.dtMs == 2 and coarse.sweep.get.dtMs == 2
+  let down = maxDiff(coarse.samples, want.samples, 0)
+  doAssert down < 2e-3, "downsampled pilot differs by " & $down
+  # 2 ms → 0.5 ms.
+  let up = want.resamplePilot(0.5)
+  let wantFine = generatePilot(linearSweep(8, 160, 4000, 0.5, taper, maxNyquistFraction = 0.2))
+  doAssert up.len == wantFine.len
+  let upErr = maxDiff(up.samples, wantFine.samples, 0)
+  doAssert upErr < 2e-3, "upsampled pilot differs by " & $upErr
+  # A sweep above the new limit is refused; a pilot without a sweep is not checked.
+  doAssertRaises(ValueError): discard fine.resamplePilot(4) # 160 Hz > 0.9 · 125
+  var anon = fine
+  anon.sweep = none(SweepSpec)
+  discard anon.resamplePilot(4)
+  doAssertRaises(ValueError): discard fine.resamplePilot(0)
+  doAssertRaises(ValueError): discard anon.resamplePilot(1e-9) # over 2³¹ samples
+  doAssertRaises(ValueError): discard fine.resamplePilot(2, cutoffFraction = 0)
+
+block instrument_filter_causality:
+  var s = newSeq[float64](400)
+  s[200] = 1
+  let spike = initPilot(s, 2)
+  let mp = spike.applyInstrumentFilter(InstrumentFilter(highCutHz: 100,
+    highSlopeDbPerOctave: 36, phase: ipMinimumPhase))
+  for j in 0 ..< 200: doAssert mp.samples[j] == 0, "a minimum-phase filter is causal"
+  doAssert mp.samples[200] != 0
+  let zp = spike.applyInstrumentFilter(InstrumentFilter(highCutHz: 100,
+    highSlopeDbPerOctave: 36, phase: ipZeroPhase))
+  for k in 1 .. 30: doAssert abs(zp.samples[200 - k] - zp.samples[200 + k]) < 1e-9
+  doAssert zp.len == 400 and zp.t0Ms == 0
+  # A low-cut alone, and a band-pass with equal slopes.
+  discard spike.applyInstrumentFilter(InstrumentFilter(lowCutHz: 3,
+    lowSlopeDbPerOctave: 12, phase: ipMinimumPhase))
+  discard spike.applyInstrumentFilter(InstrumentFilter(lowCutHz: 3, lowSlopeDbPerOctave: 12,
+    highCutHz: 100, highSlopeDbPerOctave: 12, phase: ipZeroPhase))
+  doAssertRaises(ValueError): discard spike.applyInstrumentFilter(InstrumentFilter())
+  doAssertRaises(ValueError): discard spike.applyInstrumentFilter(InstrumentFilter(
+    highCutHz: 100, highSlopeDbPerOctave: 7, phase: ipMinimumPhase))
