@@ -373,16 +373,25 @@ proc writeStack*[T](path: string, res: StackResult[T],
   ## the 1-based bin index for 3D bins; inline and crossline; the bin
   ## centre as the CDP X/Y), offset 0, `startMs` as the delay, `dtMs`, and
   ## as the fold (`numHorzStacked`, bytes 33-34) the largest per-sample fold;
-  ## a bin with no fold is a dead trace (code 2). `openSeismic` reads the
-  ## keys back. Returns the writer's diagnostics. Raises `ValueError` for
-  ## `opts` the writer refuses or an empty stack, `IOError` when the output
-  ## cannot be written; no output is left on a raise.
+  ## a bin with no fold is a dead trace (code 2). The binary header's trace
+  ## sorting is `opts.traceSorting`, and 4 (CDP stack) when that is 0 (so
+  ## `SegyOutputOptions(revision: ...)` still says stack). `openSeismic`
+  ## reads the keys back.
+  ##
+  ## Returns the writer's diagnostics: a failed rename of the finished
+  ## file into place is a fatal entry there, not a raise (check
+  ## `isFatal`). Raises `ValueError` for `opts` the writer refuses or an
+  ## empty stack, `SegFormatError` for a value the sample format cannot
+  ## hold, `IOError` when the output cannot be created or written; no
+  ## output is left on a raise.
   if res.data.rank != 2 or res.data.size == 0 or res.fold.shape != res.data.shape:
     raise newException(ValueError, "writeStack: an empty or inconsistent stack")
   let bins = res.data.shape[0]
   let n = res.data.shape[1]
   let data = rowBlock(res.data)
-  var w = openSeismicWriter(path, opts)
+  var o = opts
+  if o.traceSorting == 0: o.traceSorting = 4
+  var w = openSeismicWriter(path, o)
   for bin in 0 ..< bins:
     var most = 0'i32
     for j in 0 ..< n: most = max(most, res.fold[bin, j])

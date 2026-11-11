@@ -25,6 +25,15 @@
 ## units): coordinates are often rounded, and the header offset to whole
 ## units.
 ##
+## **Units.** The comparison is in the coordinates' units, which must be
+## those of the offset: parseSEG does not convert SEG-Y coordinates given
+## in arc-seconds or degrees (coordinate units 2-4), so such a file
+## mismatches on every trace.
+##
+## **Midpoints.** The CDP X/Y of a processed or binned file is often the
+## bin centre, not the midpoint (up to half a bin diagonal away), so
+## `gfMidpointMismatch` is not in `badGeometry`.
+##
 ## Non-live rows (dead, auxiliary, failed) are not checked: their flags are
 ## empty and their values NaN.
 
@@ -57,10 +66,12 @@ type
     midpointError*: float64
       ## Distance of the header midpoint from the halfway point; NaN unknown.
 
-const badGeometry* = {gfNoOffset, gfZeroOffset, gfOffsetMismatch, gfMidpointMismatch}
+const badGeometry* = {gfNoOffset, gfZeroOffset, gfOffsetMismatch}
   ## The flags `flaggedRows` selects by default: geometry that is wrong or
-  ## missing for processing (a negative offset and missing coordinates alone
-  ## are not).
+  ## missing for processing. A negative offset and missing coordinates
+  ## alone are not, nor a midpoint mismatch (processed and 3D SEG-Y often
+  ## hold the bin centre as the CDP X/Y: add `gfMidpointMismatch` when the
+  ## file holds true midpoints).
 
 func uncheckedGeometry(): GeometryCheck {.inline.} =
   GeometryCheck(distance: NaN, offsetError: NaN, midpointError: NaN)

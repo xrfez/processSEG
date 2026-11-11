@@ -148,9 +148,19 @@ block no_picks:
   let ps = picks(g, guided)
   for r in 0..3:
     doAssert ps[r].timeMs.isNaN and ps[r].col.isNaN and ps[r].confidence == 0, $r
-  # Unguided, a NaN offset or t0 is not needed (t0 NaN: columns from 0).
+  # Unguided, a NaN offset is not needed; a NaN t0 gives a column, no time.
   let pf = picks(g, FirstBreakParams(pickMethod: pmCoppens))
-  doAssert not pf[1].timeMs.isNaN and not pf[3].timeMs.isNaN and pf[2].timeMs.isNaN
+  doAssert not pf[1].timeMs.isNaN and pf[2].timeMs.isNaN
+  doAssert pf[3].timeMs.isNaN and abs(pf[3].col * dt - onsetMs(g.keys[3].offset)) <= 2 * dt
+  # The same in a window (firstSample 10): the column is the block's.
+  let w = g.window(10, 400)
+  let wmeta = initChunkMeta(w.rows, dt, firstSample = w.firstSample)
+  let wplan = initFirstBreakPlan(float32, FirstBreakParams(pickMethod: pmCoppens), dt, cols)
+  var wws = initWorkspace()
+  wws.reserve(wplan.workspaceSize)
+  var wp = newSeq[FirstBreakPick](w.len)
+  wplan.pickInto(w.data, wmeta, wws, wp)
+  doAssert wp[3].timeMs.isNaN and wp[3].col == pf[3].col - 10
   # A search window outside the trace.
   for q in picks(shot(0.02, 5), FirstBreakParams(searchStartMs: 5000)):
     doAssert q.timeMs.isNaN

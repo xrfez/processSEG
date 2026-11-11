@@ -63,7 +63,10 @@
 ## clear break well above `highDb`.
 ##
 ## **No pick** (`timeMs`, `col`, `snrDb` NaN, `confidence` 0): a non-live
-## row, an empty search window or a trace without energy there.
+## row, an empty search window or a trace without energy there. A trace
+## whose `t0Ms` is NaN takes no time window (no guide, no search bounds:
+## else no pick) and its pick has a `col` but a NaN `timeMs`, as
+## `ChunkMeta.sampleTimeMs` gives NaN there.
 ##
 ## **Band-pass.** A Butterworth minimum-phase (causal) band-pass
 ## (`filter/iir`, one pass): a zero-phase filter would put a precursor
@@ -108,7 +111,7 @@ type
 
   FirstBreakPick* = object
     ## One trace's pick.
-    timeMs*: float64     ## Pick time (`t0Ms` based); NaN: no pick.
+    timeMs*: float64     ## Pick time (`t0Ms` based); NaN: no pick, or no `t0Ms`.
     col*: float64        ## The pick's column in the block; NaN: no pick.
     snrDb*: float64      ## Energy after / before the pick, in dB; NaN: none.
     confidence*: float64 ## 0 .. 1 from `snrDb` (`lowDb` .. `highDb`); 0 without a pick.
@@ -285,9 +288,11 @@ proc pickRow[T](plan: FirstBreakPlan[T], src: ptr UncheckedArray[T], n: int,
     tLo = max(tLo, tl - pr.beforeMs)
     tHi = min(tHi, tl + pr.afterMs)
   if t0Ms.isNaN and (tLo > -Inf or tHi < Inf): return
-  let origin = if t0Ms.isNaN: 0.0 else: t0Ms + startCol * dt # time of column 0
-  let cLo = (tLo - origin) / dt
-  let cHi = (tHi - origin) / dt
+  # Time of column 0 (NaN with t0: then no time window applies, above, and
+  # the pick has a column but no time).
+  let origin = t0Ms + startCol * dt
+  let cLo = if origin.isNaN: -Inf else: (tLo - origin) / dt
+  let cHi = if origin.isNaN: Inf else: (tHi - origin) / dt
   let lo = if cLo <= 0: 0 elif cLo >= float64(n): n else: int(ceil(cLo))
   let hi = if cHi < 0: 0 elif cHi >= float64(n - 1): n else: int(floor(cHi)) + 1
   if lo >= hi: return

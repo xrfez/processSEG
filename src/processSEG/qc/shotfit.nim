@@ -19,8 +19,10 @@
 ##   segment meeting at a crossover offset, `t = a + x/v1` up to `xc`,
 ##   `a + xc/v1 + (x − xc)/v2` beyond; fitted by least absolute deviations
 ##   (iteratively reweighted), the crossover by a search over the picks'
-##   offsets (at least 3 picks on each segment) refined by golden section;
-##   a single segment when that fits as well;
+##   offsets (at least 3 picks on each segment; up to 64 quantiles of them
+##   on long spreads) refined by golden section, the second segment faster
+##   than the first; a single segment when that fits as well; no model
+##   when all used picks share one offset;
 ## - `rmOffsetBinned`: the median pick time in offset bins of `binWidth`,
 ##   linear between the bins' median offsets and extended linearly beyond
 ##   the end bins: for refractors no two lines describe. Bins should be
@@ -28,11 +30,16 @@
 ##   get flagged.
 ##
 ## Only picks of `confidence ≥ minConfidence` on live rows with a known
-## offset count.
+## offset count. The spread is taken as one line (2D, or one receiver line
+## of a 3D shot: pass each line's rows separately, since a patch of lines
+## interleaves along any one axis).
 ##
 ## **Residuals.** `residualMs` is the pick minus the model. Along the
-## spread (traces ordered by their position: signed along the receivers'
-## line when the coordinates are known, else by the signed offset), a
+## spread (traces ordered by `position`: when every live row has
+## coordinates, the receiver's distance from the source along the
+## receivers' principal axis, oriented toward +x (+y for a north–south
+## line); else the signed offset when the offsets are signed; else the
+## channel number; else the row), a
 ## refractor whose depth or velocity varies bends the residuals smoothly,
 ## while a trace whose header places it at another station jumps.
 ## `localMs` is the residual minus the median residual of the nearest
@@ -67,6 +74,15 @@
 ## A refractor that varies laterally also makes the sides differ by a few
 ## ms, so compare shots rather than trust one value. The source's position
 ## is not checked further.
+##
+## **What a swap must exceed.** A trace whose header is `Δx` along the line
+## from its true station is off the model by about `Δx / v` (`v` the
+## velocity of the arrival there), and off by `Δx / v` from its neighbours'
+## lags. It is flagged when that exceeds `residualMs` (12 ms) or
+## `lagToleranceMs` (8 ms): with 25 m groups, an adjacent-channel swap on a
+## 3000 m/s refractor (8 ms) is below both and is missed, while swaps of
+## two stations or more, or on slower arrivals, are found. Lower the
+## thresholds for clean data and short groups.
 ##
 ## `fitShot` resizes the `ShotFit` seqs to the shot's rows and reuses them
 ## (QC is not a hot path: it allocates a little scratch per call).
@@ -173,14 +189,34 @@ proc positionsInto(meta: ChunkMeta, pos: var seq[float64]) =
       sxy += dx * dy
       syy += dy * dy
     let theta = 0.5 * arctan2(2 * sxy, sxx - syy) # principal axis
-    let ux = cos(theta)
-    let uy = sin(theta)
+    var ux = cos(theta)
+    var uy = sin(theta)
+    if ux < -1e-12 or (abs(ux) <= 1e-12 and uy < 0): # toward +x (else +y)
+      ux = -ux
+      uy = -uy
     for r in 0 ..< n:
       let q = meta.keys(r)
       pos[r] = if meta.isLive(r): (q.rcvX - q.srcX) * ux + (q.rcvY - q.srcY) * uy else: NaN
-  else:
-    for r in 0 ..< n:
-      pos[r] = if meta.isLive(r): meta.keys(r).offset else: NaN
+    return
+  # No coordinates: the signed offset when the offsets are signed (some
+  # negative) and all known; else the channel number when every live row
+  # has one; else the row. Unsigned offsets would interleave the two sides
+  # of a split spread.
+  var signed, offsets, channels = true
+  var anyNeg = false
+  for r in 0 ..< n:
+    if not meta.isLive(r): continue
+    let q = meta.keys(r)
+    if q.offset.isNaN: offsets = false
+    elif q.offset < 0: anyNeg = true
+    if q.channel.isNaN: channels = false
+  signed = offsets and anyNeg
+  for r in 0 ..< n:
+    let q = meta.keys(r)
+    pos[r] = if not meta.isLive(r): NaN
+             elif signed: q.offset
+             elif channels: q.channel
+             else: float64(r)
 
 proc sortByKey(idx: var seq[int], key: openArray[float64])
 
@@ -239,16 +275,21 @@ proc fitTwoSegment(fit: var ShotFit) =
   var bestXc = Inf
   var c: array[3, float64]
   # One segment, then crossovers at the picks' offsets (3 picks or more on
-  # each segment), then a golden-section refinement around the best.
-  best = l1Fit(fit.xs, fit.ts, fit.ws, Inf, c)
-  bestC = c
+  # each segment; at most 64 quantiles of them on a long spread), then a
+  # golden-section refinement around the best.
   fit.tmp.setLen n
   for i in 0 ..< n: fit.tmp[i] = fit.xs[i]
   fit.tmp.sort()
-  template valid(c: array[3, float64]): bool = c[1] > 0 and c[2] > 0
+  if fit.tmp[n - 1] - fit.tmp[0] <= 1e-9 * max(1.0, fit.tmp[n - 1]):
+    return # one offset: no slope can be fitted (the model stays NaN)
+  best = l1Fit(fit.xs, fit.ts, fit.ws, Inf, c)
+  bestC = c
+  # A second segment must be faster than the first (a smaller slowness).
+  template valid(c: array[3, float64]): bool = c[1] > 0 and c[2] > 0 and c[2] < c[1]
   var bestK = -1
   var last = NaN
-  for k in 2 .. n - 4:
+  let stride = max(1, (n - 5) div 64)
+  for k in countup(2, n - 4, stride):
     let xc = fit.tmp[k]
     if xc == last or xc <= fit.tmp[0] or xc >= fit.tmp[n - 1]: continue
     last = xc
@@ -259,8 +300,8 @@ proc fitTwoSegment(fit: var ShotFit) =
       bestXc = xc
       bestK = k
   if bestK >= 0:
-    var a = fit.tmp[max(bestK - 1, 0)]
-    var b = fit.tmp[min(bestK + 1, n - 1)]
+    var a = fit.tmp[max(bestK - stride, 0)]
+    var b = fit.tmp[min(bestK + stride, n - 1)]
     const g = 0.6180339887498949
     for iter in 0 ..< 40:
       let x1 = b - g * (b - a)
@@ -384,14 +425,13 @@ proc correlateInto[T](fit: var ShotFit, b: RowBlock[T], meta: ChunkMeta,
 # -------------------------------------------------------------------- fit --
 
 proc sortByKey(idx: var seq[int], key: openArray[float64]) =
-  # Insertion sort of idx by key[idx[i]] (stable; a shot is small).
-  for i in 1 ..< idx.len:
-    let v = idx[i]
-    var j = i - 1
-    while j >= 0 and key[idx[j]] > key[v]:
-      idx[j + 1] = idx[j]
-      dec j
-    idx[j + 1] = v
+  # Sorts idx by key[idx[i]], stable (ties keep their order).
+  var pairs = newSeq[(float64, int)](idx.len)
+  for i, v in idx: pairs[i] = (key[v], v)
+  pairs.sort(proc (a, b: (float64, int)): int =
+    result = cmp(a[0], b[0])
+    if result == 0: result = cmp(a[1], b[1]))
+  for i in 0 ..< idx.len: idx[i] = pairs[i][1]
 
 proc fitPicks(meta: ChunkMeta, picks: openArray[FirstBreakPick], p: ShotFitParams,
     fit: var ShotFit) =

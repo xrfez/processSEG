@@ -29,8 +29,9 @@ type Shot = object
   g: SynthGather[float32]
   truth: seq[float64] # true first-break times
 
-proc makeShot(srcX: float64, sigma = 0.02, seed = 1'i64): Shot =
-  let rel = splitSpread(perSide, group, group)
+proc makeShot(srcX: float64, sigma = 0.02, seed = 1'i64,
+    offsets = splitSpread(perSide, group, group)): Shot =
+  let rel = offsets
   result.g = shotGather[float32](srcX, rel, cols, dt)
   for r in 0 ..< result.g.len:
     let t = breakMs(srcX, result.g.keys[r].rcvX)
@@ -175,6 +176,48 @@ block positions_without_coordinates:
   fitShot(meta, picks, ShotFitParams(), fit)
   doAssert fit.position[0] == s.g.keys[0].offset
   doAssert suspects(fit) == @[20, 27], $suspects(fit)
+
+block unsigned_offsets_without_coordinates:
+  # Unsigned offsets would interleave the two sides: the channel order is
+  # used (review 8.4 #1), and the swap is still the only finding.
+  var s = makeShot(5000)
+  let picks = pickAll(s.g)
+  s.g.swapHeaders(20, 27)
+  s.g.unsignOffsets
+  for k in s.g.keys.mitems:
+    k.srcX = NaN
+    k.rcvX = NaN
+  let meta = initChunkMeta(s.g.rows, dt)
+  var fit: ShotFit
+  fitShot(s.g.data, meta, picks, ShotFitParams(), fit)
+  doAssert fit.position[5] == s.g.keys[5].channel
+  doAssert suspects(fit) == @[20, 27], $suspects(fit)
+  # No channels either: the row order.
+  for k in s.g.keys.mitems: k.channel = NaN
+  fitShot(s.g.data, meta, picks, ShotFitParams(), fit)
+  doAssert fit.position[5] == 5 and suspects(fit) == @[20, 27], $suspects(fit)
+
+block degenerate_fits:
+  # Every pick at one offset: no velocity can be fitted (review 8.4 #6).
+  var keys = newSeq[TraceKeys](4)
+  for i, k in keys.mpairs:
+    k = stationKeys(0, 100, 0, 0, dt)
+    k.channel = float64(i + 1)
+  var counts = @[10, 10, 10, 10]
+  let meta = initChunkMeta(rowsOf(keys, counts), dt)
+  var picks = newSeq[FirstBreakPick](4)
+  for p in picks.mitems: p = FirstBreakPick(timeMs: 100, col: 50, snrDb: 30, confidence: 1)
+  var fit: ShotFit
+  fitShot(meta, picks, ShotFitParams(), fit)
+  doAssert fit.v1.isNaN and fit.modelMs[0].isNaN and suspects(fit).len == 0
+  # A long spread (2000 traces) fits quickly: crossover candidates are capped.
+  var big = makeShot(50_000, offsets = splitSpread(1000, 5, 5))
+  var bp = newSeq[FirstBreakPick](big.g.len)
+  for r in 0 ..< big.g.len:
+    bp[r] = FirstBreakPick(timeMs: big.truth[r], col: 0, snrDb: 30, confidence: 1)
+  let bmeta = initChunkMeta(big.g.rows, dt)
+  fitShot(bmeta, bp, ShotFitParams(), fit)
+  doAssert abs(fit.v2 - v1) < 100 and suspects(fit).len == 0, $fit.v2 & " " & $suspects(fit)
 
 block too_few_picks_and_errors:
   var s = makeShot(5000)

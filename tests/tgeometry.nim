@@ -59,7 +59,8 @@ block flags_on_synthetic_geometry:
     abs(checks[13].midpointError - 30) < 1e-9
   doAssert checks[14].flags == {} and checks[14].distance.isNaN
   doAssert checks[15].flags == {}
-  doAssert flaggedRows(checks) == @[5, 10, 11, 13]
+  doAssert flaggedRows(checks) == @[5, 10, 11]
+  doAssert flaggedRows(checks, badGeometry + {gfMidpointMismatch}) == @[5, 10, 11, 13]
   doAssert flaggedRows(checks, {gfNegativeOffset}) == @[0, 1, 2, 3, 4]
   # The view form checks every row, dead ones too.
   var all = newSeq[GeometryCheck](meta.len)

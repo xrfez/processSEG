@@ -268,6 +268,7 @@ block demo_files:
   var st1 = openSeismic(stackPath, keys = true)
   doAssert st1.traceKeys(0).status == tsLive and st1.traceKeys(1).status == tsDead
   doAssert st1.traceKeys(0).t0Ms == -4 and st1.index.segy.revision.major == 1
+  doAssert st1.index.segy.binary.traceSorting == 4 # 0 in the options: a stack
   st1.close()
   var bad = sres
   bad.fold = newTensor[int32](1, 1)
