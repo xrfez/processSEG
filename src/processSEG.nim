@@ -31,7 +31,8 @@
 ## - `processSEG/pipeline`: `Op`, `Pipeline`, `compile` → `PipelinePlan`, `apply`;
 ## - `processSEG/core/pool`: `ProcessPool`, persistent workers that apply plans;
 ## - `processSEG/adapters`: `chunkMeta` from a prefetch chunk or a trace read;
-## - `processSEG/vibroseis/taper`: sweep-end tapers (`SweepTaper`).
+## - `processSEG/vibroseis/taper`: sweep-end tapers (`SweepTaper`);
+## - `processSEG/vibroseis/sweep`: sweep generation (`SweepSpec`, `sweepSamples`).
 
 import processSEG/core/[types, rows, workspace, basic, mute, shift]
 import processSEG/fft/[plan, spectrum]
@@ -43,8 +44,8 @@ import processSEG/velocity/[model, formats, moveout]
 import processSEG/statics/elevation
 import processSEG/stack/[nmo, binning, stack]
 import processSEG/qc/[geometry, firstbreak, shotfit]
-import processSEG/vibroseis/[taper]
+import processSEG/vibroseis/[taper, sweep]
 export types, rows, workspace, basic, mute, plan, spectrum, design,
     apply, iir, gain, curves, stats, pipeline, adapters, pool, shift, model,
     formats, moveout, elevation, nmo, binning, stack, batch, geometry, firstbreak, shotfit
-export taper
+export taper, sweep

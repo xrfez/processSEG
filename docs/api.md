@@ -375,3 +375,16 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `applyTaper(x: var openArray[T], dtMs, taper)` | Applies the ramps in place to a sweep of `x.len` samples (`(x.len − 1)·dtMs` ms). |
 | `validate(taper)`, `checkFits(taper, sweepMs)` | `ValueError` for bad lengths or parameters, or ramps that overlap (`startMs + endMs > sweepMs`; meeting is allowed). |
 | `segyTaperType(shape \| taper)` | SEG-Y taper type: 1 linear, 2 cos², 3 other. |
+
+## vibroseis/sweep: sweep generation
+
+| Proc | What |
+|---|---|
+| `SweepLaw` (`slLinear`, `slDbPerOctave`, `slDbPerHz`, `slExponential`, `slTable`), `SweepPoint` (`tMs`, `fHz`) | How the frequency runs; a table point. |
+| `SweepSpec` (`law`, `f1Hz`, `f2Hz`, `lengthMs`, `dtMs`, `boostDb`, `table`, `startPhaseDeg`, `amplitude`, `taper`, `maxNyquistFraction`) | A sweep. |
+| `linearSweep(f1Hz, f2Hz, lengthMs, dtMs, taper = noTaper(), startPhaseDeg = 0, amplitude = 1, maxNyquistFraction = 0.8)`; `dbPerOctaveSweep(..., dtMs, boostDb, ...)`, `dbPerHzSweep(..., dtMs, boostDb, ...)`, `exponentialSweep(...)`, `tableSweep(points, dtMs, ...)` | Validated specs. A dB boost is of the amplitude spectrum, per octave or per Hz. |
+| `validate(spec)` | `ValueError`: frequencies ≤ 0, above `maxNyquistFraction`·Nyquist or Nyquist, a length under one sample, a bad table, boost or taper. |
+| `sweepLen(spec)` | Samples: `lengthMs / dtMs + 1` (both ends). |
+| `sweepSamples(spec, T = float64): seq[T]`, `sweepInto(spec, x: var openArray[T])` | The sweep, `amplitude·taper·sin(φ₀ + 2π∫f)`. |
+| `frequencyAt(spec, tMs)`, `phaseAt(spec, tMs)` | The instantaneous frequency; the phase in radians (closed-form laws; NaN for the dB laws). |
+| `segySweepType(spec)` | SEG-Y sweep type: 1 linear, 3 exponential, 4 other. |
