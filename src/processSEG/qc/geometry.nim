@@ -45,7 +45,9 @@ type
   GeometryFlag* = enum
     ## A finding on one trace's geometry.
     gfNoOffset         ## The offset is unknown (NaN).
-    gfZeroOffset       ## The offset is 0, or the source and receiver coincide.
+    gfZeroOffset       ## The offset is 0, or the source and receiver coincide
+                       ## (their distance is within `tolerance`, so a real 0.5 m
+                       ## offset counts with the default of 1).
     gfNegativeOffset   ## A signed (SEG-Y) offset below 0: normal on one side of a split spread.
     gfNoCoordinates    ## The source or the receiver coordinates are unknown.
     gfOffsetMismatch   ## `|offset|` differs from the source–receiver distance.

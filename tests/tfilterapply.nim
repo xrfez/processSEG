@@ -250,3 +250,22 @@ block shape_errors:
   var p0: FilterPlan[float32]
   var one = @[1'f32]
   doAssertRaises AssertionDefect: one.applyFilter(p0, ws)
+
+block interval_must_match_the_plan:
+  # A plan at 2 ms on rows at 4 ms would put every corner off by 2×: the
+  # block forms refuse it (FFT and IIR filters, the averaged spectrum), as
+  # AGC, gain curves and pipelines do.
+  var g = cmpGather[float32](0, [100.0, 200], 100, dtMs = 4)
+  let meta = initChunkMeta(g.rows, 4)
+  var ws = initWorkspace()
+  let fp = initFilterPlan(float32, bandPass(Corners(f1: 4, f2: 8, f3: 60, f4: 80)), 2, 100)
+  ws.reserve(fp.workspaceSize)
+  doAssertRaises ValueError: g.data.applyFilter(meta, fp, ws)
+  let ip = initIirPlan(float32, butterBandPass(5, 60), 2, 100)
+  ws.reserve(ip.workspaceSize)
+  doAssertRaises ValueError: g.data.applyFilter(meta, ip, ws)
+  let sp = initSpectrumPlan(float32, windowLen = 64, dtMs = 2)
+  ws.reserve(sp.workspaceSize)
+  var amp = newSeq[float64](sp.bins)
+  doAssertRaises ValueError:
+    discard sp.averageAmplitudeInto(rowBlock(g.data), meta, 0, amp, ws)

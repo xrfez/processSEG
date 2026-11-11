@@ -434,7 +434,10 @@ func decodeWindow*(shown: Slice[int], margin, traceLen: int): Slice[int] {.
   ## clamped to `0 ..< traceLen`. Decode it (as the prefetcher's
   ## `firstSample` and `cols`, or `readTracesInto`'s sample window), process
   ## it, and draw columns `shown.a − result.a .. shown.b − result.a`.
-  max(0, shown.a - margin) .. min(traceLen - 1, shown.b + margin)
+  ## `shown` must lie in `0 ..< traceLen` (else the result does not hold
+  ## it); a negative `margin` counts as 0.
+  let m = clamp(margin, 0, max(traceLen, 0)) # no overflow for a huge margin
+  max(0, shown.a - m) .. min(traceLen - 1, shown.b + m)
 
 func generation*[T](plan: PipelinePlan[T]): uint64 {.inline, raises: [].} =
   ## The plan's id: never 0, and larger for every later `compile` in the

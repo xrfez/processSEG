@@ -161,7 +161,8 @@ proc initGainCurvePlan*(T: typedesc[SampleType], curve: GainCurve,
   ## with a table over `tMinMs .. tMaxMs` (`tMaxMs` NaN: the record length,
   ## `tMinMs + (samples − 1)·dtMs`); see the module documentation. Raises
   ## `ValueError` for a `dtMs` that is not finite and positive, `samples < 1`,
-  ## non-finite limits, `tMaxMs < tMinMs`, or a table over 2²⁶ samples.
+  ## non-finite limits, `tMaxMs < tMinMs`, a table over 2²⁶ samples, or a
+  ## gain in the table that overflows `T` (e.g. 800 dB in float32).
   if not (dtMs.finite and dtMs > 0):
     badCurve("dtMs must be finite and positive, got " & $dtMs)
   if samples < 1: badCurve("a gain curve plan needs samples ≥ 1, got " & $samples)
@@ -182,7 +183,12 @@ proc initGainCurvePlan*(T: typedesc[SampleType], curve: GainCurve,
     samples: samples)
   result.table = newSeq[T](len)
   for k in 0..<len:
-    result.table[k] = T(curve.factorAt(tMinMs + float64(k) * dtMs))
+    let t = tMinMs + float64(k) * dtMs
+    let g = curve.factorAt(t)
+    result.table[k] = T(g)
+    if result.table[k].float64.classify == fcInf or g.isNaN:
+      # 0 · Inf would turn muted zeros into NaN.
+      badCurve("the gain at " & $t & " ms (" & $g & ") overflows " & $T)
 
 func samples*[T](p: GainCurvePlan[T]): int {.inline, raises: [].} =
   ## The longest trace the plan takes.
@@ -230,12 +236,16 @@ proc mulTableLerp[T](x {.noalias.}, tab {.noalias.}: Buf[T], n: int,
 
 proc applyAt[T](plan: GainCurvePlan[T], x: ptr UncheckedArray[T], n: int,
     startMs: float64) {.raises: [].} =
-  ## The curve on `x[0 ..< n]`, whose sample 0 is at `startMs`.
+  ## The curve on `x[0 ..< n]`, whose sample 0 is at `startMs`. Off the
+  ## table, a zero stays zero whatever the factor (no 0 · Inf).
+  template direct(j: int) =
+    if x[j] != 0:
+      x[j] = T(float64(x[j]) * plan.curve.factorAt(startMs + float64(j) * plan.dtMs))
   if n == 0 or startMs.isNaN: return
   let u = (startMs - plan.tMinMs) / plan.dtMs # table position of x[0]
   if not u.finite or abs(u) > 1e15: # beyond any table: all direct
     for j in 0..<n:
-      x[j] = T(float64(x[j]) * plan.curve.factorAt(startMs + float64(j) * plan.dtMs))
+      direct(j)
     return
   let r = round(u)
   let onGrid = abs(u - r) <= 1e-9 * max(1.0, abs(u))
@@ -244,15 +254,13 @@ proc applyAt[T](plan: GainCurvePlan[T], x: ptr UncheckedArray[T], n: int,
   let last = plan.table.len - (if onGrid: 1 else: 2) # the last j with s + j in the table
   let j0 = clamp(-s, 0, n)
   let j1 = clamp(last - s + 1, j0, n)
-  for j in 0..<j0:
-    x[j] = T(float64(x[j]) * plan.curve.factorAt(startMs + float64(j) * plan.dtMs))
+  for j in 0..<j0: direct(j)
   if j1 > j0:
     let tab = cast[ptr UncheckedArray[T]](unsafeAddr plan.table[s + j0])
     let xs = cast[ptr UncheckedArray[T]](addr x[j0])
     if onGrid: mulTable(xs, tab, j1 - j0)
     else: mulTableLerp(xs, tab, j1 - j0, T(f))
-  for j in j1..<n:
-    x[j] = T(float64(x[j]) * plan.curve.factorAt(startMs + float64(j) * plan.dtMs))
+  for j in j1..<n: direct(j)
 
 proc checkPlan[T](plan: GainCurvePlan[T]) {.inline.} =
   doAssert plan.table.len > 0, "a GainCurvePlan must come from initGainCurvePlan"

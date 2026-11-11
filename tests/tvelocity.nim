@@ -147,6 +147,15 @@ block dix_round_trip:
   doAssert v0 == @[1500.0, 2000]
   rmsFromIntervalInto([0.0, 1000], [1500.0, 2000], v0)
   doAssert v0 == @[1500.0, 2000]
+  # intervalVelocity from 0: the first real layer keeps its velocity (a knot
+  # at 0 made Vrms linear from 1500: vrmsAt(500) was 2000, vintAt 2449).
+  let f0 = intervalVelocity([0.0, 1000], [1500.0, 2500])
+  doAssert near(f0.vrmsAt(500), 2500, 1e-12) and near(f0.vintAt(500), 2500, 1e-12)
+  let f3 = intervalVelocity([0.0, 1000, 2000], [1500.0, 2000, 3000])
+  doAssert near(f3.vrmsAt(250), 2000, 1e-12)
+  doAssert near(f3.vintAt(1500), 3000, 1e-12)
+  doAssert near(f3.vrmsAt(2000), sqrt((2000.0 ^ 2 * 1000 + 3000.0 ^ 2 * 1000) / 2000), 1e-9)
+  doAssert intervalVelocity([0.0], [1800.0]).vrmsAt(700) == 1800
 
 block dix_negative_is_nan:
   # W = V²t drops from 2000²·1000 to 1500²·1200: Vint² < 0.
@@ -353,3 +362,12 @@ block csv:
   # An empty first field is data with a missing number, not a header.
   raisesWith("line 1: '' is not a number"): discard parseVelocityCsv(",0,1500\n")
   raisesWith("line 1: a NaN location"): discard parseVelocityCsv("nan,0,1500\n")
+
+block byte_order_mark:
+  # A UTF-8 BOM (Windows editors) before the first card or header.
+  const bom = "\xEF\xBB\xBF"
+  let hv = parseVelocities(bom & "HANDVEL     101\n    0  1500  1000  2000\n")
+  doAssert hv.len == 1 and hv[0].cdp == 101
+  doAssert parseHandvel(bom & "HANDVEL 7\n 0 1500\n").len == 1
+  doAssert parseVelf(bom & "VELF 7 0 1500 1000 2000\n").len == 1
+  doAssert parseVelocityCsv(bom & "cdp,time,velocity\n7,0,1500\n").len == 1

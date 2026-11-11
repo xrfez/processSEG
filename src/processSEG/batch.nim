@@ -71,7 +71,10 @@ type
   BruteStackOptions* = object
     ## The processing and the job's resources. Start from
     ## `initBruteStackOptions` and change fields.
-    flow*: Pipeline ## Pre-stack flow, after statics, before NMO.
+    flow*: Pipeline ## Pre-stack flow, after statics, before NMO. A
+                    ## `perPanel` normalization works per prefetch chunk
+                    ## (`chunkTraces`, cut where the interval changes), so its
+                    ## factors depend on the chunking: prefer `perTrace` here.
     useStatics*: bool ## Apply `statics` first.
     statics*: DatumStatics ## Datum statics, when `useStatics`.
     staticsInterp*: ShiftInterp ## Interpolation of the statics shifts.

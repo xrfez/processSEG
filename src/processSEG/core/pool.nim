@@ -88,10 +88,13 @@ proc `=destroy`*(p: ProcessPool) =
     deallocShared s
 
 proc `=wasMoved`*(p: var ProcessPool) =
+  ## Leaves `p` without workers, so destroying it does nothing.
   p.state = nil
 
 proc `=copy`*(dst: var ProcessPool, src: ProcessPool) {.error.}
+  ## A pool cannot be copied (a compile error); move it.
 proc `=dup`*(src: ProcessPool): ProcessPool {.error.}
+  ## A pool cannot be copied (a compile error); move it.
 
 proc workerLoop(a: WorkerArg) {.thread.} =
   let s = a.state
@@ -117,7 +120,9 @@ proc workerLoop(a: WorkerArg) {.thread.} =
 
 proc newProcessPool*(workers = 4): ProcessPool =
   ## A pool of `workers` threads, started now. Raises `ValueError` for
-  ## `workers < 1`.
+  ## `workers < 1`, and `ResourceExhaustedError` when the OS refuses a thread
+  ## (the threads already started are joined). A defect on a worker (a
+  ## failed assertion, out of memory) ends the process, as on any thread.
   if workers < 1:
     raise newException(ValueError, "a pool needs workers ≥ 1, got " & $workers)
   let s = createShared(PoolState)

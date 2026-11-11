@@ -302,6 +302,8 @@ block margins_and_zoom_windows:
   doAssert decodeWindow(800 .. 1200, 110, 2001) == 690 .. 1310
   doAssert decodeWindow(50 .. 300, 110, 2001) == 0 .. 410
   doAssert decodeWindow(1900 .. 2000, 110, 2001) == 1790 .. 2000
+  doAssert decodeWindow(10 .. 20, -5, 100) == 10 .. 20     # a negative margin is 0
+  doAssert decodeWindow(10 .. 20, high(int), 100) == 0 .. 99 # no overflow
   # A plan takes any narrower block.
   var g = noisyGather[float32](10, 400, seed = 3)
   let meta = initChunkMeta(g.rows, dtMs = 2)

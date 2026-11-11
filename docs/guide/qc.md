@@ -101,7 +101,7 @@ for r in 0 ..< meta.len:
 ```
 
 The overlay is `picks[row].timeMs` (or `.col` over the block). For one trace,
-`plan.pick(x, offset, t0Ms, ws)` gives the same pick; the plan is shareable across
+`plan.pick(x, ws, offset, t0Ms)` gives the same pick; the plan is shareable across
 threads, one `Workspace` each. The module documentation compares the pickers and their
 biases (energy arrival vs onset).
 

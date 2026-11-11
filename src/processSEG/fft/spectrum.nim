@@ -220,11 +220,14 @@ proc averageAmplitudeInto*[T: SampleType](sp: SpectrumPlan[T], b: RowBlock[T],
   ## window `firstCol ..< firstCol + windowLen` of the live rows of `b` in
   ## `rows` (clipped to the block), into `amp` (`bins` values). Returns the
   ## number of rows averaged; with none, `amp` is all zero. `ws` must hold
-  ## `sp.workspaceSize`. Raises `ValueError` when `b` does not match `meta`
-  ## or for a negative `firstCol`; an `amp.len != bins` is an
+  ## `sp.workspaceSize`. Raises `ValueError` when `b` does not match `meta`,
+  ## its rows' interval is not the plan's, or for a negative `firstCol`; an `amp.len != bins` is an
   ## `AssertionDefect`, as in the other spectrum procs. No sample of `b`
   ## changes.
   meta.checkShape(b)
+  if abs(meta.dtMs - sp.dtMs) > 1e-9 * sp.dtMs:
+    badSpectrum("the rows' interval " & $meta.dtMs & " ms is not the plan's " &
+      $(sp.dtMs) & " ms")
   let nb = sp.fft.bins
   let n = sp.fft.len
   if firstCol < 0:

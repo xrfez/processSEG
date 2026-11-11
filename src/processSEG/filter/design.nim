@@ -35,7 +35,8 @@
 ## - **Notches** (`withNotch`): gain 0 at `freqHz`, rising as `sin²` to 1 at
 ##   `freqHz ± widthHz/2`; −6 dB at `freqHz ± widthHz/4`.
 ## - **0 Hz suppression** (`withZeroDc`): the gain at 0 Hz is 0, so the
-##   filtered trace has zero mean. `filter/apply` sets bin 0 to 0 and adds
+##   filtered trace has a mean near zero (that of the padded window is
+##   zero; see `filter/apply`). `filter/apply` sets bin 0 to 0 and adds
 ##   back only the slope of the removed trend (times the gain at 0 Hz), not
 ##   its mean; with `trNone` only the mean of the padded window goes. It has
 ##   no impulse length of its own.
@@ -66,6 +67,7 @@ type
     f1*, f2*, f3*, f4*: float64
 
   ResponseKind* = enum
+    ## The shape of a `FilterSpec`'s response.
     rkTrapezoid   ## cos² ramps between corners
     rkButterworth ## Butterworth magnitude, effective slope in dB/octave
 

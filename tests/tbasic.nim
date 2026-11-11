@@ -172,3 +172,9 @@ block no_allocation:
       g.data.reversePolarity(meta)
       taperPads(b.row(0), ramp)
   doAssert n == 0, "the kernels allocated " & $n & " times"
+
+block scale_factor_overflowing_the_type:
+  # 1e39 is finite in float64, Inf in float32 (as the pipeline's scaleOp).
+  var g = cmpGather[float32](0, [100.0], 10, dtMs = 2)
+  let meta = initChunkMeta(g.rows, 2)
+  doAssertRaises ValueError: g.data.scale(meta, 1e39)

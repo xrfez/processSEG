@@ -327,3 +327,13 @@ block no_allocation:
       g.data.normalize(meta, pp, ws)
       g.data.scaleDb(meta, 3)
   doAssert n == 0, $n & " allocations"
+
+block scale_db_overflow_is_refused:
+  # 800 dB: a factor of 1e40, Inf in float32 (zeros would become NaN).
+  var g = cmpGather[float32](0, [100.0, 200], 10, dtMs = 2)
+  let meta = initChunkMeta(g.rows, 2)
+  doAssertRaises ValueError: g.data.scaleDb(meta, 800)
+  var h = cmpGather[float64](0, [100.0, 200], 10, dtMs = 2)
+  let meta64 = initChunkMeta(h.rows, 2)
+  h.data.scaleDb(meta64, 800)
+  for v in h.data: doAssert v == 0

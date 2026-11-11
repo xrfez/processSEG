@@ -427,7 +427,7 @@ block random_first_breaks:
       x.addNoise(0.1, seed = it)
       if len > 0: x.addRicker(dtMs, r.uniform(0, float64(len) * dtMs), 30)
     let t0 = r.uniform(-50, 50)
-    let p = plan.pick(x, offset = r.uniform(-3000, 3000), t0Ms = t0, ws = ws)
+    let p = plan.pick(x, ws, offset = r.uniform(-3000, 3000), t0Ms = t0)
     doAssert p.confidence >= 0 and p.confidence <= 1, $p
     if p.col.isNaN:
       doAssert p.timeMs.isNaN and p.confidence == 0
@@ -509,4 +509,4 @@ block extreme_parameters:
   ws.reserve(plan.workspaceSize)
   var x = newSeq[float32](300)
   x.addNoise(1, seed = 2)
-  discard plan.pick(x, ws = ws)
+  discard plan.pick(x, ws)

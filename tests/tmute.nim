@@ -1,7 +1,7 @@
 ## Mutes (core/mute): curves, exact taper values, the time axis (t0Ms and a
 ## window), live rows, NaN rows and validation.
 
-import std/[assertions, math]
+import std/[assertions, math, sequtils]
 import processSEG
 import utils/[allocs, synth]
 
@@ -166,3 +166,28 @@ block float64_and_no_allocation:
       g.data.muteBottom(meta, bottom, taperMs = 40)
   doAssert n == 0, "mutes allocated " & $n & " times"
   doAssert g.data[3, 0] == 0 and g.data[0, 999] == 0
+
+block infinite_bounds_and_tapers:
+  # Opposite infinities made a NaN ramp bound, int(NaN) = int.low, and the
+  # boundChecks-off loops ran from it (a heap overflow under ASan). An
+  # infinite taper is no taper.
+  proc ones(): seq[float32] = newSeq[float32](8).mapIt(1'f32)
+  var x = ones()
+  x.muteBottom(-Inf, Inf)
+  doAssert x.allIt(it == 0)
+  x = ones()
+  x.muteTop(Inf, Inf)
+  doAssert x.allIt(it == 0)
+  x = ones()
+  x.muteTop(5, Inf)          # hard mute at column 5
+  doAssert x[0 ..< 5].allIt(it == 0) and x[5 ..< 8].allIt(it == 1)
+  x = ones()
+  x.muteBottom(2, Inf)
+  doAssert x[0 .. 2].allIt(it == 1) and x[3 ..< 8].allIt(it == 0)
+  x = ones()
+  x.muteTop(-Inf, 3)
+  doAssert x.allIt(it == 1)
+  # A subnormal interval is refused (it made the block taper infinite).
+  var keys = @[initTraceKeys()]
+  let counts = @[8]
+  doAssertRaises ValueError: discard initChunkMeta(rowsOf(keys, counts), dtMs = 1e-310)

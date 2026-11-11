@@ -167,3 +167,20 @@ block no_allocation:
   let n = allocsIn:
     for _ in 0..<3: g.data.applyGainCurve(meta, plan)
   doAssert n == 0, $n & " allocations"
+
+block overflowing_gain_is_refused:
+  # 800 dB is finite in float64 but Inf in float32: 0 · Inf would make
+  # muted zeros NaN, so the plan refuses it (float64 takes it).
+  let steep = knotGain([GainKnot(tMs: 0, dB: 0), GainKnot(tMs: 1000, dB: 800)])
+  doAssertRaises ValueError: discard initGainCurvePlan(float32, steep, 2, 501)
+  doAssertRaises ValueError:
+    discard initGainCurvePlan(float32, exponentialGain(800), 2, 1001)
+  let p64 = initGainCurvePlan(float64, steep, 2, 501)
+  var x = newSeq[float64](501)
+  x.applyGainCurve(p64, 0)
+  for v in x: doAssert v == 0
+  # Off the table (a start far past it), zeros stay zero too.
+  let p32 = initGainCurvePlan(float32, exponentialGain(6), 2, 100)
+  var y = newSeq[float32](100)
+  y.applyGainCurve(p32, 1e9)
+  for v in y: doAssert v == 0

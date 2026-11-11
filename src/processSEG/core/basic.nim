@@ -177,9 +177,12 @@ proc detrend*[T: SampleType](b: RowBlock[T], meta: ChunkMeta) =
 
 proc scale*[T: SampleType](b: RowBlock[T], meta: ChunkMeta, factor: float64) =
   ## `scale` on the live samples of each live row of `b`; see `demean`. Raises
-  ## `ValueError` for a factor that is NaN or infinite.
-  if factor.classify in {fcNan, fcInf, fcNegInf}:
-    raise newException(ValueError, "a scale factor must be finite, got " & $factor)
+  ## `ValueError` for a factor that is NaN or infinite, also in `T` (1e39 in
+  ## float32: the pipeline's `scaleOp` refuses it too).
+  if factor.classify in {fcNan, fcInf, fcNegInf} or
+      T(factor).float64.classify in {fcInf, fcNegInf}:
+    raise newException(ValueError, "a scale factor must be finite in " & $T &
+      ", got " & $factor)
   eachLiveRow(b, meta, x): scale(x, factor)
 
 proc clip*[T: SampleType](b: RowBlock[T], meta: ChunkMeta, lo, hi: float64) =

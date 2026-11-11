@@ -20,15 +20,15 @@
 ## stays in its own row: normalization and AGC leave such a row as it is.
 ##
 ## **Normalization** scales a trace (`perTrace`) or every live trace of the
-## block by one factor (`perPanel`) so that its maximum |x|, RMS or a
-## percentile of |x| (`NormStat`) becomes `target`. A trace or panel whose
+## block by one factor (`perPanel`) so that its maximum `|x|`, RMS or a
+## percentile of `|x|` (`NormStat`) becomes `target`. A trace or panel whose
 ## statistic is 0 (all zero) or not finite, or whose factor would not fit
 ## the sample type (Inf in float32), is left as it is. A panel's
 ## statistic leaves out rows with a NaN or Inf (`panelStats`), and its factor
 ## is then applied to every live row. The panel percentile comes from
 ## `panelStats`'s histogram (within 0.4 %), a trace percentile is exact.
 ##
-## **AGC.** Each sample is divided by the RMS (`agcRms`) or the mean |x|
+## **AGC.** Each sample is divided by the RMS (`agcRms`) or the mean `|x|`
 ## (`agcMeanAbs`) of a window of `2h + 1` samples centred on it,
 ## `h = round(windowMs / (2·dtMs))`, and multiplied by `target`:
 ##
@@ -129,21 +129,23 @@ proc scaleDb*[T: SampleType](x: var openArray[T], dB: float64) {.raises: [].} =
   ## otherwise).
   scale(x, dbToFactor(dB))
 
-proc checkDb(dB: float64) =
+proc checkDb(T: typedesc, dB: float64) =
   if dB.classify in {fcNan, fcInf, fcNegInf}:
     badArg("a gain in dB must be finite, got " & $dB)
+  if T(dbToFactor(dB)).float64.classify == fcInf: # 0 · Inf: zeros would become NaN
+    badArg("a gain of " & $dB & " dB overflows " & $T)
 
 proc scaleDb*[T: SampleType](b: RowBlock[T], meta: ChunkMeta, dB: float64) =
   ## `scaleDb` on the live samples of each live row of `b`. Raises
-  ## `ValueError` for a `dB` that is not finite or a block that does not match
-  ## `meta`.
-  checkDb(dB)
+  ## `ValueError` for a `dB` that is not finite or whose factor overflows `T`
+  ## (800 dB in float32), or a block that does not match `meta`.
+  checkDb(T, dB)
   scale(b, meta, dbToFactor(dB))
 
 proc scaleDb*[T: SampleType](samples: var Tensor[T], meta: ChunkMeta, dB: float64) =
   ## `scaleDb` on the live part of a `[rows, cols]` tensor (C-contiguous;
-  ## raises `ValueError` otherwise).
-  checkDb(dB)
+  ## raises `ValueError` otherwise, or as the block form).
+  checkDb(T, dB)
   scale(samples, meta, dbToFactor(dB))
 
 # ------------------------------------------------------------ normalization --

@@ -184,7 +184,7 @@ block window_block_and_single_trace:
     doAssert ps[r].col == (ps[r].timeMs - 10 * dt) / dt
   var row = newSeq[float32](cols)
   for j in 0 ..< cols: row[j] = g.data[5, j]
-  let one = plan.pick(row, g.keys[5].offset, 0.0, ws)
+  let one = plan.pick(row, ws, g.keys[5].offset, 0.0)
   doAssert one == full[5]
   # No allocation once the workspace is reserved.
   doAssert allocsIn(plan.pickInto(w.data, meta, ws, ps)) == 0
@@ -272,7 +272,31 @@ block batched_filter_matches_single_trace:
         continue
       var x = newSeq[float32](g.liveCols(r))
       for j in 0 ..< x.len: x[j] = g.data[r, j]
-      let want = plan.pick(x, g.keys[r].offset, g.keys[r].t0Ms, ws)
+      let want = plan.pick(x, ws, g.keys[r].offset, g.keys[r].t0Ms)
       doAssert got[r].col == want.col or (got[r].col.isNaN and want.col.isNaN),
         $m & " row " & $r & ": " & $got[r] & " vs " & $want
       doAssert abs(got[r].confidence - want.confidence) < 1e-4
+
+block filtered_batch_allocates_nothing_and_infinite_t0:
+  # The batched band-pass of pickInto works in the reserved workspace.
+  var g = shot(0.1, 3)
+  let meta = initChunkMeta(g.rows, dt)
+  var p = guided
+  p.lowCutHz = 8
+  p.highCutHz = 70
+  let plan = initFirstBreakPlan(float32, p, dt, cols)
+  var ws = initWorkspace()
+  ws.reserve(plan.workspaceSize)
+  var picks = newSeq[FirstBreakPick](g.len)
+  plan.pickInto(g.data, meta, ws, picks) # warm
+  doAssert allocsIn(plan.pickInto(g.data, meta, ws, picks)) == 0
+  # An infinite t0 is no time axis (as NaN): no time window can apply, so a
+  # guided pick is none, and an open window gives a column without a time.
+  var x = newSeq[float32](cols)
+  for j in 0 ..< cols: x[j] = g.data[4, j]
+  for t0 in [Inf, -Inf]:
+    doAssert plan.pick(x, ws, g.keys[4].offset, t0).col.isNaN
+    let open = initFirstBreakPlan(float32, FirstBreakParams(), dt, cols)
+    ws.reserve(open.workspaceSize)
+    let q = open.pick(x, ws, NaN, t0)
+    doAssert not q.col.isNaN and q.timeMs.isNaN, $q

@@ -184,3 +184,8 @@ block no_allocation_in_a_steady_state:
   let grow = allocsIn:
     ws.reserve(WorkspaceSize(f64: 501))
   doAssert grow == 1, "a bigger plan reallocates once"
+
+block block_size_overflow:
+  # rows · cols beyond int: ValueError (it wrapped to 0 in danger builds).
+  let empty: seq[float32] = @[]
+  doAssertRaises ValueError: discard rowBlock(empty, 1 shl 32, 1 shl 32)

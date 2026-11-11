@@ -54,9 +54,9 @@
 ## an L1 fit, while they can bump a bin's median) is
 ## correlated with its neighbours' (in spread order), over lags up to
 ## `maxLagMs`. Windows at the model times align the break when the
-## geometry is right; `lagMs` is the lag of the best-correlated neighbour
-## (the smaller `|lag|` of the two), `coherence` its correlation
-## coefficient. A trace is suspect also when it is the odd one out: its
+## geometry is right; `lagMs` is the lag to the neighbour with the smaller
+## `|lag|` (the better correlation breaks a tie), `coherence` that pair's
+## correlation coefficient. A trace is suspect also when it is the odd one out: its
 ## lags to both neighbours exceed `lagToleranceMs` while the two
 ## neighbours, correlated with each other, agree within it with a
 ## correlation coefficient of at least `minCoherence`. (The neighbour
@@ -68,9 +68,12 @@
 ## pick was not confident.
 ##
 ## **Symmetry.** `asymmetryMs` is the median residual of the negative side
-## of the spread minus that of the positive side (NaN for one side): a
-## source placed `d` along the line too far toward the positive side makes
-## that side early and the other late by `d / v` each, so about `2d / v`.
+## of the spread minus that of the positive side (NaN for one side). A
+## source whose **header** position is `d` along the line too far toward
+## the positive side makes the positive side's picks late against the
+## model and the negative side's early, by `d / v` each: `asymmetryMs` is
+## about `−2d / v` (positive when the header is too far toward the negative
+## side).
 ## A refractor that varies laterally also makes the sides differ by a few
 ## ms, so compare shots rather than trust one value. The source's position
 ## is not checked further.
@@ -218,7 +221,7 @@ proc positionsInto(meta: ChunkMeta, pos: var seq[float64]) =
              elif channels: q.channel
              else: float64(r)
 
-proc sortByKey(idx: var seq[int], key: openArray[float64])
+proc sortByKey(idx: var seq[int], key: openArray[float64]) {.raises: [].}
 
 # ----------------------------------------------------------------- models --
 
@@ -312,8 +315,9 @@ proc fitTwoSegment(fit: var ShotFit) =
       bestXc = xc
       bestK = k
   if bestK >= 0:
-    var a = fit.tmp[max(bestK - stride, 0)]
-    var b = fit.tmp[min(bestK + stride, n - 1)]
+    # Within the candidates' range, so each segment keeps 3 picks or more.
+    var a = fit.tmp[max(bestK - stride, 2)]
+    var b = fit.tmp[min(bestK + stride, n - 4)]
     const g = 0.6180339887498949
     # Golden section: each step keeps one interior point and its fit.
     var c1, c2: array[3, float64]
@@ -453,13 +457,11 @@ proc correlateInto[T](fit: var ShotFit, b: RowBlock[T], meta: ChunkMeta,
 
 # -------------------------------------------------------------------- fit --
 
-proc sortByKey(idx: var seq[int], key: openArray[float64]) =
+proc sortByKey(idx: var seq[int], key: openArray[float64]) {.raises: [].} =
   # Sorts idx by key[idx[i]], stable (ties keep their order).
   var pairs = newSeq[(float64, int)](idx.len)
   for i, v in idx: pairs[i] = (key[v], v)
-  pairs.sort(proc (a, b: (float64, int)): int =
-    result = cmp(a[0], b[0])
-    if result == 0: result = cmp(a[1], b[1]))
+  pairs.sort() # by key, then index: a stable order (no closure: raises nothing)
   for i in 0 ..< idx.len: idx[i] = pairs[i][1]
 
 proc fitPicks(meta: ChunkMeta, picks: openArray[FirstBreakPick], p: ShotFitParams,

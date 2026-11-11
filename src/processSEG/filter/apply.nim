@@ -31,7 +31,10 @@
 ##    exact for a zero-phase filter, whose symmetric impulse maps a line to
 ##    itself times its sum). A high-cut therefore keeps the trend, and a
 ##    low-cut removes it. With `withZeroDc`, the trend's mean is not added
-##    back, only its slope: the output has zero mean.
+##    back, only its slope: the output's mean is near zero, not exactly zero
+##    (bin 0 is the mean of the padded FFT window, not of the `n` samples; on
+##    a trace with a large offset and slope, about 2 % of the signal
+##    amplitude was measured).
 ##
 ## `trNone` leaves the samples as they are, so the pad taper pulls each end's
 ## value to 0 over `L` samples. That is fine for data near zero mean at its
@@ -41,8 +44,11 @@
 ##
 ## **Margin.** `requiredMargin` is `L`: a zoom window decoded with `L` extra
 ## samples on each side, filtered, matches the whole trace filtered over the
-## window, to within 1 % of the peak (tested): the 0.1 % of the impulse
-## energy left out of `L`.
+## window to within about 1 % of the peak on seismic data (tested), and
+## 2.5 % in the worst case, a steady in-band sinusoid, whose tail adds up
+## coherently over the 0.1 % of the impulse energy left out of `L` (measured
+## 1.6–2.4 % for 4-8-60-80, 5-10-40-60 and a 0.5–1 Hz low-cut at 2 ms). A
+## margin of `1.5·L` brings that case under 0.5 %.
 ##
 ## **Rows.** The block forms filter the live rows, each to its live length
 ## (`ChunkMeta.liveSamples`); dead, auxiliary and failed rows and the padding
@@ -237,8 +243,12 @@ proc applyFilter*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
   ## Filters the live rows of `b` in place, each to its live length (module
   ## documentation), `fftLanes` rows at a time. `ws` must hold
   ## `plan.workspaceSize`. Raises `ValueError`, before any sample changes,
-  ## when `b` does not match `meta` or has more columns than `plan.samples`.
+  ## when `b` does not match `meta`, has more columns than `plan.samples`, or
+  ## its rows' interval (`meta.dtMs`) is not the plan's.
   meta.checkShape(b)
+  if abs(meta.dtMs - plan.dtMs) > 1e-9 * plan.dtMs:
+    badPlan("the rows' interval " & $meta.dtMs & " ms is not the plan's " &
+      $(plan.dtMs) & " ms")
   plan.checkPlan
   if b.cols > plan.samples:
     badPlan("the block has " & $b.cols & " columns, the plan takes " &

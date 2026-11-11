@@ -25,8 +25,9 @@
 ##   every trace of one wavelet, so relative times keep their accuracy;
 ## - `pmEnergyRatio`: the modified energy ratio (Wong et al., 2009): the
 ##   energy of the `w` samples from the sample over that of the `w` before
-##   it (equal windows), times the amplitude there (the RMS of the `w / 4`
-##   samples from it); the pick is the maximum.
+##   it (equal windows), times the amplitude there (the root of the energy
+##   of the `w / 4` samples from it, an RMS up to a constant); the pick is
+##   the maximum.
 ##   The plain ratio has a plateau up to a window before the onset, where
 ##   noise sets the maximum; the weight moves it onto the break's first
 ##   strong sample, a bias that is the same on every trace;
@@ -86,7 +87,7 @@ import ../fft/plan as fftplan
 type
   PickMethod* = enum
     ## The picker (see the module documentation).
-    pmStaLta      ## Leading STA over trailing LTA.
+    pmStaLta      ## Trailing STA over the LTA before it.
     pmEnergyRatio ## Modified energy ratio: after over before, times |x|.
     pmCoppens     ## Modified Coppens: trailing window over cumulative energy.
 
@@ -307,10 +308,11 @@ proc pickRow[T](plan: FirstBreakPlan[T], src: ptr UncheckedArray[T], n: int,
     let tl = pr.guideT0Ms + 1000 * abs(offset) / pr.guideVelocity
     tLo = max(tLo, tl - pr.beforeMs)
     tHi = min(tHi, tl + pr.afterMs)
-  if t0Ms.isNaN and (tLo > -Inf or tHi < Inf): return
-  # Time of column 0 (NaN with t0: then no time window applies, above, and
-  # the pick has a column but no time).
-  let origin = t0Ms + startCol * dt
+  # Time of column 0 (NaN with a NaN or infinite t0: then no time window
+  # applies, and the pick has a column but no time).
+  let origin = if (t0Ms + startCol * dt).classify in {fcInf, fcNegInf}: NaN
+               else: t0Ms + startCol * dt
+  if origin.isNaN and (tLo > -Inf or tHi < Inf): return
   let cLo = if origin.isNaN: -Inf else: (tLo - origin) / dt
   let cHi = if origin.isNaN: Inf else: (tHi - origin) / dt
   let lo = if cLo <= 0: 0 elif cLo >= float64(n): n else: int(ceil(cLo))
@@ -345,8 +347,8 @@ proc pickRow[T](plan: FirstBreakPlan[T], src: ptr UncheckedArray[T], n: int,
     result.snrDb = snr
     result.confidence = clamp((snr - pr.lowDb) / (pr.highDb - pr.lowDb), 0.0, 1.0)
 
-proc pick*[T: SampleType](plan: FirstBreakPlan[T], x: openArray[T], offset = NaN,
-    t0Ms = 0.0, ws: var Workspace): FirstBreakPick {.raises: [].} =
+proc pick*[T: SampleType](plan: FirstBreakPlan[T], x: openArray[T],
+    ws: var Workspace, offset = NaN, t0Ms = 0.0): FirstBreakPick {.raises: [].} =
   ## The pick on one trace `x` (its live samples, at most `plan.samples`;
   ## an `AssertionDefect` otherwise) whose sample 0 is at `t0Ms`, with
   ## source–receiver `offset` for a guided window. `ws` must hold

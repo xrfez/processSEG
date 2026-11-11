@@ -4,7 +4,7 @@
 ## and its taper, each row's own t0Ms, resampling onto another time axis,
 ## NaN and dead rows, validation and no allocation.
 
-import std/[assertions, math]
+import std/[assertions, math, random]
 import processSEG
 import utils/[allocs, synth]
 
@@ -184,3 +184,43 @@ block validation_and_allocation:
   doAssert allocsIn(applyNmo(b, meta, f, p, ws)) == 0
   let field = initVelocityField([1.0], [f], dtMs = 4, tMaxMs = 1000)
   doAssert allocsIn(applyNmo(b, meta, field, p, ws)) == 0
+
+block nmo_matches_a_reference:
+  # nmoInto against a direct evaluation of the NMO mapping with linear
+  # interpolation (rows longer than the 256-sample column blocks, random
+  # start times, offsets and velocities): exact without a stretch mute, and
+  # from the first unmuted column with one.
+  proc refNmo(src: seq[float64], srcStart: float64, m: int,
+      dstStart, dt, off: float64, vel: seq[float64]): seq[float64] =
+    result = newSeq[float64](m)
+    let n = src.len
+    proc at(i: int): float64 = (if i >= 0 and i < n: src[i] else: 0.0)
+    for j in 0..<m:
+      let t0 = dstStart + float64(j) * dt
+      if t0 < 0: continue
+      let tx = 1000 * abs(off) / vel[j]
+      let c = (sqrt(t0 * t0 + tx * tx) - srcStart) / dt
+      if c.isNaN or c <= -2 or c >= float64(n + 1): continue
+      let k = int(floor(c))
+      let f = c - float64(k)
+      result[j] = (1 - f) * at(k) + f * at(k + 1)
+  var r = initRand(3)
+  for it in 0..<200:
+    let n = r.rand(1..1500)
+    let m = r.rand(1..1500)
+    var src = newSeq[float64](n)
+    for v in src.mitems: v = r.gauss()
+    var vel = newSeq[float64](m)
+    for v in vel.mitems: v = r.rand(1500.0 .. 3000.0)
+    let dt = [1.0, 2.0, 4.0][r.rand(2)]
+    let ss = r.rand(-100.0 .. 100.0)
+    let ds = r.rand(-100.0 .. 100.0)
+    let off = r.rand(-3000.0 .. 3000.0)
+    let want = refNmo(src, ss, m, ds, dt, off, vel)
+    var dst = newSeq[float64](m)
+    discard src.nmoInto(ss, dst, ds, dt, off, vel, initNmoParams(maxStretch = Inf))
+    for j in 0..<m: doAssert abs(dst[j] - want[j]) <= 1e-12, $it & " col " & $j
+    var muted = newSeq[float64](m)
+    let first = src.nmoInto(ss, muted, ds, dt, off, vel, initNmoParams(maxStretch = 0.3))
+    for j in 0..<first: doAssert muted[j] == 0
+    for j in first..<m: doAssert abs(muted[j] - want[j]) <= 1e-12

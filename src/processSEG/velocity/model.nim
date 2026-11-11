@@ -292,15 +292,18 @@ proc intervalVelocity*(tMs, vint: openArray[float64]): VelocityFunction =
   ## `tMs[i]`, kept past the last time. Built as RMS knots
   ## (`rmsFromIntervalInto`), so `vintAt` gives the layers back; to keep the
   ## last layer's velocity below `tMs[^1]` it gets one more knot, far below
-  ## (1000 times deeper). Raises
-  ## `ValueError` as `dixIntervalInto`, or without layers.
+  ## (1000 times deeper). A first layer at `tMs[0] = 0` has no thickness:
+  ## with more layers it is dropped (its knot at 0 would make the RMS
+  ## velocity linear from it, see `vrmsAt`, and change the next layer).
+  ## Raises `ValueError` as `dixIntervalInto`, or without layers.
   if tMs.len == 0:
     badArg("a velocity function needs at least one layer")
   var vrms = newSeq[float64](tMs.len)
   rmsFromIntervalInto(tMs, vint, vrms)
-  var knots = newSeq[VelocityKnot](tMs.len)
-  for i in 0..<tMs.len:
-    knots[i] = VelocityKnot(tMs: tMs[i], vrms: vrms[i])
+  let first = if tMs.len > 1 and tMs[0] == 0: 1 else: 0
+  var knots = newSeq[VelocityKnot](tMs.len - first)
+  for i in first..<tMs.len:
+    knots[i - first] = VelocityKnot(tMs: tMs[i], vrms: vrms[i])
   if knots[^1].tMs > 0 and vint[^1] != vrms[^1]:
     # Keep the last layer's interval velocity past tMs[^1]: one more knot far
     # below, where W keeps growing at vint².

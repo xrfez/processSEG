@@ -123,10 +123,16 @@ proc start(b: var Builder, loc: openArray[float64], line: int) =
   else: parseError(line, "a location is one number (cdp) or two (inline, " &
       "crossline), got " & $loc.len)
 
+func withoutBom(text: string): string =
+  ## `text` without a leading UTF-8 byte-order mark (editors on Windows write
+  ## one).
+  if text.startsWith("\xEF\xBB\xBF"): text[3 .. ^1] else: text
+
 proc parseHandvel*(text: string): seq[VelocityPick] =
   ## HANDVEL blocks (see the module documentation). Raises `ValueError` for
   ## a bad number, odd pairs, a block without pairs, numbers before the first
   ## `HANDVEL` card, or an invalid function.
+  let text = text.withoutBom
   var b: Builder
   var lineNo = 0
   for raw in text.splitLines:
@@ -149,6 +155,7 @@ proc parseVelf*(text: string): seq[VelocityPick] =
   ## VELF cards (see the module documentation). Raises `ValueError` for a
   ## bad number, a continuation card before the first function, a function
   ## without pairs, or an invalid function.
+  let text = text.withoutBom
   var b: Builder
   var lineNo = 0
   for raw in text.splitLines:
@@ -178,6 +185,7 @@ proc parseVelocityCsv*(text: string): seq[VelocityPick] =
   ## CSV knots (see the module documentation). Raises `ValueError` for a
   ## line with another column count, a bad number, or an invalid function
   ## (times not increasing within one location).
+  let text = text.withoutBom
   var builders: seq[Builder]
   var index = initTable[(float64, float64), int]()
   var cols = 0
@@ -217,6 +225,7 @@ proc parseVelocities*(text: string): seq[VelocityPick] =
   ## Picks in any of the three formats: HANDVEL when a `HANDVEL` card comes
   ## first, VELF when a `VELF` card does, CSV otherwise. Raises `ValueError`
   ## as the format's parser.
+  let text = text.withoutBom
   for raw in text.splitLines:
     let s = raw.strip
     if s.isComment: continue

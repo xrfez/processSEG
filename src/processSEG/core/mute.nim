@@ -3,7 +3,7 @@
 ## A mute is a time per trace, given by a `MuteCurve`:
 ##
 ## - `timeMute(tMs)`: one time for every trace;
-## - `tableMute(offsets, timesMs)`: a t(offset) table, linear in |offset|
+## - `tableMute(offsets, timesMs)`: a t(offset) table, linear in `|offset|`
 ##   between the knots and flat beyond them;
 ## - `lmoMute(velocity, t0Ms, padMs)`: `t0Ms + |offset|/velocity + padMs`, a
 ##   mute that follows the first breaks (a negative pad mutes above them).
@@ -61,10 +61,10 @@ proc timeMute*(tMs: float64): MuteCurve =
   MuteCurve(kind: mkTime, tMs: tMs)
 
 proc tableMute*(offsets, timesMs: openArray[float64]): MuteCurve =
-  ## A mute at a time interpolated linearly in |offset| between the knots
+  ## A mute at a time interpolated linearly in `|offset|` between the knots
   ## `(offsets[i], timesMs[i])`, flat beyond the first and last knot. The
   ## offsets are absolute (≥ 0) and strictly ascending; a trace's offset is
-  ## used as |offset|. Raises `ValueError` for no knots, a length mismatch, a
+  ## used as `|offset|`. Raises `ValueError` for no knots, a length mismatch, a
   ## negative, NaN or non-ascending offset, or a time that is not finite.
   if offsets.len == 0: badMute("a mute table needs at least one knot")
   if offsets.len != timesMs.len:
@@ -96,7 +96,7 @@ func kind*(c: MuteCurve): MuteKind {.inline, raises: [].} =
   c.kind
 
 func muteTimeMs*(c: MuteCurve, offset: float64): float64 {.raises: [].} =
-  ## The mute time, in ms, of a trace at `offset` (signed or not: |offset| is
+  ## The mute time, in ms, of a trace at `offset` (signed or not: `|offset|` is
   ## used). NaN when the curve depends on the offset and `offset` is NaN.
   case c.kind
   of mkTime:
@@ -120,14 +120,14 @@ func muteTimeMs*(c: MuteCurve, offset: float64): float64 {.raises: [].} =
 # ------------------------------------------------------------------ kernels --
 
 func firstAtOrAfter(c: float64, n: int): int {.inline.} =
-  ## The first column ≥ `c`, clamped to `0 .. n`.
-  if c <= 0: 0
+  ## The first column ≥ `c`, clamped to `0 .. n` (0 for NaN).
+  if not (c > 0): 0
   elif c >= float64(n): n
   else: int(ceil(c))
 
 func firstAfter(c: float64, n: int): int {.inline.} =
-  ## The first column > `c`, clamped to `0 .. n`.
-  if c < 0: 0
+  ## The first column > `c`, clamped to `0 .. n` (0 for NaN).
+  if not (c >= 0): 0
   elif c >= float64(n): n
   else: int(floor(c)) + 1
 
@@ -137,9 +137,11 @@ proc muteTop*[T: SampleType](x: var openArray[T], startCol,
   ## untouched, `startCol − taperCols ≤ j < startCol` is scaled by
   ## `sin²(π/2 · (j − startCol + taperCols)/taperCols)`, and earlier columns
   ## are zeroed. Columns may be fractional. A NaN `startCol` leaves `x`
-  ## untouched; `taperCols` must be ≥ 0.
+  ## untouched; `taperCols` must be ≥ 0, and an infinite one is no taper
+  ## (its weights are 0 everywhere before `startCol`).
   if startCol.isNaN: return
   let n = x.len
+  let taperCols = if taperCols < Inf: taperCols else: 0.0
   let rampStart = startCol - taperCols
   let zeroEnd = firstAtOrAfter(rampStart, n)
   {.push boundChecks: off.}
@@ -157,9 +159,11 @@ proc muteBottom*[T: SampleType](x: var openArray[T], endCol,
   ## untouched, `endCol < j ≤ endCol + taperCols` is scaled by
   ## `sin²(π/2 · (endCol + taperCols − j)/taperCols)`, and later columns are
   ## zeroed. Columns may be fractional. A NaN `endCol` leaves `x` untouched;
-  ## `taperCols` must be ≥ 0.
+  ## `taperCols` must be ≥ 0, and an infinite one is no taper (its weights
+  ## are 0 everywhere after `endCol`).
   if endCol.isNaN: return
   let n = x.len
+  let taperCols = if taperCols < Inf: taperCols else: 0.0
   let rampEnd = endCol + taperCols
   let zeroStart = firstAfter(rampEnd, n)
   {.push boundChecks: off.}

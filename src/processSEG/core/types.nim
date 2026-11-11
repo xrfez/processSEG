@@ -79,7 +79,7 @@ proc initChunkMeta*(rows: TraceRows, dtMs: float64, firstSample = 0,
   if not rows.hasKeys:
     raise newException(ValueError, "the rows have no keys: open the file with " &
       "keys = true (or call ensureKeys) before making the view")
-  if dtMs.classify notin {fcNormal, fcSubnormal} or dtMs <= 0:
+  if dtMs.classify != fcNormal or dtMs <= 0: # a subnormal interval overflows columns
     raise newException(ValueError, "dtMs must be finite and positive, got " & $dtMs)
   if firstSample < 0:
     raise newException(ValueError, "firstSample must be ≥ 0, got " & $firstSample)

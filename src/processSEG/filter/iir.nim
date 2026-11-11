@@ -55,6 +55,7 @@ export edges.TrendRemoval
 
 type
   IirPhase* = enum
+    ## How an `IirPlan` runs its cascade.
     ipZero    ## forward-backward: zero phase, gain |H|²
     ipMinimum ## one causal pass: minimum phase, gain |H|
 
@@ -369,8 +370,12 @@ proc applyFilter*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
   ## Filters the live rows of `b` in place, each to its live length,
   ## `fftLanes` rows at a time (module documentation). `ws` must hold
   ## `plan.workspaceSize`. Raises `ValueError`, before any sample changes,
-  ## when `b` does not match `meta` or has more columns than `plan.samples`.
+  ## when `b` does not match `meta`, has more columns than `plan.samples`, or
+  ## its rows' interval (`meta.dtMs`) is not the plan's.
   meta.checkShape(b)
+  if abs(meta.dtMs - plan.dtMs) > 1e-9 * plan.dtMs:
+    badIir("the rows' interval " & $meta.dtMs & " ms is not the plan's " &
+      $(plan.dtMs) & " ms")
   plan.checkPlan
   if b.cols > plan.samples:
     badIir("the block has " & $b.cols & " columns, the plan takes " &

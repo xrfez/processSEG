@@ -57,6 +57,8 @@ proc rowBlock*[T: SampleType](data: openArray[T], rows, cols: int): RowBlock[T] 
   ## when `rows` or `cols` is negative or `data.len != rows · cols`.
   if rows < 0 or cols < 0:
     badBlock("rows and cols must be ≥ 0, got " & $rows & " × " & $cols)
+  if cols > 0 and rows > high(int) div cols:
+    badBlock("a block of " & $rows & " × " & $cols & " samples overflows")
   if data.len != rows * cols:
     badBlock("need " & $rows & " × " & $cols & " samples, got " & $data.len)
   result.rows = rows
