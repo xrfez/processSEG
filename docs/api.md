@@ -364,3 +364,14 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `intervalMs(rows: TraceRows)` | The rows' common interval from their keys' `intervalUs` (`ValueError` when unknown, 0 or mixed). |
 | `chunkMeta(c: PrefetchChunk[T], dtMs = NaN)` | The meta of a prefetch chunk: its rows, interval, `firstSample` and `failedRows`, in place. `dtMs` overrides headers without an interval. |
 | `chunkMeta(f, traces: Slice[int] \| openArray[int], [samples: Slice[int],] failed = [], dtMs = NaN)` | The meta of a `readTracesInto` of a range or list (and sample window), with its `failedRows` list. |
+
+## vibroseis/taper: sweep-end tapers
+
+| Proc | What |
+|---|---|
+| `TaperShape` (`tpLinear`, `tpCosine`, `tpCos2`, `tpHamming`, `tpBlackman`, `tpBlackmanHarris`, `tpKaiser`, `tpGaussian`, `tpPower`) | Ramp shapes, each the rising half of its window. |
+| `SweepTaper` (`startMs`, `endMs`, `shape`, `param`); `initSweepTaper(startMs, endMs, shape = tpCos2, param = NaN)`, `noTaper()` | Start and end ramps in ms (0 or NaN: none); `param` is β, σ or the exponent (NaN: 6, 0.4, 2). |
+| `taperWeight(shape, x, param = NaN)` | The ramp `w(x)`, `x` in 0 .. 1. |
+| `applyTaper(x: var openArray[T], dtMs, taper)` | Applies the ramps in place to a sweep of `x.len` samples (`(x.len − 1)·dtMs` ms). |
+| `validate(taper)`, `checkFits(taper, sweepMs)` | `ValueError` for bad lengths or parameters, or ramps that overlap (`startMs + endMs > sweepMs`; meeting is allowed). |
+| `segyTaperType(shape \| taper)` | SEG-Y taper type: 1 linear, 2 cos², 3 other. |
