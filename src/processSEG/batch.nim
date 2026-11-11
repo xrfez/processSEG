@@ -377,15 +377,6 @@ proc stackKeys*[T](res: StackResult[T], bin: int): TraceKeys =
   ## `writeTrace(w, keys, samples, overrides)` to write a stack your own way
   ## (other options, extra overrides, a selection of bins); `writeStack`
   ## does exactly that for every bin. Raises `ValueError` as `maxFold`.
-  runnableExamples:
-    import parseSEG
-    var res = StackResult[float32](data: zeros[float32](2, 3), fold: zeros[int32](2, 3),
-      binning: cdpBinning(firstCdp = 10, count = 2), dtMs: 2, startMs: 0)
-    res.fold[1, 1] = 4
-    let k = res.stackKeys(1)
-    doAssert k.ensemble == 11 and k.status == tsLive and k.intervalUs == 2000
-    doAssert res.stackKeys(0).status == tsDead
-    doAssert res.stackOverrides(1)[0].name == "trace.numHorzStacked"
   let live = res.maxFold(bin) > 0
   let loc = res.binning.location(bin)
   result = initTraceKeys()

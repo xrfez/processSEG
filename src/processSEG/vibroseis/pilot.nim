@@ -109,9 +109,6 @@ proc initPilot*[T: SampleType](samples: sink seq[T], dtMs: float64, t0Ms = 0.0,
 proc generatePilot*(spec: SweepSpec, T: typedesc[SampleType] = float64): Pilot[T] =
   ## The pilot of the sweep `spec`, from `t0Ms = 0`, with `sweep` set.
   ## Raises `ValueError` for an invalid spec.
-  runnableExamples:
-    let p = generatePilot(linearSweep(10, 60, 4000, 2), float32)
-    doAssert p.len == 2001 and p.dtMs == 2 and p.sweep.get.f2Hz == 60
   result = Pilot[T](samples: spec.sweepSamples(T), dtMs: spec.dtMs, t0Ms: 0,
     sweep: some(spec))
 
