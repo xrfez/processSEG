@@ -102,6 +102,7 @@ block resample_down_and_up:
   anon.sweep = none(SweepSpec)
   discard anon.resamplePilot(4)
   doAssertRaises(ValueError): discard fine.resamplePilot(0)
+  doAssertRaises(ValueError): discard anon.resamplePilot(1e-9) # over 2³¹ samples
   doAssertRaises(ValueError): discard fine.resamplePilot(2, cutoffFraction = 0)
 
 block instrument_filter_causality:

@@ -85,7 +85,9 @@ proc initCorrelationPlan*[T, P: SampleType](_: typedesc[T], pilot: Pilot[P],
   ## `validate` rejects, a pilot sampled at another interval (resample it
   ## with `resamplePilot`), a pilot longer than the record (with the default
   ## `outSamples`), `outSamples < 0` or above `recordSamples`, or an
-  ## `epsPercent` that is not finite and positive (deconvolution).
+  ## `epsPercent` that is not finite and positive (deconvolution), or a
+  ## pilot start time (`t0Ms`) so far from the time break that no lag
+  ## reaches the output.
   pilot.validate
   if not (dtMs > 0 and dtMs < Inf): badPlan("dtMs must be finite and positive, got " & $dtMs)
   if abs(pilot.dtMs - dtMs) > 1e-9 * dtMs:
@@ -103,6 +105,9 @@ proc initCorrelationPlan*[T, P: SampleType](_: typedesc[T], pilot: Pilot[P],
   # The pilot's start time in samples: a whole part read as an offset, the
   # rest a phase ramp.
   let s = pilot.t0Ms / dtMs
+  if abs(s) >= float64(recordSamples + pilot.len):
+    badPlan("the pilot starts " & $pilot.t0Ms & " ms from the time break: no lag of a " &
+      $recordSamples & "-sample record reaches the output")
   let whole = int(round(s))
   let frac = s - float64(whole)
   let n = nextFastLen(recordSamples + pilot.len + 64 + abs(whole))
@@ -226,6 +231,7 @@ proc correlateInto*[T: SampleType](plan: CorrelationPlan[T], x: openArray[T],
   plan.checkPlan
   doAssert x.len <= plan.recordSamples, "a record longer than the plan's recordSamples"
   doAssert y.len == plan.outSamples, "y must have outSamples values"
+  doAssert ws.fits(plan.workspaceSize), "reserve the plan's workspaceSize first"
   let n = plan.fft.len
   let bins = plan.fft.bins
   let at = plan.fft.workspaceSize.elems(T)
@@ -267,6 +273,7 @@ proc correlateInto*[T: SampleType](plan: CorrelationPlan[T], src, dst: RowBlock[
   ## as `checkCorrelate`, before any sample changes. `ws` must hold
   ## `plan.workspaceSize`.
   plan.checkCorrelate(src, dst, meta)
+  doAssert ws.fits(plan.workspaceSize), "reserve the plan's workspaceSize first"
   let n = plan.fft.len
   let bins = plan.fft.bins
   let at = plan.fft.workspaceSize.elems(T)

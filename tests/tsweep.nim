@@ -180,7 +180,7 @@ block lengths_and_amplitude:
   var peak = 0.0
   for v in x: peak = max(peak, abs(float64(v)))
   doAssert peak <= 2.5 and peak > 2.49
-  doAssert linearSweep(8, 80, 0.3, 0.1).sweepLen == 4 # 0.3 / 0.1 rounds to 3
+  doAssert linearSweep(8, 80, 0.3, 0.1).sweepLen == 4 # 0.3 / 0.1 is 2.9999999999999996
   var buf = newSeq[float64](10)
   doAssertRaises(ValueError): s.sweepInto(buf)
 
@@ -191,6 +191,9 @@ block validation:
   doAssertRaises(ValueError): discard linearSweep(0, 80, 8000, 2)
   doAssertRaises(ValueError): discard linearSweep(8, 80, 1, 2) # shorter than dt
   doAssertRaises(ValueError): discard linearSweep(8, 80, 8000, 0)
+  doAssertRaises(ValueError): discard linearSweep(8, 80, 8001, 2) # not whole samples
+  doAssertRaises(ValueError): discard linearSweep(8, 80, 1e12, 2) # over 2³¹ samples
+  doAssertRaises(ValueError): discard linearSweep(8, 80, 1e300, 2)
   doAssertRaises(ValueError): discard linearSweep(8, 80, 1000, 2, initSweepTaper(600, 500))
   doAssertRaises(ValueError): discard dbPerHzSweep(8, 80, 8000, 2, 10) # 720 dB
   doAssertRaises(ValueError): discard dbPerOctaveSweep(8, 80, 8000, 2, NaN)

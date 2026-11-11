@@ -58,6 +58,36 @@ block fft_equals_direct:
   for m in [n - pilot.len, n - 100, n - 1]:
     doAssert abs(y2[m] - direct(x, pilot.samples, m)) < 1e-10 * peak
 
+block whole_sample_pilot_start_times:
+  # Pilots starting before or after the time break by whole samples: the
+  # output at column m is the direct correlation at lag m + t0/dt.
+  let base = generatePilot(linearSweep(8, 60, 1000, 2, initSweepTaper(100, 100)))
+  let n = 1801
+  var x = newSeq[float64](n)
+  x.addNoise(1.0, 11)
+  for t0 in [-20.0, 20.0, -900.0, 3000.0]:
+    var p = base
+    p.t0Ms = t0
+    let plan = initCorrelationPlan(float64, p, n, 2, outSamples = n, normalize = false)
+    var ws = initWorkspace()
+    ws.reserve(plan.workspaceSize)
+    var y = newSeq[float64](n)
+    plan.correlateInto(x, y, ws)
+    let s = int(t0 / 2)
+    var worst, peak = 0.0
+    for m in 0 ..< n:
+      let lag = m + s
+      let d = if lag <= -p.len or lag >= n: 0.0 else: direct(x, p.samples, lag)
+      worst = max(worst, abs(y[m] - d))
+      peak = max(peak, abs(d))
+    doAssert worst < 1e-10 * peak, "t0 " & $t0 & ": " & $worst
+  # A start time no lag can reach is refused (and never sizes a huge FFT).
+  var far = base
+  far.t0Ms = 1e30
+  doAssertRaises(ValueError): discard initCorrelationPlan(float64, far, n, 2)
+  far.t0Ms = 2e7
+  doAssertRaises(ValueError): discard initCorrelationPlan(float64, far, n, 2)
+
 block reflectivity_to_klauder:
   # Spikes convolved with the sweep correlate back to spikes ⊛ Klauder at
   # their times, with the normalized Klauder peak = the spike's amplitude.
@@ -186,8 +216,20 @@ block instrument_filter_phase:
   let n = 4001
   var refl = newSeq[float64](n)
   refl[1000] = 1
-  # The record through the instrument: the reflected sweep, then the filter.
-  let rec = initPilot(convolve(refl, raw.samples, n), dt).applyInstrumentFilter(inst)
+  # The record through the instrument, simulated independently of
+  # applyInstrumentFilter: the reflected sweep run through the minimum-phase
+  # IIR cascades directly, from rest (zeros ahead of the record).
+  var rec = initPilot(convolve(refl, raw.samples, n), dt)
+  block:
+    const lead = 2000
+    var buf = newSeq[float64](lead + n)
+    for j in 0 ..< n: buf[lead + j] = rec.samples[j]
+    var ws = initWorkspace()
+    for spec in [butterLowCut(3, 36), butterHighCut(100, 36)]:
+      let plan = initIirPlan(float64, spec, dt, buf.len, ipMinimum, trNone)
+      ws.reserve(plan.workspaceSize)
+      buf.applyFilter(plan, ws)
+    for j in 0 ..< n: rec.samples[j] = buf[lead + j]
   proc phaseErrorDeg(pilot: Pilot[float64]): float64 =
     let plan = initCorrelationPlan(float64, pilot, n, dt, outSamples = 2001)
     var ws = initWorkspace()

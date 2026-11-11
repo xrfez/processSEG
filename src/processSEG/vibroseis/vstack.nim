@@ -318,8 +318,8 @@ proc add*[T](acc: var RecordStack[T], outRow: int, x: openArray[T],
   ## Adds the trace `x` to output row `outRow`, sample `j` onto sample `j`.
   ## Returns false, adding nothing, for `outRow < 0` or a NaN or infinite
   ## sample in `x`. A diversity stack takes its scratch from `ws`, which
-  ## must hold `acc.workspaceSize` (an `IndexDefect` otherwise, with bound
-  ## checks on); a vertical one does not use it. An `AssertionDefect` for a
+  ## must hold `acc.workspaceSize` (an `AssertionDefect` otherwise, in every
+  ## build); a vertical one does not use it. An `AssertionDefect` for a
   ## row past the stack or `x` longer than `samples`. Allocates nothing.
   if outRow < 0: return false
   doAssert outRow < acc.rows, "output row " & $outRow & " is outside 0 ..< " & $acc.rows
@@ -327,6 +327,8 @@ proc add*[T](acc: var RecordStack[T], outRow: int, x: openArray[T],
     " samples, the stack " & $acc.samples
   let n = x.len
   if n == 0: return true
+  if acc.params.mode == rsDiversity:
+    doAssert ws.fits(acc.workspaceSize), "reserve the stack's workspaceSize first"
   let xp = cast[ptr UncheckedArray[T]](unsafeAddr x[0])
   if not allFinite(xp, n): return false
   let at = outRow * acc.samples

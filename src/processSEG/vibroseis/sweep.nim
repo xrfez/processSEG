@@ -37,8 +37,8 @@
 ## **Validation** (`validate`): frequencies above 0 and at most
 ## `maxNyquistFraction` (default 0.8) of the Nyquist frequency, so the sweep
 ## stays below the anti-alias filter of the data it is correlated with, and
-## never above Nyquist; a positive length of at least two samples; tapers
-## that fit (`checkFits`).
+## never above Nyquist; a length of a whole number of samples (within 1e-6),
+## at least one and below 2³¹; tapers that fit (`checkFits`).
 
 import std/math
 import parseSEG
@@ -77,9 +77,9 @@ proc badSweep(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
 
 func sweepLen*(spec: SweepSpec): int {.raises: [].} =
-  ## The number of samples: `lengthMs / dtMs + 1` (rounded down, with a
-  ## relative tolerance of 1e-9 so that 8000 / 2 is 4000).
-  int(floor(spec.lengthMs / spec.dtMs * (1 + 1e-9))) + 1
+  ## The number of samples, `lengthMs / dtMs + 1` (a valid spec's length is
+  ## a whole number of samples).
+  int(round(spec.lengthMs / spec.dtMs)) + 1
 
 func nyquistOf(dtMs: float64): float64 {.inline.} = 500 / dtMs
 
@@ -98,6 +98,13 @@ proc validate*(spec: SweepSpec) =
     badSweep("dtMs must be finite and positive, got " & $spec.dtMs)
   if not (spec.lengthMs >= spec.dtMs and spec.lengthMs < Inf):
     badSweep("lengthMs must be at least one sample interval, got " & $spec.lengthMs)
+  let steps = spec.lengthMs / spec.dtMs
+  if steps > float64(high(int32)):
+    badSweep("a sweep of " & $spec.lengthMs & " ms at " & $spec.dtMs &
+      " ms is over 2³¹ samples")
+  if abs(steps - round(steps)) > 1e-6 * max(1.0, steps):
+    badSweep("lengthMs = " & $spec.lengthMs & " must be a whole number of samples of " &
+      $spec.dtMs & " ms")
   if not (spec.maxNyquistFraction > 0 and spec.maxNyquistFraction <= 1):
     badSweep("maxNyquistFraction must be in (0, 1], got " & $spec.maxNyquistFraction)
   if not (spec.amplitude.classify in {fcNormal, fcSubnormal, fcZero}):

@@ -220,7 +220,10 @@ proc resamplePilot*[T: SampleType](p: Pilot[T], dtMs: float64, cutoffFraction = 
     try: s.validate
     except ValueError as e: badPilot("the resampled sweep is invalid: " & e.msg)
     sweep = some(s)
-  let n = int(floor(p.lengthMs / dtMs * (1 + 1e-9))) + 1
+  let steps = p.lengthMs / dtMs
+  if steps > float64(high(int32)):
+    badPilot("resampling to " & $dtMs & " ms gives over 2³¹ samples")
+  let n = int(floor(steps * (1 + 1e-9))) + 1
   var outS = newSeq[T](n)
   let w = float64(halfWidth) * coarse # ms
   let beta = 8.0
