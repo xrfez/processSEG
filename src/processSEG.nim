@@ -34,7 +34,8 @@
 ## - `processSEG/vibroseis/taper`: sweep-end tapers (`SweepTaper`);
 ## - `processSEG/vibroseis/sweep`: sweep generation (`SweepSpec`, `sweepSamples`);
 ## - `processSEG/vibroseis/pilot`: generated and recorded pilots (`Pilot`), resampling,
-##   instrument filters, SEG-Y sweep headers.
+##   instrument filters, SEG-Y sweep headers;
+## - `processSEG/vibroseis/correlate`: correlation and sweep deconvolution (`CorrelationPlan`).
 
 import processSEG/core/[types, rows, workspace, basic, mute, shift]
 import processSEG/fft/[plan, spectrum]
@@ -46,8 +47,8 @@ import processSEG/velocity/[model, formats, moveout]
 import processSEG/statics/elevation
 import processSEG/stack/[nmo, binning, stack]
 import processSEG/qc/[geometry, firstbreak, shotfit]
-import processSEG/vibroseis/[taper, sweep, pilot]
+import processSEG/vibroseis/[taper, sweep, pilot, correlate]
 export types, rows, workspace, basic, mute, plan, spectrum, design,
     apply, iir, gain, curves, stats, pipeline, adapters, pool, shift, model,
     formats, moveout, elevation, nmo, binning, stack, batch, geometry, firstbreak, shotfit
-export taper, sweep, pilot
+export taper, sweep, pilot, correlate

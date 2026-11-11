@@ -356,6 +356,7 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `ProcessPool`; `newProcessPool(workers = 4)`, `p.workers` | Persistent worker threads, each with its own `Workspace`. `ValueError` for `workers < 1`, `ResourceExhaustedError` when the OS refuses a thread. `=copy` and `=dup` are compile errors (move it); `=destroy` stops and joins the workers; `=wasMoved` empties it. |
 | `pool.apply(plan, b \| samples, meta)`, `pool.apply(plan, src, dst, meta)` (blocks or tensors) | `plan.apply` with the rows split across the workers; blocks until done, identical results. One job at a time; a second caller waits. |
 | `pool.ping` | An empty job: the per-job overhead. |
+| `correlateInto(pool, plan: CorrelationPlan[T], src, dst: RowBlock[T] \| Tensor[T], meta)` | Vibroseis correlation with the rows split across the workers; checks as `checkCorrelate` on the caller's thread. |
 
 ## adapters: metas from parseSEG reads
 
@@ -404,3 +405,14 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `resamplePilot(pilot, dtMs, cutoffFraction = 0.9, halfWidth = 24)` | Band-limited resampling (Kaiser-windowed sinc at `cutoffFraction` of the lower Nyquist); refuses a sweep above the cutoff. |
 | `InstrumentPhase` (`ipMinimumPhase`, `ipZeroPhase`), `InstrumentFilter` (`highCutHz`, `highSlopeDbPerOctave`, `lowCutHz`, `lowSlopeDbPerOctave`, `phase`) | A recorder's filters as Butterworth responses (SEG-Y bytes 141-152). |
 | `applyInstrumentFilter(pilot, filter)` | The pilot through the recorder's filters from rest (causal for minimum phase), same length. |
+
+## vibroseis/correlate: correlation and sweep deconvolution
+
+| Proc | What |
+|---|---|
+| `CorrelationMode` (`cmCorrelate`, `cmDeconvolve`) | `X·conj(P)`, or `X·conj(P)/(\|P\|² + ε)`. |
+| `initCorrelationPlan(T, pilot, recordSamples, dtMs, outSamples = 0, mode = cmCorrelate, epsPercent = 1, normalize = true)` | A plan for records of up to `recordSamples`; `outSamples` 0 is the listen time `recordSamples − pilot.len + 1`. `ValueError` for a pilot at another `dtMs` (use `resamplePilot`), no listen time, a bad `outSamples` or `epsPercent`. |
+| `recordSamples`, `outSamples`, `pilotSamples`, `dtMs`, `mode`, `nfft`, `scale`, `workspaceSize` | Plan accessors; `scale` is the normalization (1/wavelet peak). |
+| `correlateInto(plan, x: openArray[T], y: var openArray[T], ws)` | One record. |
+| `correlateInto(plan, src, dst: RowBlock[T] \| Tensor[T], meta, ws)`, `checkCorrelate(plan, src, dst, meta)` | All rows but dead and failed ones, each to its live length; column `m` at the record's `t0Ms + m·dtMs` (the pilot's `t0Ms` removed exactly). `ValueError` for shapes, `dtMs`, `firstSample > 0`. |
+| `correlate(plan, src, meta): Tensor[T]` | Allocating form. |
