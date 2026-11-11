@@ -154,7 +154,10 @@ block plan_properties:
   ws.reserve(plan)
   doAssert ws.fits(plan.workspaceSize)
 
-proc equalsOneByOne[T](tol: float64) =
+proc equalsOneByOne[T](relTol: float64) =
+  # `relTol` is relative to the largest output sample: the plan and the ops run
+  # the same maths, but compilers may contract or vectorize the two paths
+  # differently (gcc 15 with FMA differs in the last bit from gcc 12).
   var g = noisyGather[T](100, 2001, seed = 11)
   g.mark
   let meta = initChunkMeta(g.rows, dtMs = 2, failed = failed)
@@ -164,6 +167,7 @@ proc equalsOneByOne[T](tol: float64) =
   ws.reserve(plan)
   var want = g.data.clone()
   flow.oneByOne(want, meta)
+  let tol = relTol * maxDiff(want, zeros[T](100, 2001))
   # In place.
   var got = g.data.clone()
   plan.apply(got, meta, ws)
@@ -191,8 +195,8 @@ proc equalsOneByOne[T](tol: float64) =
   doAssert maxDiff(same, want) <= tol
 
 block apply_equals_ops_one_by_one:
-  equalsOneByOne[float64](0)
-  equalsOneByOne[float32](0)
+  equalsOneByOne[float64](1e-13)
+  equalsOneByOne[float32](1e-6)
 
 block empty_pipeline:
   var g = noisyGather[float32](10, 100, seed = 1)

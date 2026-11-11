@@ -221,13 +221,17 @@ proc checkNanContained[T](seed: int64) =
     let ctx = "seed " & $seed & " it " & $it & " " & $T & " " & kinds.join(" | ") & ", row " & $bad
     for i in 0..<rows:
       if i == bad: continue
+      # Rows run in SIMD lane groups: moving a row to another lane (the bad
+      # row live or failed) may change the last bits of a float64 IIR, so
+      # the tolerance is relative to the row's scale, not to each sample (a
+      # sample near zero carries the rounding of the row's larger values).
+      var scale = 0.0
+      for j in 0..<cols: scale = max(scale, abs(float64(b[i, j])))
       for j in 0..<cols:
-        # Rows run in SIMD lane groups: moving a row to another lane (the
-        # bad row live or failed) may change the last bit of a float64 IIR.
         let x = float64(a[i, j])
         let y = float64(b[i, j])
         doAssert x.classify notin {fcNan, fcInf, fcNegInf} and
-          abs(x - y) <= 1e-12 * max(abs(x), abs(y)), "a non-finite sample leaked: " & ctx &
+          abs(x - y) <= 1e-12 * scale, "a non-finite sample leaked: " & ctx &
           " into row " & $i & " col " & $j & ": " & $a[i, j] & " vs " & $b[i, j]
     inc checked
   doAssert checked > iterations div 3
