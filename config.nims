@@ -82,6 +82,25 @@ task bench, "Run the benchmarks in bench/ (danger build, flags and machine print
       selfExec "c -r --hints:off " & benchFlags & " " &
         quoteShell("-d:benchFlags=" & benchFlags) & " " & quoteShell(f)
 
+# Fuzzing (libFuzzer + ASan + UBSan; clang with its compiler-rt, e.g. Debian's
+# libclang-rt-dev): tests/fuzz/f*.nim, each run for $FUZZ_SECONDS (default 60)
+# from tests/fuzz/seeds/<target> into tests/fuzz/corpus/<target>. Findings
+# land in tests/fuzz/corpus as crash-*/leak-*/timeout-* files; replay one with
+# `nim c -d:fuzzStandalone tests/fuzz/<target>.nim` and the file as argument.
+task fuzz, "Run every libFuzzer target in tests/fuzz (FUZZ_SECONDS=N each, default 60)":
+  let seconds = if existsEnv("FUZZ_SECONDS"): getEnv("FUZZ_SECONDS") else: "60"
+  for f in listFiles("tests/fuzz"):
+    let name = f.lastPathPart
+    if name.startsWith("f") and name.endsWith(".nim") and name != "fuzzutil.nim":
+      let target = name[0 .. ^5]
+      let corpus = "tests/fuzz/corpus/" & target
+      mkDir corpus
+      for s in listFiles("tests/fuzz/seeds/" & target):
+        cpFile s, corpus / s.lastPathPart
+      selfExec "c --hints:off -o:tests/fuzz/bin/" & target & " " & quoteShell(f)
+      exec "tests/fuzz/bin/" & target & " -max_total_time=" & seconds &
+        " -max_len=8192 -artifact_prefix=" & corpus & "/ " & corpus
+
 proc nimSources(dir: string): seq[string] =
   ## Every .nim file under `dir`, recursively (NimScript has no walkDirRec).
   for f in listFiles(dir):

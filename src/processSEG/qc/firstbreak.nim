@@ -134,6 +134,11 @@ proc badParams(msg: string) {.noinline, noreturn.} =
 
 func positive(x: float64): bool {.inline.} = x > 0 and x < Inf
 
+func samplesIn(ms, dtMs: float64, samples: int): int {.inline.} =
+  # A window of `ms` in samples, 1 .. samples + 1 (rounded as a float first:
+  # a long window does not fit an int).
+  int(clamp(round(ms / dtMs), 1.0, float64(samples + 1)))
+
 proc initFirstBreakPlan*(T: typedesc[SampleType], params: FirstBreakParams,
     dtMs: float64, samples: int): FirstBreakPlan[T] =
   ## A plan picking with `params` on traces of up to `samples` samples at
@@ -166,8 +171,8 @@ proc initFirstBreakPlan*(T: typedesc[SampleType], params: FirstBreakParams,
     if p.guideT0Ms.classify in {fcNan, fcInf, fcNegInf}:
       badParams("guideT0Ms must be finite")
   result = FirstBreakPlan[T](params: p, dtMs: dtMs, samples: samples,
-    w: max(1, int(round(p.windowMs / dtMs))), lta: max(1, int(round(p.ltaMs / dtMs))),
-    snr: max(1, int(round(p.snrWindowMs / dtMs))))
+    w: p.windowMs.samplesIn(dtMs, samples), lta: p.ltaMs.samplesIn(dtMs, samples),
+    snr: p.snrWindowMs.samplesIn(dtMs, samples))
   if not (p.lowCutHz >= 0 and p.highCutHz > p.lowCutHz):
     badParams("need 0 ≤ lowCutHz < highCutHz, got " & $p.lowCutHz & " and " & $p.highCutHz)
   result.filtered = p.lowCutHz > 0 or p.highCutHz < Inf

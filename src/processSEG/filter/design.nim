@@ -300,7 +300,9 @@ proc featureLength(spec: FilterSpec, dtMs: float64): int =
   let feature = spec.narrowestRampHz
   if feature == Inf: return 0
   let fs = 1000 / dtMs
-  var n = nextFastLen(max(64, int(ceil(16 * fs / feature))))
+  let start = ceil(16 * fs / feature) # compared as a float: it may not fit an int
+  var n = if start > float64(maxImpulseGrid): maxImpulseGrid + 1
+          else: nextFastLen(max(64, int(start)))
   while true:
     if n > maxImpulseGrid:
       badFilter("the filter's impulse response is longer than " &

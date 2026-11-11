@@ -389,8 +389,10 @@ proc lagOf[T](a, b: ptr UncheckedArray[T], na, nb, sa, sb, m, maxLag: int): (flo
 proc correlateInto[T](fit: var ShotFit, b: RowBlock[T], meta: ChunkMeta,
     p: ShotFitParams) =
   let dt = meta.dtMs
-  let m = max(2, int(round(p.windowMs / dt)))
-  let maxLag = int(round(p.maxLagMs / dt))
+  # Rounded and clamped as floats (a long window does not fit an int); no
+  # window or lag can usefully exceed the block.
+  let m = int(clamp(round(p.windowMs / dt), 2.0, float64(max(2, b.cols))))
+  let maxLag = int(min(round(p.maxLagMs / dt), float64(b.cols)))
   let ord = fit.order
   template startCol(r: int): int =
     # The window's first column: windowMs / 4 before the model time.

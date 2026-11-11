@@ -129,7 +129,9 @@ proc nmoInto*[T: SampleType](src: openArray[T], srcStartMs: float64,
   # The first column the ramp does not zero (the ramp's start has weight 0).
   let first =
     if start >= m: m
-    elif taper > 0: max(0, int(floor(float64(start) - taper)) + 1)
+    elif taper > 0:
+      let f = floor(float64(start) - taper) # a long taper: below any int
+      if f < 0: 0 else: int(f) + 1
     else: start
   template at(i: int): float64 =
     (if i >= 0 and i < n: float64(src[i]) else: 0.0)
