@@ -29,7 +29,7 @@ type
     keysRevision*: int ## the keys revision `processed` was made with
     plan: int ## index into `plans`
     ticks*: seq[float64] ## moveout columns per row
-    ticksRevision*: int  ## `keysRevision` the ticks were made from (-1: none)
+    ticksRevision*: int ## `keysRevision` the ticks were made from (-1: none)
 
   PlanKey = object
     dtMs: float64
@@ -42,8 +42,8 @@ type
     keys: seq[PlanKey]
     entries*: seq[Entry]
     keysRevision*: int ## the current keys revision (the file's `keysRevision`)
-    reprocessed*: int ## buffers processed by the last `frame`
-    drawn*: float64   ## a checksum of what the last `frame` "drew"
+    reprocessed*: int  ## buffers processed by the last `frame`
+    drawn*: float64    ## a checksum of what the last `frame` "drew"
 
 proc initViewerSim*(flow: sink Pipeline, workers = 4): ViewerSim =
   ## A viewer with a pool of `workers` and the flow `flow`.

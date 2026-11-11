@@ -95,21 +95,21 @@ type
     ## What `initFirstBreakPlan` builds a plan from. Times in ms, velocities
     ## in offset units per second.
     pickMethod*: PickMethod = pmEnergyRatio
-    windowMs*: float64 = 20      ## STA, energy-ratio and Coppens window.
-    ltaMs*: float64 = 100        ## `pmStaLta`: the long window.
+    windowMs*: float64 = 20 ## STA, energy-ratio and Coppens window.
+    ltaMs*: float64 = 100 ## `pmStaLta`: the long window.
     stabilization*: float64 = 0.2 ## `pmCoppens`: β, relative to the mean window energy.
-    lowCutHz*: float64 = 0      ## Band-pass low cut before picking; 0: none.
-    highCutHz*: float64 = Inf   ## Band-pass high cut before picking; Inf: none.
+    lowCutHz*: float64 = 0 ## Band-pass low cut before picking; 0: none.
+    highCutHz*: float64 = Inf ## Band-pass high cut before picking; Inf: none.
     slopeDbPerOctave*: float64 = 24 ## Each cut's slope (a multiple of 6).
     searchStartMs*: float64 = NaN ## Earliest pick time; NaN: the trace's start.
-    searchEndMs*: float64 = NaN   ## Latest pick time; NaN: the trace's end.
+    searchEndMs*: float64 = NaN ## Latest pick time; NaN: the trace's end.
     guideVelocity*: float64 = NaN ## LMO guide velocity; NaN: no guide.
-    guideT0Ms*: float64 = 0       ## LMO guide intercept time.
-    beforeMs*: float64 = 50       ## Guided window before the LMO time.
-    afterMs*: float64 = 100       ## Guided window after the LMO time.
-    snrWindowMs*: float64 = 40    ## Confidence windows.
-    lowDb*: float64 = 6           ## SNR of confidence 0.
-    highDb*: float64 = 20         ## SNR of confidence 1.
+    guideT0Ms*: float64 = 0 ## LMO guide intercept time.
+    beforeMs*: float64 = 50 ## Guided window before the LMO time.
+    afterMs*: float64 = 100 ## Guided window after the LMO time.
+    snrWindowMs*: float64 = 40 ## Confidence windows.
+    lowDb*: float64 = 6 ## SNR of confidence 0.
+    highDb*: float64 = 20 ## SNR of confidence 1.
 
   FirstBreakPick* = object
     ## One trace's pick.

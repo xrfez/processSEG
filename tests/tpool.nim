@@ -89,7 +89,7 @@ block many_jobs_back_to_back:
 block idle_start_and_shutdown:
   for i in 0..<50:
     var pool = newProcessPool(1 + i mod 8) # destroyed at once, maybe before
-    doAssert pool.workers == 1 + i mod 8   # a worker reached its first wait
+    doAssert pool.workers == 1 + i mod 8 # a worker reached its first wait
   for i in 0..<20:
     var pool = newProcessPool(4)
     pool.ping

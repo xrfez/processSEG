@@ -114,12 +114,14 @@ block no_wraparound:
   # matches a plan for much longer traces (whose FFT cannot wrap within this
   # one), to −60 dB of the peak, in the worst case of a spike on the last
   # sample (its odd reflection fills the pad).
-  for s in [lowCut(0.5, 1), lowCut(1, 2), bandPass(Corners(f1: 4, f2: 8, f3: 60, f4: 80)),
+  # The last three put a narrow feature next to a wide one: the low ramp and the
+  # notch set L.
+  let specs = [lowCut(0.5, 1), lowCut(1, 2), bandPass(Corners(f1: 4, f2: 8, f3: 60, f4: 80)),
       butterLowCut(2), highCut(60, 80).withNotch(50, 2),
-      # A narrow feature next to a wide one: the low ramp and the notch set L.
       bandPass(Corners(f1: 0.5, f2: 1, f3: 60, f4: 80)),
       bandPass(Corners(f1: 4, f2: 8, f3: 60, f4: 80)).withNotch(50, 1),
-      butterBandPass(2, 80, 48)]:
+      butterBandPass(2, 80, 48)]
+  for s in specs:
     var x = zeroSignal[float64](ns)
     x.addRicker(dt, float64(ns - 15) * dt, 25, amp = 1)
     x.addSpike(ns - 1, 1)

@@ -135,7 +135,7 @@ block table_bottom_mute_and_liveness:
   for j in 60..<100: g.data[3, j] = 7 # a sentinel past the live end
   let failed: seq[int] = @[]
   let meta = initChunkMeta(g.rows, dtMs = 4, failed = failed)
-  let tab = tableMute([100.0, 400], [200.0, 160])       # columns 50 .. 40
+  let tab = tableMute([100.0, 400], [200.0, 160]) # columns 50 .. 40
   g.data.muteBottom(meta, tab)
   doAssert g.data[0, 50] == 1 and g.data[0, 51] == 0
   doAssert g.data[1, 99] == 1, "auxiliary rows are untouched"
@@ -179,7 +179,7 @@ block infinite_bounds_and_tapers:
   x.muteTop(Inf, Inf)
   doAssert x.allIt(it == 0)
   x = ones()
-  x.muteTop(5, Inf)          # hard mute at column 5
+  x.muteTop(5, Inf) # hard mute at column 5
   doAssert x[0 ..< 5].allIt(it == 0) and x[5 ..< 8].allIt(it == 1)
   x = ones()
   x.muteBottom(2, Inf)

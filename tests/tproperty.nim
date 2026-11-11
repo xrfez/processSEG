@@ -282,7 +282,8 @@ block filter_linearity:
       ws.reserve(ip.workspaceSize)
       let e = linearityError[float64](r, r.rand(1 .. n),
         proc (x: var seq[float64]) = x.applyFilter(ip, ws))
-      doAssert e < 1e-9, "IIR filter not linear: " & $e & " " & $ispec & " dt " & $dtMs & " n " & $n & " " & $trend & " " & $phase
+      doAssert e < 1e-9, "IIR filter not linear: " & $e & " " & $ispec &
+        " dt " & $dtMs & " n " & $n & " " & $trend & " " & $phase
       # float32: the same within single precision.
       let ip32 = initIirPlan(float32, ispec, dtMs, n, phase, trend)
       ws.reserve(ip32.workspaceSize)
@@ -451,6 +452,8 @@ HANDVEL     201
 """
 const csvSeed = "cdp,time,velocity\n101,0,1500\n101,1000,2000\n201,0,1500\n"
 
+const nasty = ["-", "1e400", "nan", "inf", ",", "\n", " ", "-0", "99999999999999999999"]
+
 proc mutate(r: var Rand, s: string): string =
   result = s
   for k in 0 .. r.rand(6):
@@ -460,7 +463,7 @@ proc mutate(r: var Rand, s: string): string =
     of 0: result[at] = char(r.rand(255))
     of 1: result.delete(at .. at)
     of 2: result.insert($char(r.rand(32 .. 126)), at)
-    of 3: result.insert(["-", "1e400", "nan", "inf", ",", "\n", " ", "-0", "99999999999999999999"][r.rand(8)], at)
+    of 3: result.insert(nasty[r.rand(nasty.high)], at)
     of 4: result.setLen(at)
     else: result = result & result[0 .. at]
 

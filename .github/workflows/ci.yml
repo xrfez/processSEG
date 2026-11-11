@@ -42,7 +42,7 @@ jobs:
           for f in src/**/*.nim tests/**/*.nim bench/**/*.nim; do
             out="$RUNNER_TEMP/fmt/$f"
             mkdir -p "$(dirname "$out")"
-            nimpretty --indent:2 --out:"$out" "$f"
+            nimpretty --indent:2 --maxLineLen:100 --out:"$out" "$f"
             diff -u "$f" "$out" || status=1
           done
           exit $status

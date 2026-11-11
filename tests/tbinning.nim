@@ -35,7 +35,7 @@ block split_spread_shots_on_a_line:
         12.5), 4, 2)
     for k in g.keys:
       var kk = k
-      let cdp = (kk.cmpX - 706.25) / 12.5 + 1           # CDP 1 at x = 706.25
+      let cdp = (kk.cmpX - 706.25) / 12.5 + 1 # CDP 1 at x = 706.25
       doAssert cdp == round(cdp)
       kk.ensemble = cdp
       keys.add kk

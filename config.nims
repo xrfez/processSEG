@@ -114,7 +114,7 @@ task fmt, "Format codebase via nimpretty":
   for dir in ["src", "tests", "bench"]:
     if dirExists(dir):
       for f in nimSources(dir):
-        exec "nimpretty --indent:2 " & quoteShell(f)
+        exec "nimpretty --indent:2 --maxLineLen:100 " & quoteShell(f)
 
 task docs, "Generate HTML documentation":
   ## Emits HTML documentation into htmldocs directory.

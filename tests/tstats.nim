@@ -73,7 +73,7 @@ proc panelGather(rows, cols: int, seed: int64): SynthGather[float32] =
     var x = newSeq[float32](cols)
     x.addNoise(1, seed = seed + r)
     x.addSpike(cols div 2, amp = 50) # a few large values, as real data has
-    let decay = 10.0 ^ (-3.0 * float64(r) / float64(rows)) # 60 dB across the panel
+    let decay = 10.0 ^ (-3.0 * float64(r) / float64(rows))         # 60 dB across the panel
     for j in 0..<cols: result.data[r, j] = float32(float64(x[j]) * decay)
 
 block panel_stats_against_sort:

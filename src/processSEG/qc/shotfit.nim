@@ -118,19 +118,19 @@ type
   ShotFit* = object
     ## One shot's fit and findings; per-trace seqs are indexed by row.
     model*: RefractionModel
-    interceptMs*: float64 ## The two-segment fit's `a` (fitted with either model).
-    v1*, v2*: float64     ## Its segment velocities (offset units/s); `v2` NaN: one segment.
-    crossover*: float64   ## Its `xc` (Inf: one segment).
-    used*: int            ## Picks the fit used.
-    asymmetryMs*: float64 ## Negative-side minus positive-side median residual.
-    threshold*: float64   ## The `|localMs|` above which a trace is suspect.
-    position*: seq[float64]   ## Signed position along the spread; NaN unknown.
-    modelMs*: seq[float64]    ## The model time at the header offset; NaN unknown.
-    residualMs*: seq[float64] ## Pick − model; NaN without a used pick.
-    localMs*: seq[float64]    ## Residual − neighbours' median; NaN without one.
-    lagMs*: seq[float64]      ## Best neighbour lag; NaN without correlation.
-    coherence*: seq[float64]  ## Its correlation coefficient; NaN without.
-    suspect*: seq[bool]       ## Geometry suspect.
+    interceptMs*: float64              ## The two-segment fit's `a` (fitted with either model).
+    v1*, v2*: float64                  ## Its segment velocities (offset units/s); `v2` NaN: one segment.
+    crossover*: float64                ## Its `xc` (Inf: one segment).
+    used*: int                         ## Picks the fit used.
+    asymmetryMs*: float64              ## Negative-side minus positive-side median residual.
+    threshold*: float64                ## The `|localMs|` above which a trace is suspect.
+    position*: seq[float64]            ## Signed position along the spread; NaN unknown.
+    modelMs*: seq[float64]             ## The model time at the header offset; NaN unknown.
+    residualMs*: seq[float64]          ## Pick − model; NaN without a used pick.
+    localMs*: seq[float64]             ## Residual − neighbours' median; NaN without one.
+    lagMs*: seq[float64]               ## Best neighbour lag; NaN without correlation.
+    coherence*: seq[float64]           ## Its correlation coefficient; NaN without.
+    suspect*: seq[bool]                ## Geometry suspect.
     # Scratch, kept for reuse.
     order: seq[int]
     xs, ts, ws, tmp: seq[float64]
