@@ -440,3 +440,22 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `acc.addRecord(b \| samples, [meta,] ws, rowMap = []): int` | Add a record's rows, row `r` to output row `rowMap[r]` (`-1`: skipped; empty: row `r`); with a meta only live rows, over their `liveSamples`. Returns the rows added; `ValueError` (nothing added) for a shape or map that does not fit. |
 | `acc.merge(other)`, `acc.clear` | Add another thread's share; zero it. |
 | `acc.stackInto(dst, norm = fnFold)`, `acc.foldInto(dst: var Tensor[int32])` | The stack `[rows, samples]`: the mean (diversity: `Σ w·x / Σ w`), × count (`fnNone`) or × √count (`fnSqrtFold`); the per-sample count. |
+
+## continuous/slice: continuous recordings into records
+
+| Proc | What |
+|---|---|
+| `SliceShot` (`time`, `id`, `srcLine`, `srcPoint`, `srcX`, `srcY`, `srcZ`); `initSliceShot(time, id, srcLine = NaN, ...)` | A source event: UTC POSIX seconds and record number. |
+| `SliceWindow` (`startMs`, `lengthMs`) | The window at each shot: start relative to the shot (may be negative), length a whole number of samples. |
+| `SliceOrder` (`soReceiverGathers`, `soShotRecords`), `SliceAlign` (`saNearest`, `saLinear`, `saCubic`) | Output order; sub-sample window starts kept (nearest sample) or shifted out with `core/shift`. |
+| `SlicePlan`; `planSlices(meta, [times, [receivers,]] shots, window, order = soReceiverGathers, align = saNearest)` | Lays out every (receiver, shot) trace from segment rows. Times default to `TraceKeys.time`, receivers to (`rcvLine`, `rcvPoint`, `channel`, `component`); segments are never stitched across receivers. `ValueError` for a non-whole window, a non-finite shot time, mismatched array lengths, or a row of another interval. |
+| `plan.len`, `plan.samples`, `plan.dtMs`, `plan.margin`, `plan.order`, `plan.align`, `plan.window`, `plan.shotCount`, `plan.receiverCount`, `plan.shotOf(trace)`, `plan.receiverOf(trace)`, `plan.receiverKeys(receiver)` | Its shape and trace layout. |
+| `SlicePiece` (`row`, `first`, `dst`, `count`); `pieces(plan, trace)`, `plan.rowsNeeded`, `plan.maxColumn` | The rows and columns each trace reads (`row = -1`: a gap); the only rows to read. |
+| `plan.fraction(trace)`, `plan.gapSamples(trace)`, `plan.untimed` | Sub-sample remainder of the window start (−0.5 to 0.5); uncovered samples; live rows without a finite time. |
+| `SliceOverlap` (`earlier`, `later`, `first`, `samples`), `plan.overlaps`; `SliceTimingIssue` (`earlier`, `later`, `residual`), `plan.timingIssues` | Overlaps (the later segment wins, always); segments off the previous one's sample grid (tolerance max(0.01 sample, 1 µs)). |
+| `sliceKeys(plan, trace)` | The output trace's `TraceKeys` (D14): receiver keys, shot record and source, `time` = shot time, `t0Ms` = `startMs`. |
+| `sliceWorkspace(T, plan)`, `SliceReport`, `initSliceReport(plan)` | Scratch (only with interpolation) and a report sized for the plan. |
+| `extractInto(plan, data, meta, dst, report, ws)` (blocks or tensors) | Copies and stitches into `dst` (`plan.len × plan.samples`) from all rows or only `rowsNeeded`; gaps zero. Allocates nothing. |
+| `report.len`, `report.gapSamples(trace)`, `report.gapCount(trace)`, `gaps(report, trace)` (`SliceGap`: `first`, `count`) | Zero-filled column runs per trace, failed rows included. |
+| `OverlapStatus` (`osNotRead`, `osMatch`, `osMismatch`), `SliceOverlapCheck` (`status`, `differing`, `maxAbsDiff`), `report.overlapCheck(i)`, `report.mismatches` | Overlapping samples compared when both rows are read; a mismatch is a timing error. |
+| `driftCorrectTimes(times, t0, offset0, t1, offset1)`, `driftCorrectedTimes(...)` | Linear clock-drift correction of one receiver's times, in place or a copy, before `planSlices`. |
