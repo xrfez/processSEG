@@ -245,3 +245,34 @@ block float64_traces:
   for r in 0 ..< g.len:
     doAssert p64[r].timeMs == p32[r].timeMs
     doAssert abs(p64[r].snrDb - p32[r].snrDb) < 1e-3
+
+block batched_filter_matches_single_trace:
+  # pickInto band-passes fftLanes rows at a time (the IIR filter's lanes);
+  # `pick` filters one trace. Same picks, across lane groups, with short,
+  # dead and failed rows (they shift which lane a row lands in).
+  var g = shot(0.3, 7, splitSpread(30, 25, 25))
+  g.setLive(3, 200)
+  g.setLive(11, 1)
+  g.keys[9].status = tsDead
+  let failed = @[17]
+  let meta = initChunkMeta(g.rows, dt, failed = failed)
+  for m in PickMethod:
+    var p = guided
+    p.pickMethod = m
+    p.lowCutHz = 8
+    p.highCutHz = 70
+    let plan = initFirstBreakPlan(float32, p, dt, cols)
+    var ws = initWorkspace()
+    ws.reserve(plan.workspaceSize)
+    var got = newSeq[FirstBreakPick](g.len)
+    plan.pickInto(g.data, meta, ws, got)
+    for r in 0 ..< g.len:
+      if not meta.isLive(r):
+        doAssert got[r].col.isNaN
+        continue
+      var x = newSeq[float32](g.liveCols(r))
+      for j in 0 ..< x.len: x[j] = g.data[r, j]
+      let want = plan.pick(x, g.keys[r].offset, g.keys[r].t0Ms, ws)
+      doAssert got[r].col == want.col or (got[r].col.isNaN and want.col.isNaN),
+        $m & " row " & $r & ": " & $got[r] & " vs " & $want
+      doAssert abs(got[r].confidence - want.confidence) < 1e-4

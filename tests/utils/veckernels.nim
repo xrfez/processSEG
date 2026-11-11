@@ -100,7 +100,35 @@ proc stackOnce() =
   var x = newSeq[float32](100)
   discard vec_stackAdd_f32(acc, x)
 
+proc nmoOnce() =
+  # moveoutCols (non-generic, in the nmo module's own C code).
+  var src = newSeq[float32](300)
+  var dst = newSeq[float32](300)
+  var vel = newSeq[float64](300)
+  for v in vel.mitems: v = 2000
+  discard nmoInto(src, 0, dst, 0, 2, 500, vel, initNmoParams())
+  echo dst[0]
+
+proc shotFitOnce() =
+  # l1Fit (non-generic, in qc/shotfit): the normal-equation sums.
+  var keys = newSeq[TraceKeys](40)
+  var counts = newSeq[int](40)
+  var picks = newSeq[FirstBreakPick](40)
+  for i in 0 ..< 40:
+    keys[i] = initTraceKeys()
+    keys[i].offset = 25.0 * float64(i + 1)
+    keys[i].t0Ms = 0
+    counts[i] = 100
+    picks[i] = FirstBreakPick(timeMs: 10 + keys[i].offset / 2, col: 1, snrDb: 30,
+      confidence: 1)
+  let meta = initChunkMeta(rowsOf(keys, counts), 2)
+  var fit: ShotFit
+  fitShot(meta, picks, ShotFitParams(correlate: false), fit)
+  echo fit.used
+
 when isMainModule:
+  nmoOnce()
+  shotFitOnce()
   stackOnce()
   fftOnce(float32)
   fftOnce(float64)

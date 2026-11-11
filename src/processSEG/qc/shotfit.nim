@@ -247,12 +247,24 @@ proc l1Fit(xs, ts: openArray[float64], ws: var seq[float64], xc: float64,
   for i in 0 ..< ws.len: ws[i] = 1
   result = Inf
   for iter in 0 ..< 30:
-    var m: array[3, array[4, float64]]
+    # The normal equations, in local sums (symmetric: six of nine terms),
+    # so the loop vectorizes.
+    var s00, s01, s02, s11, s12, s22, r0, r1, r2 = 0.0
     for i in 0 ..< xs.len:
-      let b = [1.0, min(xs[i], xc), (if single: 0.0 else: max(xs[i] - xc, 0.0))]
-      for r in 0..2:
-        for c in 0..2: m[r][c] += ws[i] * b[r] * b[c]
-        m[r][3] += ws[i] * b[r] * ts[i]
+      let w = ws[i]
+      let b1 = min(xs[i], xc)
+      let b2 = if single: 0.0 else: max(xs[i] - xc, 0.0)
+      let wt = w * ts[i]
+      s00 += w
+      s01 += w * b1
+      s02 += w * b2
+      s11 += w * b1 * b1
+      s12 += w * b1 * b2
+      s22 += w * b2 * b2
+      r0 += wt
+      r1 += wt * b1
+      r2 += wt * b2
+    var m = [[s00, s01, s02, r0], [s01, s11, s12, r1], [s02, s12, s22, r2]]
     if single: # c2 = 0: an identity row keeps the system regular
       m[2] = [0.0, 0.0, 1.0, 0.0]
     if not solve3(m): return Inf
@@ -303,22 +315,37 @@ proc fitTwoSegment(fit: var ShotFit) =
     var a = fit.tmp[max(bestK - stride, 0)]
     var b = fit.tmp[min(bestK + stride, n - 1)]
     const g = 0.6180339887498949
+    # Golden section: each step keeps one interior point and its fit.
+    var c1, c2: array[3, float64]
+    var x1 = b - g * (b - a)
+    var x2 = a + g * (b - a)
+    var s1 = l1Fit(fit.xs, fit.ts, fit.ws, x1, c1)
+    var s2 = l1Fit(fit.xs, fit.ts, fit.ws, x2, c2)
+    template consider(s: float64, c: array[3, float64], x: float64) =
+      if s < best and valid(c):
+        best = s
+        bestC = c
+        bestXc = x
+    consider(s1, c1, x1)
+    consider(s2, c2, x2)
     for iter in 0 ..< 40:
-      let x1 = b - g * (b - a)
-      let x2 = a + g * (b - a)
-      var c1, c2: array[3, float64]
-      let s1 = l1Fit(fit.xs, fit.ts, fit.ws, x1, c1)
-      let s2 = l1Fit(fit.xs, fit.ts, fit.ws, x2, c2)
-      if s1 < best and valid(c1):
-        best = s1
-        bestC = c1
-        bestXc = x1
-      if s2 < best and valid(c2):
-        best = s2
-        bestC = c2
-        bestXc = x2
-      if s1 <= s2: b = x2 else: a = x1
       if b - a <= 1e-6 * max(1.0, b): break
+      if s1 <= s2:
+        b = x2
+        x2 = x1
+        s2 = s1
+        c2 = c1
+        x1 = b - g * (b - a)
+        s1 = l1Fit(fit.xs, fit.ts, fit.ws, x1, c1)
+        consider(s1, c1, x1)
+      else:
+        a = x1
+        x1 = x2
+        s1 = s2
+        c1 = c2
+        x2 = a + g * (b - a)
+        s2 = l1Fit(fit.xs, fit.ts, fit.ws, x2, c2)
+        consider(s2, c2, x2)
   fit.interceptMs = bestC[0]
   fit.v1 = if bestC[1] > 0: 1000 / bestC[1] else: NaN
   fit.crossover = bestXc

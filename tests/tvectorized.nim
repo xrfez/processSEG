@@ -32,7 +32,11 @@ const
     "accumulate"]
   # Non-generic kernels: their symbols carry their own module (and GCC clones
   # such as `.constprop.0` count too).
-  moduleKernels = [("sosLanes", "ZfilterZiir")]
+  moduleKernels = [("sosLanes", "ZfilterZiir"),
+    # NMO: the input columns (sqrt and division; -fno-math-errno there).
+    ("moveoutCols", "ZstackZnmo"),
+    # The shot fit's normal-equation sums.
+    ("l1Fit", "ZqcZshotfit")]
 
 proc isPacked(insn: string): bool =
   ## Packed arithmetic, compares or conversions on vector registers; not

@@ -42,6 +42,11 @@
 import std/math
 import parseSEG
 import ../core/[mute, rows, shift, types, workspace]
+
+# `sqrt` never needs errno here (its argument is a sum of squares), and
+# without errno GCC vectorizes it: this module's own C code only (the generic
+# kernels compile in their callers' modules, so the loop is `moveoutCols`).
+{.localPassC: "-fno-math-errno".}
 import ../velocity/model
 
 export ShiftInterp
@@ -84,6 +89,22 @@ func nmoStretch*(offset, vrms, t0Ms: float64): float64 {.inline, raises: [].} =
   let tx = 1000 * offset / vrms
   if t0Ms <= 0: (if tx == 0: 0.0 else: Inf)
   else: sqrt(t0Ms * t0Ms + tx * tx) / t0Ms - 1
+
+proc moveoutCols(cols: var array[256, float64], len, j0: int,
+    dstStartMs, dtMs, srcStartMs, x: float64,
+    vrms {.noalias.}: ptr UncheckedArray[float64]) {.raises: [].} =
+  # The input column of output samples j0 ..< j0 + len (`vrms` from j0);
+  # NaN for a NaN velocity. Straight-line, so it vectorizes: the caller
+  # drops the samples before time 0 (nothing maps there).
+  # i < 256 converts as an int32 (int64 → float64 has no packed AVX2
+  # form); j0 + i stays exact as a float64 sum.
+  let base = float64(j0)
+  {.push boundChecks: off, overflowChecks: off, rangeChecks: off.} # i < 256
+  for i in 0 ..< len:
+    let t0 = dstStartMs + (base + float64(int32(i))) * dtMs
+    let tx = x / vrms[i]
+    cols[i] = (sqrt(t0 * t0 + tx * tx) - srcStartMs) / dtMs
+  {.pop.}
 
 proc nmoInto*[T: SampleType](src: openArray[T], srcStartMs: float64,
     dst: var openArray[T], dstStartMs, dtMs, offset: float64,
@@ -135,26 +156,38 @@ proc nmoInto*[T: SampleType](src: openArray[T], srcStartMs: float64,
     else: start
   template at(i: int): float64 =
     (if i >= 0 and i < n: float64(src[i]) else: 0.0)
-  {.push boundChecks: off.}
+  {.push boundChecks: off, overflowChecks: off.}
   for j in 0 ..< first:
     dst[j] = T(0)
-  for j in first ..< m:
-    let c = inCol(j)
-    if c.isNaN or c <= -2 or c >= float64(n + 1):
-      dst[j] = T(0)
-      continue
-    let k = int(floor(c))
-    let f = c - float64(k)
-    case p.interp
-    of siLinear:
-      dst[j] = T((1 - f) * at(k) + f * at(k + 1))
-    of siCubic:
-      let f2 = f * f
-      let f3 = f2 * f
-      dst[j] = T((-0.5 * f3 + f2 - 0.5 * f) * at(k - 1) +
-        (1.5 * f3 - 2.5 * f2 + 1) * at(k) +
-        (-1.5 * f3 + 2 * f2 + 0.5 * f) * at(k + 1) +
-        (0.5 * f3 - 0.5 * f2) * at(k + 2))
+  # The input columns in blocks, in a loop of their own (sqrt and division
+  # vectorize there), then the interpolation.
+  const blockLen = 256
+  var cols: array[blockLen, float64]
+  var j0 = first
+  while j0 < m:
+    let len = min(blockLen, m - j0)
+    moveoutCols(cols, len, j0, dstStartMs, dtMs, srcStartMs, x,
+      cast[ptr UncheckedArray[float64]](unsafeAddr vrms[j0]))
+    for i in 0 ..< len:
+      let j = j0 + i
+      let c = cols[i]
+      if c.isNaN or c <= -2 or c >= float64(n + 1) or
+          dstStartMs + float64(j) * dtMs < 0:
+        dst[j] = T(0)
+        continue
+      let k = int(floor(c))
+      let f = c - float64(k)
+      case p.interp
+      of siLinear:
+        dst[j] = T((1 - f) * at(k) + f * at(k + 1))
+      of siCubic:
+        let f2 = f * f
+        let f3 = f2 * f
+        dst[j] = T((-0.5 * f3 + f2 - 0.5 * f) * at(k - 1) +
+          (1.5 * f3 - 2.5 * f2 + 1) * at(k) +
+          (-1.5 * f3 + 2 * f2 + 0.5 * f) * at(k + 1) +
+          (0.5 * f3 - 0.5 * f2) * at(k + 2))
+    j0 += len
   {.pop.}
   if start < m and taper > 0:
     muteTop(dst, float64(start), taper)
@@ -203,10 +236,13 @@ proc applyNmo*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
   ## Allocates nothing.
   checkNmo(b, meta, p, ws)
   let vel = ws.scratch(float64, b.cols)
+  var last = NaN # the start time `vel` was computed for: rows share it
   for r in 0 ..< b.len:
     if meta.usable(r):
-      f.vrmsInto(meta.sampleTimeMs(r, 0), meta.dtMs, vel.toOpenArray(0,
-          b.cols - 1))
+      let start = meta.sampleTimeMs(r, 0)
+      if start != last:
+        f.vrmsInto(start, meta.dtMs, vel.toOpenArray(0, b.cols - 1))
+        last = start
       nmoRow(b, meta, r, p, vel, ws)
 
 proc applyNmo*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
@@ -217,17 +253,24 @@ proc applyNmo*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
   checkNmo(b, meta, p, ws)
   let vel = ws.scratch(float64, b.cols)
   template col: untyped = vel.toOpenArray(0, b.cols - 1)
+  # The location and start time `vel` was computed for: the rows of a
+  # gather share them.
+  var lastA, lastB, lastStart = NaN
   for r in 0 ..< b.len:
     if not meta.usable(r): continue
     let k = meta.keys(r)
+    let start = meta.sampleTimeMs(r, 0)
     case field.kind
     of fk2D:
       if k.ensemble.isNaN: continue
-      field.vrmsInto(k.ensemble, meta.sampleTimeMs(r, 0), meta.dtMs, col)
+      if k.ensemble != lastA or start != lastStart:
+        field.vrmsInto(k.ensemble, start, meta.dtMs, col)
+        (lastA, lastStart) = (k.ensemble, start)
     of fk3D:
       if k.inline.isNaN or k.crossline.isNaN: continue
-      field.vrmsInto(k.inline, k.crossline, meta.sampleTimeMs(r, 0),
-        meta.dtMs, col)
+      if k.inline != lastA or k.crossline != lastB or start != lastStart:
+        field.vrmsInto(k.inline, k.crossline, start, meta.dtMs, col)
+        (lastA, lastB, lastStart) = (k.inline, k.crossline, start)
     nmoRow(b, meta, r, p, vel, ws)
 
 proc applyNmo*[T: SampleType](samples: var Tensor[T], meta: ChunkMeta,

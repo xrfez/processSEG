@@ -81,6 +81,7 @@ import std/math
 import parseSEG
 import ../core/[rows, types, workspace]
 import ../filter/[design, iir]
+import ../fft/plan as fftplan
 
 type
   PickMethod* = enum
@@ -200,18 +201,29 @@ func filterSize[T](plan: FirstBreakPlan[T]): WorkspaceSize {.inline, raises: [].
 func elems(s: WorkspaceSize, T: typedesc): int {.inline.} =
   when T is float32: s.f32 else: s.f64
 
+func copyLen[T](plan: FirstBreakPlan[T]): int {.inline, raises: [].} =
+  # Filtered traces are picked from copies: `fftLanes` rows, filtered as a
+  # batch (`pickInto`), or one trace (`pick`). Unfiltered ones are read in
+  # place.
+  if plan.filtered: fftLanes * plan.samples else: 0
+
 func workspaceSize*[T](plan: FirstBreakPlan[T]): WorkspaceSize {.raises: [].} =
-  ## The scratch of `pickInto`: the filter's, a copy of the trace and two
+  ## The scratch of `pick` and `pickInto`: the filter's and `fftLanes`
+  ## filtered copies of the traces (for a plan with a band-pass), and two
   ## float64 arrays of `samples + 1`.
   result = plan.filterSize
-  when T is float32: result.f32 += plan.samples
-  else: result.f64 += plan.samples
+  when T is float32: result.f32 += plan.copyLen
+  else: result.f64 += plan.copyLen
   result.f64 += 2 * (plan.samples + 1)
+
+func copyBase[T](plan: FirstBreakPlan[T]): int {.inline, raises: [].} =
+  # Where the copies start, in T elements: after the filter's scratch.
+  plan.filterSize.elems(T)
 
 func energyBase[T](plan: FirstBreakPlan[T]): int {.inline, raises: [].} =
   # Where the float64 arrays start: after the filter's scratch and, for
-  # float64 traces, the trace copy.
-  plan.filterSize.f64 + (when T is float64: plan.samples else: 0)
+  # float64 traces, the copies.
+  plan.filterSize.f64 + (when T is float64: plan.copyLen else: 0)
 
 # ------------------------------------------------------------------ kernels --
 
@@ -278,8 +290,11 @@ proc argmaxAttribute(m: PickMethod, p, a: ptr UncheckedArray[float64], n, lo, hi
 {.pop.}
 
 proc pickRow[T](plan: FirstBreakPlan[T], src: ptr UncheckedArray[T], n: int,
-    offset, t0Ms, startCol: float64, ws: var Workspace): FirstBreakPick {.raises: [].} =
-  # One trace of n live samples whose column 0 is at `t0Ms + startCol·dt`.
+    offset, t0Ms, startCol: float64, ws: var Workspace,
+    filtered: bool): FirstBreakPick {.raises: [].} =
+  # One trace of n live samples whose column 0 is at `t0Ms + startCol·dt`;
+  # `filtered`: `src` already went through the plan's band-pass (else it is
+  # filtered here, into a copy, when the plan has one).
   result = noPick()
   if n < 2: return
   let pr = plan.params
@@ -301,11 +316,12 @@ proc pickRow[T](plan: FirstBreakPlan[T], src: ptr UncheckedArray[T], n: int,
   let lo = if cLo <= 0: 0 elif cLo >= float64(n): n else: int(ceil(cLo))
   let hi = if cHi < 0: 0 elif cHi >= float64(n - 1): n else: int(floor(cHi)) + 1
   if lo >= hi: return
-  # The trace, filtered in the workspace.
-  let fs = plan.filterSize
-  let x = ws.scratch(T, n, fs.elems(T))
-  copyMem(x, src, n * sizeof(T))
-  if plan.filtered: applyFilter(x.toOpenArray(0, n - 1), plan.filter, ws)
+  # The trace, filtered in the workspace (when not done by the caller).
+  var x = src
+  if plan.filtered and not filtered:
+    x = ws.scratch(T, n, plan.copyBase)
+    copyMem(x, src, n * sizeof(T))
+    applyFilter(x.toOpenArray(0, n - 1), plan.filter, ws)
   let base = plan.energyBase
   let p = ws.scratch(float64, n + 1, base)
   let a = ws.scratch(float64, n + 1, base + plan.samples + 1)
@@ -337,7 +353,8 @@ proc pick*[T: SampleType](plan: FirstBreakPlan[T], x: openArray[T], offset = NaN
   ## `plan.workspaceSize`. `x` is not changed.
   doAssert x.len <= plan.samples, "a trace longer than the plan's samples"
   if x.len == 0: return noPick()
-  plan.pickRow(cast[ptr UncheckedArray[T]](unsafeAddr x[0]), x.len, offset, t0Ms, 0, ws)
+  plan.pickRow(cast[ptr UncheckedArray[T]](unsafeAddr x[0]), x.len, offset, t0Ms, 0,
+    ws, filtered = false)
 
 proc pickInto*[T: SampleType](plan: FirstBreakPlan[T], b: RowBlock[T], meta: ChunkMeta,
     ws: var Workspace, dst: var openArray[FirstBreakPick]) =
@@ -356,13 +373,27 @@ proc pickInto*[T: SampleType](plan: FirstBreakPlan[T], b: RowBlock[T], meta: Chu
   if dst.len != meta.len:
     raise newException(ValueError, "dst holds " & $dst.len & " picks, the meta " &
       $meta.len & " rows")
-  for row in 0 ..< meta.len:
+  template pickOne(row: int, src: ptr UncheckedArray[T], filtered: bool) =
     dst[row] = noPick()
-    if not meta.isLive(row): continue
-    let n = meta.liveSamples(row, b.cols)
-    let k = meta.keys(row)
-    dst[row] = plan.pickRow(b.rowPtr(row), n, k.offset, k.t0Ms,
-      float64(meta.firstSample), ws)
+    if meta.isLive(row):
+      let k = meta.keys(row)
+      dst[row] = plan.pickRow(src, meta.liveSamples(row, b.cols), k.offset,
+        k.t0Ms, float64(meta.firstSample), ws, filtered)
+  if not plan.filtered or b.cols == 0:
+    for row in 0 ..< meta.len: pickOne(row, b.rowPtr(row), false)
+    return
+  # Band-pass `fftLanes` rows at a time, as one batch of the IIR filter's
+  # lanes, into copies, then pick each copy.
+  let c = ws.scratch(T, fftLanes * b.cols, plan.copyBase)
+  var g = 0
+  while g < meta.len:
+    let rows = g .. min(g + fftLanes, meta.len) - 1
+    for i in rows:
+      copyMem(addr c[(i - g) * b.cols], b.rowPtr(i), b.cols * sizeof(T))
+    let cb = rowBlock(c.toOpenArray(0, rows.len * b.cols - 1), rows.len, b.cols)
+    applyFilter(cb, meta.sub(rows), plan.filter, ws)
+    for i in rows: pickOne(i, cb.rowPtr(i - g), true)
+    g += fftLanes
 
 proc pickInto*[T: SampleType](plan: FirstBreakPlan[T], samples: Tensor[T],
     meta: ChunkMeta, ws: var Workspace, dst: var openArray[FirstBreakPick]) =

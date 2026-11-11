@@ -188,3 +188,51 @@ panel, src → dst (the copy fused into the first op):
 
 The tiled `apply` (every op on ~256 KB of rows while it is in cache) costs the same as the
 ops run one after another over the whole panel (23.6 ms band-pass + 6.5 ms AGC + demean).
+
+## Pre-stack, QC and stacking (task 9.2)
+
+`nim bench` (bench/bprestack.nim), same machine and flags as above, one thread, a split-spread
+shot of 2000 traces × 2001 samples of float32 at 2 ms (16 MB): a refraction and a reflection
+over noise.
+
+2026-11-11, AMD Ryzen 9 3950X, Nim 2.4.0, gcc 12.2.0,
+`-d:danger --opt:speed --debuginfo:on --linedir:on -march=x86-64-v3`:
+
+| operation | before 9.2 | after |
+|---|---|---|
+| `applyStatics` linear / cubic | 6.6 / 14.9 ms | 6.1 / 15.5 ms |
+| `applyLmo` + `removeLmo` | 10.8 ms | 10.3 ms |
+| `applyNmo` linear | 36.3 ms | 17.5 ms |
+| `applyNmo` cubic | 54.5 ms | 24.7 ms |
+| `addLive`, 2000 traces into 200 bins | 3.5 ms (13.8 GB/s) | 3.4 ms |
+| `pickInto` STA/LTA, MER, Coppens | 20.0 / 6.0 / 10.5 ms | 18.9 / 5.3 / 9.8 ms |
+| the same with a 5–60 Hz band-pass | 100.6 / 86.5 / 91.0 ms | 44.1 / 30.7 / 35.3 ms |
+| `fitShot` on picks (two-segment, binned) | 38.1 / 38.2 ms | 20.7 / 20.8 ms |
+| `fitShot` with cross-correlation | 45.1 ms | 27.6 ms |
+
+What changed (each measured, cachegrind first):
+- **First-break band-pass:** `pickInto` filtered each row with the one-trace IIR path
+  (`sosSingle`, scalar: 13 % of the instructions of a 400-trace profile). It now filters
+  `fftLanes` rows at a time through the block filter (the lanes kernel, `sosLanes`) into
+  workspace copies, then picks each copy; a plan without a band-pass picks from the rows in
+  place (no copy). The filter costs about 25 ms of the panel now, as the IIR block filter does.
+  The workspace grows to `fftLanes` copies of a trace for a filtered plan.
+- **NMO:** the RMS-velocity column is computed once for rows that share a start time (and,
+  with a field, a location), not per row (11 % of the profile); the input columns
+  (`sqrt`, two divisions) are computed in blocks of 256 by a straight-line loop,
+  `moveoutCols`, which vectorizes: it lives in the nmo module's own C code, built with
+  `-fno-math-errno` (`localPassC`; a generic kernel compiles in its caller's module, so the
+  flag could not reach it), the index converted as an int32 (int64 → float64 has no packed
+  AVX2 form), and the "before time 0" test moved to the interpolation loop. Linear 36 →
+  25 ms from splitting the loops, then 17.5 ms vectorized.
+- **Shot fit:** `l1Fit` (the IRLS of the two-segment fit) was 55 % of a 5-fit profile. Its
+  normal equations are now six symmetric sums and three right-hand sides in locals (the loop
+  vectorizes), and the golden-section refinement keeps one interior point per step (one fit
+  per step, not two). Instructions 458 M → 330 M for the profile, 38 → 21 ms on 2000 traces.
+- Not changed: STA/LTA (19 ms) is a serial loop of divisions per sample; statics and LMO
+  are per-row fractional shifts, bandwidth-bound in the cubic case. Picking and the shot fit
+  are batch QC, run once per shot.
+
+`tvectorized` now also checks `moveoutCols` and `l1Fit` for packed instructions in release
+and danger builds. `nim testRelease` passed (34 files, release and danger) after these
+changes.
