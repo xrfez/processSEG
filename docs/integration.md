@@ -1,6 +1,6 @@
 # Integrating parseSEG, processSEG and the viewer
 
-Status: written before the viewer exists, revised for parseSEG 0.7.0 and for each phase's
+Status: written before the viewer exists, revised for parseSEG 0.7.0 and 0.8.0 and for each phase's
 API since. It fixes who owns what, the data that crosses each boundary, and what processSEG
 needs from parseSEG. Update it whenever an API it describes changes. The names below are the
 real API as of the 0.1.0 release candidate (Phase 9: the pipeline, the pool, moveout ticks,
@@ -470,7 +470,7 @@ in `numHorzStacked`, and a dead trace for a bin with no fold. `opts` is parseSEG
 `SegyOutputOptions` (revision, byte order, sample format, textual header; trace sorting 4
 by default). `openSeismic` reads the keys back.
 
-## parseSEG 0.7.0 and the patch branch
+## What processSEG needed from parseSEG (0.7.0, 0.8.0)
 
 The changes this doc first proposed (P1–P4) all landed in parseSEG 0.7.0, which processSEG
 requires:
@@ -483,15 +483,15 @@ requires:
 | P4: runs of one channel set and interval | `uniform = true` on the prefetcher, and `uniformRuns(f, range \| list)` |
 | (new) one data model | `TraceRows` views, `TraceKeys` with `inline`, `crossline`, `intervalUs`, `traceCode`, `status`; `ensureKeys` and `keysRevision`; keys kept current by `HeaderEditor` writes; `traceStatics` |
 
-What processSEG still needs, patched on parseSEG's `processseg-integration` branch and
-offered upstream as one pull request:
+What processSEG needed beyond that landed in parseSEG **0.8.0** (pull request #1), which
+processSEG now requires:
 
 | # | Change | Why |
 |---|---|---|
-| F1 | **Done on the branch:** `keysAt(rows, row)`, the non-raising form of `traceKeys` for callers that checked `hasKeys` once (no keys is an `AssertionDefect` with bound checks on) | `traceKeys(rows, row)` raises `ValueError`, so a `{.raises: [].}` kernel or a `ChunkTransform` cannot call it |
-| F2 | **Done on the branch:** `readTracesInto(f, traces[, samples], dst, failedRows, row = 0)` fills a caller's `var seq[int]` (cleared, capacity kept, no log), as `PrefetchChunk.failedRows` | The other forms report failed traces only through a `DiagLog`, which allocates per failure |
-| F4 | **Done on the branch:** `PrefetchChunk.firstSample`, the prefetcher's window origin | `chunkMeta(c)` needs it, and a chunk did not record it |
-| F3 | **Done on the branch:** `openSeismicWriter(path, SegyOutputOptions(...))`, a SEG-Y file with no input to model, and `writeTrace(w, keys, samples, overrides)`, a trace whose headers come from `TraceKeys` (standard layout; `openSeismic` reads the same keys back) | A stack of SEG-D or SEG-2 input could not be written as SEG-Y: `writeTrace` needed a template trace of the output's standard |
+| F1 | `keysAt(rows, row)`, the non-raising form of `traceKeys` for callers that checked `hasKeys` once (no keys is an `AssertionDefect` with bound checks on) | `traceKeys(rows, row)` raises `ValueError`, so a `{.raises: [].}` kernel or a `ChunkTransform` cannot call it |
+| F2 | `readTracesInto(f, traces[, samples], dst, failedRows, row = 0)` fills a caller's `var seq[int]` (cleared, capacity kept, no log), as `PrefetchChunk.failedRows` | The other forms report failed traces only through a `DiagLog`, which allocates per failure |
+| F4 | `PrefetchChunk.firstSample`, the prefetcher's window origin | `chunkMeta(c)` needs it, and a chunk did not record it |
+| F3 | `openSeismicWriter(path, SegyOutputOptions(...))`, a SEG-Y file with no input to model, and `writeTrace(w, keys, samples, overrides)`, a trace whose headers come from `TraceKeys` (standard layout; `openSeismic` reads the same keys back) | A stack of SEG-D or SEG-2 input could not be written as SEG-Y: `writeTrace` needed a template trace of the output's standard |
 
 Checked again for the pipeline, the pool and the viewer loop (task 5.4): nothing else is
 missing. The `transform` hook is not given the prefetcher's `firstSample`;
@@ -534,5 +534,11 @@ pass it through `user`, with the workspaces.
   viewer decides the UI.
 - Does the viewer want an asynchronous `submit` / `wait` pair on the pool, so a frame can
   be abandoned before it finishes? It is added only if the viewer asks for it.
+- Is the zoom margin's worst case good enough on screen? A window decoded with
+  `requiredMargin` is within about 1 % of the whole trace's filtered result on seismic
+  data, but up to 2.5 % for a steady in-band sinusoid ("Sample windows"); 1.5× the
+  margin gives under 0.5 %, at 50 % more decoded samples per zoom edge. A viewer that
+  sees the difference can decode `ceil(1.5 · requiredMargin)` without any library
+  change; if it always does, the library's margin should grow instead.
 
 Settled: the pool is public API (`ProcessPool`, decided 2026-11-09).
