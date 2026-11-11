@@ -27,6 +27,7 @@
 ## - `processSEG/batch`: `bruteStack` of a file (prefetch transform, per-worker stacks), `writeStack`;
 ## - `processSEG/qc/geometry`: geometry QC flags per trace (`checkGeometryInto`);
 ## - `processSEG/qc/firstbreak`: first-break pickers with a confidence (`FirstBreakPlan`, `pickInto`);
+## - `processSEG/qc/snr`: windowed SNR per trace, coherence SNR per gather versus time (`windowSnrInto`, `coherenceSnrInto`);
 ## - `processSEG/qc/shotfit`: robust per-shot refraction fit, swapped-geometry flags (`fitShot`);
 ## - `processSEG/pipeline`: `Op`, `Pipeline`, `compile` → `PipelinePlan`, `apply`;
 ## - `processSEG/core/pool`: `ProcessPool`, persistent workers that apply plans;
@@ -47,9 +48,10 @@ import processSEG/core/pool
 import processSEG/velocity/[model, formats, moveout]
 import processSEG/statics/elevation
 import processSEG/stack/[nmo, binning, stack]
-import processSEG/qc/[geometry, firstbreak, shotfit]
+import processSEG/qc/[geometry, firstbreak, snr, shotfit]
 import processSEG/vibroseis/[taper, sweep, pilot, correlate, vstack]
 export types, rows, workspace, basic, mute, plan, spectrum, design,
     apply, iir, gain, curves, stats, pipeline, adapters, pool, shift, model,
-    formats, moveout, elevation, nmo, binning, stack, batch, geometry, firstbreak, shotfit
+    formats, moveout, elevation, nmo, binning, stack, batch, geometry, firstbreak, snr,
+    shotfit
 export taper, sweep, pilot, correlate, vstack

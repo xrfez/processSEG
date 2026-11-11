@@ -326,6 +326,17 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `FirstBreakPick` (`timeMs`, `col`, `snrDb`, `confidence`); `noPick()` | One pick; confidence 0 .. 1 from the SNR (`lowDb` .. `highDb`). |
 | `plan.pick(x, ws, offset = NaN, t0Ms = 0)`, `plan.pickInto(b \| samples, meta, ws, dst)` | Pick one trace, or every live row (others get `noPick`). The samples are not changed. |
 
+## qc/snr: signal-to-noise ratios
+
+| Proc | What |
+|---|---|
+| `SnrEstimator` (`seRatio`, `seExcess`) | `Ps / Pn` (signal + noise over noise: noise alone ≈ 0 dB) or `(Ps − Pn) / Pn` (signal over noise, unbiased). |
+| `WindowSnrParams` (`signalStartMs`, `signalEndMs`, `noiseStartMs`, `noiseEndMs`, `estimator`, `floorDb`) | The two windows in ms, both ends included; defaults: 0 .. 40 after a pick over −60 .. −20, `seRatio`. |
+| `DefaultSnrFloorDb` | −40 dB: returned for no signal, and every SNR clamped up to it (`floorDb = -Inf`: no clamp). |
+| `meanPower(x, cols)`, `powerSnrDb(signal, noise, estimator = seRatio, floorDb, stabilization = 0)`, `windowSnrDb(x, signal, noise: Slice[int], estimator, floorDb, stabilization)` | The kernels: mean power over columns (NaN when empty), dB from two mean powers, both on one trace. NaN for an empty window or a zero noise power. |
+| `windowSnrInto(b \| samples, meta, params, [refMs \| guide: Moveout,] dst)` | The windowed SNR of every row, in dB: windows at fixed trace times, relative to a time per row (picks), or to a moveout guide at each offset (LMO). NaN for non-live rows, NaN references, empty windows. |
+| `coherenceSnrWorkspace(cols)`; `coherenceSnrInto(b \| samples, meta, windowMs, ws, dst, floorDb = DefaultSnrFloorDb)` | The SNR of a flattened (NMO/LMO-corrected) gather per column, over a centred window: signal power over noise power per trace from the mean trace and the residuals (an unbiased estimator, the semblance relation). Rows count over their `liveSpan`. |
+
 ## qc/shotfit: per-shot refraction fit
 
 | Proc | What |
