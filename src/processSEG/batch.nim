@@ -1,5 +1,6 @@
 ## Batch jobs over a whole file: `bruteStack`, and `writeStack` to save a
-## stack as SEG-Y.
+## stack as SEG-Y (or `stackKeys` and `stackOverrides` to write it yourself
+## through parseSEG's writer).
 ##
 ## A brute stack reads the traces through parseSEG's prefetcher and, on its
 ## decode workers (decision D13: the prefetcher's `transform` hook, with
@@ -353,8 +354,39 @@ proc bruteStack*(f: SeismicFile, T: typedesc[SampleType], binning: Binning,
   ## A brute stack of the whole file with one velocity function.
   bruteStack(f, T, 0 ..< f.len, binning, velocity, opts, progress)
 
-proc stackKeys[T](res: StackResult[T], bin: int, live: bool): TraceKeys =
-  # A stacked trace's keys: the bin's numbers and centre, zero offset.
+proc checkBin[T](res: StackResult[T], bin: int) =
+  if res.data.rank != 2 or res.fold.shape != res.data.shape:
+    raise newException(ValueError, "an inconsistent stack: data and fold differ in shape")
+  if bin notin 0 ..< res.data.shape[0]:
+    raise newException(ValueError, "bin " & $bin & " is outside 0 ..< " & $res.data.shape[0])
+
+proc maxFold*[T](res: StackResult[T], bin: int): int32 =
+  ## The largest per-sample fold of bin `bin`; 0 for a bin nothing was
+  ## stacked into. Raises `ValueError` for a bin outside the stack or an
+  ## inconsistent result.
+  checkBin(res, bin)
+  for j in 0 ..< res.fold.shape[1]: result = max(result, res.fold[bin, j])
+
+proc stackKeys*[T](res: StackResult[T], bin: int): TraceKeys =
+  ## The keys of bin `bin`'s stacked trace (decision D14: processSEG
+  ## describes its results, parseSEG writes them): the CDP number (or the
+  ## 1-based bin index for 3D bins), inline and crossline, the bin centre as
+  ## the midpoint, offset 0, `startMs` as `t0Ms`, `dtMs` as the interval,
+  ## and `tsDead` for a bin with no fold, else `tsLive`; every other key
+  ## unknown. Pass them, with `stackOverrides`, to parseSEG's
+  ## `writeTrace(w, keys, samples, overrides)` to write a stack your own way
+  ## (other options, extra overrides, a selection of bins); `writeStack`
+  ## does exactly that for every bin. Raises `ValueError` as `maxFold`.
+  runnableExamples:
+    import parseSEG
+    var res = StackResult[float32](data: zeros[float32](2, 3), fold: zeros[int32](2, 3),
+      binning: cdpBinning(firstCdp = 10, count = 2), dtMs: 2, startMs: 0)
+    res.fold[1, 1] = 4
+    let k = res.stackKeys(1)
+    doAssert k.ensemble == 11 and k.status == tsLive and k.intervalUs == 2000
+    doAssert res.stackKeys(0).status == tsDead
+    doAssert res.stackOverrides(1)[0].name == "trace.numHorzStacked"
+  let live = res.maxFold(bin) > 0
   let loc = res.binning.location(bin)
   result = initTraceKeys()
   result.ensemble = if loc.cdp.isNaN: float64(bin + 1) else: loc.cdp
@@ -366,6 +398,12 @@ proc stackKeys[T](res: StackResult[T], bin: int, live: bool): TraceKeys =
   result.t0Ms = res.startMs
   result.intervalUs = res.dtMs * 1000
   result.status = if live: tsLive else: tsDead
+
+proc stackOverrides*[T](res: StackResult[T], bin: int): array[1, HeaderOverride] =
+  ## The SEG-Y header fields of bin `bin` that `TraceKeys` cannot hold: the
+  ## fold, as the largest per-sample fold in `numHorzStacked` (bytes 33-34,
+  ## clamped to int16). Raises `ValueError` as `maxFold`.
+  [headerOverride("trace.numHorzStacked", min(res.maxFold(bin), int32(high(int16))))]
 
 proc writeStack*[T](path: string, res: StackResult[T],
     opts = SegyOutputOptions(traceSorting: 4)): DiagLog =
@@ -379,7 +417,7 @@ proc writeStack*[T](path: string, res: StackResult[T],
   ## a bin with no fold is a dead trace (code 2). The binary header's trace
   ## sorting is `opts.traceSorting`, and 4 (CDP stack) when that is 0 (so
   ## `SegyOutputOptions(revision: ...)` still says stack). `openSeismic`
-  ## reads the keys back.
+  ## reads the keys back. Each trace is `stackKeys` with `stackOverrides`.
   ##
   ## Returns the writer's diagnostics: a failed rename of the finished
   ## file into place is a fatal entry there, not a raise (check
@@ -390,14 +428,10 @@ proc writeStack*[T](path: string, res: StackResult[T],
   if res.data.rank != 2 or res.data.size == 0 or res.fold.shape != res.data.shape:
     raise newException(ValueError, "writeStack: an empty or inconsistent stack")
   let bins = res.data.shape[0]
-  let n = res.data.shape[1]
   let data = rowBlock(res.data)
   var o = opts
   if o.traceSorting == 0: o.traceSorting = 4
   var w = openSeismicWriter(path, o)
   for bin in 0 ..< bins:
-    var most = 0'i32
-    for j in 0 ..< n: most = max(most, res.fold[bin, j])
-    w.writeTrace(stackKeys(res, bin, most > 0), data.row(bin),
-      overrides = [headerOverride("trace.numHorzStacked", min(most, int32(high(int16))))])
+    w.writeTrace(res.stackKeys(bin), data.row(bin), overrides = res.stackOverrides(bin))
   w.close()

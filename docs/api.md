@@ -301,7 +301,10 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `bruteStack(f: SeismicFile, T, [traces: Slice[int],] binning, velocity: VelocityField \| VelocityFunction, opts = initBruteStackOptions(), progress: Progress = nil): StackResult[T]` | Statics, the flow, NMO and stacking inside parseSEG's prefetcher (`uniform = true`), `opts.workers` threads. Blocks; `progress(done, total)` counts traces, and false raises `SegCancelledError`. `ValueError` for a file without keys, mixed intervals, a field that does not suit the binning or bad options. |
 | `StackResult[T]` (`data`, `fold`, `binning`, `dtMs`, `startMs`, `stacked`, `skipped`, `failed`) | The stack `[bins, samples]`, its fold and counts. |
 | `bruteStackMemory(T, bins, samples, inSamples, workers, chunkTraces = 256, maxRingBytes = 4 shl 20)` | An estimate of the job's memory in bytes. |
-| `writeStack(path, res, opts = SegyOutputOptions(traceSorting: 4)): DiagLog` | The stack as SEG-Y, one trace per bin, headers from `TraceKeys` (CDP or bin index, inline/crossline, centre, fold in `numHorzStacked`); empty bins are dead traces. |
+| `writeStack(path, res, opts = SegyOutputOptions(traceSorting: 4)): DiagLog` | The stack as SEG-Y, one trace per bin, headers from `TraceKeys` (CDP or bin index, inline/crossline, centre, fold in `numHorzStacked`); empty bins are dead traces. Each trace is `stackKeys` + `stackOverrides`. |
+| `stackKeys(res, bin): TraceKeys` | Bin `bin`'s stacked-trace keys (D14): CDP or bin index, inline/crossline, centre as midpoint, offset 0, `startMs`, `dtMs`, `tsDead` with no fold. For parseSEG's `writeTrace(w, keys, samples, overrides)`. |
+| `stackOverrides(res, bin): array[1, HeaderOverride]` | The fold as `trace.numHorzStacked` (largest per-sample fold, clamped to int16). |
+| `maxFold(res, bin): int32` | The largest per-sample fold of a bin. |
 
 ## qc/geometry: geometry flags from the keys
 
