@@ -239,6 +239,39 @@ block demo_files:
     initBruteStackOptions(nmo = initNmoParams(maxStretch = Inf)))
   doAssert sres.stacked + sres.skipped == live and sres.stacked == 2
   doAssert sres.dtMs == 1
+  # The SEG-D stack round-trips through openSeismic as SEG-Y (parseSEG F3:
+  # traces from keys, no SEG-Y template), with its keys and samples.
+  let stackPath = getTempDir() / "processseg_tbatch_shot_stack.sgy"
+  discard writeStack(stackPath, sres)
+  var st = openSeismic(stackPath, keys = true)
+  doAssert st.kind == skSegy and st.len == 2
+  doAssert st.index.segy.binary.traceSorting == 4
+  let back = st.readTraces(0 ..< 2)
+  doAssert back == sres.data
+  for bin in 0 ..< 2:
+    let k = st.traceKeys(bin)
+    let loc = line.location(bin)
+    doAssert k.ensemble == loc.cdp and k.cmpX == loc.x and k.cmpY == loc.y
+    doAssert k.offset == 0 and k.t0Ms == 0 and k.intervalUs == 1000
+    doAssert k.status == tsLive
+    var most = 0'i32
+    for j in 0 ..< sres.fold.shape[1]: most = max(most, sres.fold[bin, j])
+    doAssert most == 1
+    doAssert st.traceField(bin, "trace.numHorzStacked").toFloat == 1
+  st.close()
+  # A bin with no fold is written as a dead trace; Rev 1 and a time origin.
+  var empty = sres
+  empty.fold = sres.fold.clone()
+  empty.fold[1, _] = 0'i32
+  empty.startMs = -4
+  discard writeStack(stackPath, empty, SegyOutputOptions(revision: SegyRevision(major: 1)))
+  var st1 = openSeismic(stackPath, keys = true)
+  doAssert st1.traceKeys(0).status == tsLive and st1.traceKeys(1).status == tsDead
+  doAssert st1.traceKeys(0).t0Ms == -4 and st1.index.segy.revision.major == 1
+  st1.close()
+  var bad = sres
+  bad.fold = newTensor[int32](1, 1)
+  doAssertRaises(ValueError): discard writeStack(stackPath, bad)
   # line.sg2: SEG-2 has no CDP numbers, so header-CDP bins take none.
   var sg2 = openSeismic(d / "line.sg2", keys = true)
   let gres = bruteStack(sg2, float32, cdpBinning(1, 10), constantVelocity(1500))

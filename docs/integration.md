@@ -440,9 +440,13 @@ zeros do not count.
   prefetch ring and the flow's scratch (`bruteStackMemory`). A float32 3D stack of
   100 000 bins × 2001 samples is 1.6 GB per copy: use one or two workers for it.
 
-The viewer shows the result as an in-memory dataset. A stack of SEG-Y input can be written
-with `writeTrace(..., overrides = [headerOverride("trace.cdp", n), ...])` on a template
-trace; a stack of SEG-D or SEG-2 input needs patch F3 (below).
+The viewer shows the result as an in-memory dataset. `writeStack(path, res, opts)` saves
+it as SEG-Y, whatever the input standard, one trace per bin (patch F3: headers built from
+`TraceKeys`, no template trace): the bin's CDP number (3D: its 1-based index), inline and
+crossline, centre as CDP X/Y, offset 0, `startMs` and `dtMs`, the largest per-sample fold
+in `numHorzStacked`, and a dead trace for a bin with no fold. `opts` is parseSEG's
+`SegyOutputOptions` (revision, byte order, sample format, textual header; trace sorting 4
+by default). `openSeismic` reads the keys back.
 
 ## parseSEG 0.7.0 and the patch branch
 
@@ -465,7 +469,7 @@ offered upstream as one pull request:
 | F1 | **Done on the branch:** `keysAt(rows, row)`, the non-raising form of `traceKeys` for callers that checked `hasKeys` once (no keys is an `AssertionDefect` with bound checks on) | `traceKeys(rows, row)` raises `ValueError`, so a `{.raises: [].}` kernel or a `ChunkTransform` cannot call it |
 | F2 | **Done on the branch:** `readTracesInto(f, traces[, samples], dst, failedRows, row = 0)` fills a caller's `var seq[int]` (cleared, capacity kept, no log), as `PrefetchChunk.failedRows` | The other forms report failed traces only through a `DiagLog`, which allocates per failure |
 | F4 | **Done on the branch:** `PrefetchChunk.firstSample`, the prefetcher's window origin | `chunkMeta(c)` needs it, and a chunk did not record it |
-| F3 | (Optional) a SEG-Y trace written from `TraceKeys` plus overrides, with no template trace | A stack of SEG-D or SEG-2 input cannot be written as SEG-Y otherwise |
+| F3 | **Done on the branch:** `openSeismicWriter(path, SegyOutputOptions(...))`, a SEG-Y file with no input to model, and `writeTrace(w, keys, samples, overrides)`, a trace whose headers come from `TraceKeys` (standard layout; `openSeismic` reads the same keys back) | A stack of SEG-D or SEG-2 input could not be written as SEG-Y: `writeTrace` needed a template trace of the output's standard |
 
 Checked again for the pipeline, the pool and the viewer loop (task 5.4): nothing else is
 missing. The `transform` hook is not given the prefetcher's `firstSample`;

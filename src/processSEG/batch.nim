@@ -1,4 +1,5 @@
-## Batch jobs over a whole file: `bruteStack`.
+## Batch jobs over a whole file: `bruteStack`, and `writeStack` to save a
+## stack as SEG-Y.
 ##
 ## A brute stack reads the traces through parseSEG's prefetcher and, on its
 ## decode workers (decision D13: the prefetcher's `transform` hook, with
@@ -348,3 +349,43 @@ proc bruteStack*(f: SeismicFile, T: typedesc[SampleType], binning: Binning,
     progress: Progress = nil): StackResult[T] =
   ## A brute stack of the whole file with one velocity function.
   bruteStack(f, T, 0 ..< f.len, binning, velocity, opts, progress)
+
+proc stackKeys[T](res: StackResult[T], bin: int, live: bool): TraceKeys =
+  # A stacked trace's keys: the bin's numbers and centre, zero offset.
+  let loc = res.binning.location(bin)
+  result = initTraceKeys()
+  result.ensemble = if loc.cdp.isNaN: float64(bin + 1) else: loc.cdp
+  result.inline = loc.inline
+  result.crossline = loc.crossline
+  result.cmpX = loc.x
+  result.cmpY = loc.y
+  result.offset = 0
+  result.t0Ms = res.startMs
+  result.intervalUs = res.dtMs * 1000
+  result.status = if live: tsLive else: tsDead
+
+proc writeStack*[T](path: string, res: StackResult[T],
+    opts = SegyOutputOptions(traceSorting: 4)): DiagLog =
+  ## Writes a stack as SEG-Y at `path`, one trace per bin in bin order, for
+  ## a stack of any input standard (parseSEG's writer of traces from
+  ## `TraceKeys`; `opts` sets the revision, byte order, sample format and
+  ## textual header). Each trace holds its bin's location (CDP number, or
+  ## the 1-based bin index for 3D bins; inline and crossline; the bin
+  ## centre as the CDP X/Y), offset 0, `startMs` as the delay, `dtMs`, and
+  ## as the fold (`numHorzStacked`, bytes 33-34) the largest per-sample fold;
+  ## a bin with no fold is a dead trace (code 2). `openSeismic` reads the
+  ## keys back. Returns the writer's diagnostics. Raises `ValueError` for
+  ## `opts` the writer refuses or an empty stack, `IOError` when the output
+  ## cannot be written; no output is left on a raise.
+  if res.data.rank != 2 or res.data.size == 0 or res.fold.shape != res.data.shape:
+    raise newException(ValueError, "writeStack: an empty or inconsistent stack")
+  let bins = res.data.shape[0]
+  let n = res.data.shape[1]
+  let data = rowBlock(res.data)
+  var w = openSeismicWriter(path, opts)
+  for bin in 0 ..< bins:
+    var most = 0'i32
+    for j in 0 ..< n: most = max(most, res.fold[bin, j])
+    w.writeTrace(stackKeys(res, bin, most > 0), data.row(bin),
+      overrides = [headerOverride("trace.numHorzStacked", min(most, int32(high(int16))))])
+  w.close()
