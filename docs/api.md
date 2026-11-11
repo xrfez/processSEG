@@ -416,3 +416,16 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `correlateInto(plan, x: openArray[T], y: var openArray[T], ws)` | One record. |
 | `correlateInto(plan, src, dst: RowBlock[T] \| Tensor[T], meta, ws)`, `checkCorrelate(plan, src, dst, meta)` | All rows but dead and failed ones, each to its live length; column `m` at the record's `t0Ms + m·dtMs` (the pilot's `t0Ms` removed exactly). `ValueError` for shapes, `dtMs`, `firstSample > 0`. |
 | `correlate(plan, src, meta): Tensor[T]` | Allocating form. |
+
+## vibroseis/vstack: `RecordStack`
+
+| Proc | What |
+|---|---|
+| `RecordStackMode` (`rsVertical`, `rsDiversity`), `DiversityWeight` (`dwInversePower`, `dwInversePowerSq`) | The plain sum, or weights `1/p` or `1/p²` from each trace's power `p` in a centred window. |
+| `RecordStackParams` (`mode = rsVertical`, `windowMs = 128`, `weight = dwInversePower`, `powerFloor = 0.01`, `clipLevel = 0`) | The window, weight, floor (× the trace's median window power) and clip (× its square root; 0 or Inf: none) apply to `rsDiversity`. |
+| `RecordStack[T]`; `initRecordStack[T](rows, samples, dtMs, params = RecordStackParams())`, `recordStackMemory(T, rows, samples, mode = rsVertical)` | Float64 sums and int32 per-sample counts of the output rows, 12 bytes a sample (20 for diversity). `ValueError` for a bad shape, interval or diversity option. |
+| `acc.rows`, `acc.samples`, `acc.dtMs`, `acc.params`, `acc.windowSamples`, `acc.workspaceSize`, `acc.countAt(row, j)` | Its shape, window (`2h + 1` samples), scratch (`3·samples + 1` float64, diversity only) and counts. |
+| `acc.add(outRow, x, ws): bool` | Add one trace to an output row, in any order (false: `outRow < 0` or a non-finite sample, nothing added). No allocation once `ws` holds `workspaceSize`. |
+| `acc.addRecord(b \| samples, [meta,] ws, rowMap = []): int` | Add a record's rows, row `r` to output row `rowMap[r]` (`-1`: skipped; empty: row `r`); with a meta only live rows, over their `liveSamples`. Returns the rows added; `ValueError` (nothing added) for a shape or map that does not fit. |
+| `acc.merge(other)`, `acc.clear` | Add another thread's share; zero it. |
+| `acc.stackInto(dst, norm = fnFold)`, `acc.foldInto(dst: var Tensor[int32])` | The stack `[rows, samples]`: the mean (diversity: `Σ w·x / Σ w`), × count (`fnNone`) or × √count (`fnSqrtFold`); the per-sample count. |
