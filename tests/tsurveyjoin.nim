@@ -92,7 +92,7 @@ else:
       let rels = g.receiverRelations()
       let built = epochTime() - t0
       var o = initSurveyGeometry()
-      o.addSps(SpsFile(revision: sps21, relations: rels), xDomain = rdReceiver)
+      o.addSps(SpsFile(revision: sps21, relations: rels)) # O records
       # X → O → pairs equals X's pairs: the same count, and every O pair is
       # listed by an X record of its source.
       var xPairs, oPairs = 0
