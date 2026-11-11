@@ -3,7 +3,7 @@
     "parseSEG": {
       "dir": "$deps/parseSEG",
       "url": "https://github.com/xrfez/parseSEG",
-      "commit": "7be5c475bb259a7d298cfdcd934fa2d318651fcb",
+      "commit": "e1d231114403038ee63734231bed7892d0b99332",
       "version": ""
     },
     "Arraymancer": {
@@ -99,7 +99,7 @@
       "# Dependencies",
       "",
       "requires \"nim >= 2.4.0\"",
-      "requires \"https://github.com/xrfez/parseSEG >= 0.8.0\"",
+      "requires \"https://github.com/xrfez/parseSEG#station-join\"",
       "",
       ""
     ]

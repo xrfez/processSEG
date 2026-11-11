@@ -126,7 +126,7 @@ task docs, "Generate HTML documentation":
 # branch). The branch is later opened as a pull request against parseSEG.
 const
   parseSEGDir = "deps/parseSEG"
-  parseSEGBranch = "processseg-integration"
+  parseSEGBranch = "station-join"
 
 task parseSEGTest, "Run parseSEG's own test suite in deps/parseSEG (the patch branch)":
   ## parseSEG's nim.cfg expects its dependencies in its own deps/: link
