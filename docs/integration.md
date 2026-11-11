@@ -404,8 +404,23 @@ processed buffer, not a pipeline op.
 The viewer draws these ticks
 and tags them with `keysRevision(f)`: an `applySurvey` or header edit makes them stale. If
 the ticks drift from the first breaks across a spread, the geometry is suspect.
-processSEG's QC module can also score this fit automatically, with an offset-binned or
-two-segment fit, because land refractor velocities vary.
+processSEG's QC modules score this automatically (experimental for land data):
+
+- `checkGeometryInto(meta, checks)` (`qc/geometry`): per-trace flags from the keys alone
+  (header offset vs the source–receiver distance, zero, negative or missing offsets,
+  missing coordinates, a midpoint off halfway); `flaggedRows(checks)` lists the bad ones.
+- `initFirstBreakPlan(T, params, dtMs, samples)` and `plan.pickInto(samples, meta, ws,
+  picks)` (`qc/firstbreak`): STA/LTA, modified energy ratio or modified Coppens, after an
+  optional minimum-phase band-pass, in a fixed or LMO-guided window, with an SNR-based
+  confidence per pick. The input samples are not changed (the workspace holds the
+  filtered copy); a plan is shareable, one `Workspace` per thread. Picks for the overlay
+  are `picks[row].timeMs`.
+- `fitShot([samples,] meta, picks, params, fit)` (`qc/shotfit`), per shot (a `meta.sub`
+  of its rows): a two-segment (crossover) L1 fit or an offset-binned one on the confident
+  picks; residuals minus the neighbours' median along the spread (a laterally varying
+  refractor bends them smoothly, a misplaced receiver jumps); with samples, the odd ones
+  out by cross-correlation with the neighbours; `fit.suspect[row]` and `asymmetryMs` (a
+  misplaced source).
 
 ## Batch results: brute stack
 
