@@ -23,7 +23,7 @@
 ## **Sign convention.** Offsets are read as parseSEG stores them: SEG-Y
 ## header offsets may be signed (one side of a split spread negative),
 ## offsets derived from coordinates are distances. The sign is kept in the
-## keys and ignored here: both formulas use |x|, so the two sides of a split
+## keys and ignored here: both formulas use `|x|`, so the two sides of a split
 ## spread get the same times. A NaN offset (a SEG-D file without geometry)
 ## gives a NaN time; nothing defaults it.
 ##
@@ -90,7 +90,7 @@ proc linearMoveout*(velocity: float64, t0Ms = 0.0): Moveout =
 
 proc hyperbolicMoveout*(velocity: float64, t0Ms = 0.0): Moveout =
   ## Hyperbolic moveout at `velocity` with the zero-offset time `t0Ms`
-  ## (≥ 0: a two-way time; a negative one would act as |t0Ms|). Raises
+  ## (≥ 0: a two-way time; a negative one would act as `|t0Ms|`). Raises
   ## `ValueError` as `linearMoveout`, and for `t0Ms < 0`.
   checkMoveout(velocity, t0Ms)
   if t0Ms < 0:

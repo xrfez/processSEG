@@ -51,7 +51,7 @@ type
     gfOffsetMismatch   ## `|offset|` differs from the source–receiver distance.
     gfMidpointMismatch ## The header midpoint is not halfway between source and receiver.
 
-  GeometryFlags* = set[GeometryFlag]
+  GeometryFlags* = set[GeometryFlag] ## The findings on one trace.
 
   GeometryQc* = object
     ## The tolerances of `checkGeometry` (see the module documentation).

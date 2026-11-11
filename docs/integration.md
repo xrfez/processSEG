@@ -1,10 +1,12 @@
 # Integrating parseSEG, processSEG and the viewer
 
-Status: **draft**, written before the viewer exists, revised for parseSEG 0.7.0 and for the
-Phase 5 API. It fixes who owns what, the data that crosses each boundary, and what
-processSEG needs from parseSEG. Update it whenever an API it describes changes. The names below are the real
-API as of Phase 7 (the pipeline, the pool, moveout ticks, velocity models, statics, NMO and the brute stack); `tests/utils/viewersim.nim`
-acts out the viewer loop it describes, as a test.
+Status: written before the viewer exists, revised for parseSEG 0.7.0 and for each phase's
+API since. It fixes who owns what, the data that crosses each boundary, and what processSEG
+needs from parseSEG. Update it whenever an API it describes changes. The names below are the
+real API as of the 0.1.0 release candidate (Phase 9: the pipeline, the pool, moveout ticks,
+velocity models, statics, NMO, the brute stack and the QC modules); `tests/utils/viewersim.nim`
+acts out the viewer loop it describes, as a test. Task-oriented guides with tested examples
+are in [guide/](guide/README.md), and every exported name is in [api.md](api.md).
 
 ## The three parts
 
@@ -280,10 +282,13 @@ without it.
 The impulse length `L` holds 99.9 % of the energy of the response or of its complement
 (a narrow low-cut ramp is long: 0.5–1 Hz at 2 ms is 881 samples, 1.8 s), each edge and
 notch measured on its own, so the narrowest one sets it. A window decoded with `m`
-samples each side matches the whole trace filtered to within 1 % of the traces' peak,
-not the window's own (see below; tested
+samples each side matches the whole trace filtered to within about 1 % of the traces'
+peak on seismic data, not the window's own (see below), and 2.5 % in the worst case: a
+steady in-band sinusoid, whose tail beyond `L` adds up coherently (measured 1.6–2.4 % for
+4-8-60-80, 5-10-40-60 and 0.5–1 Hz low-cut band-passes at 2 ms; 1.5× the margin gives
+under 0.5 %). Tested
 for FFT and IIR filters, zero and minimum phase; a minimum-phase margin holds 99.99 % of
-its causal impulse, since its whole error comes from the history before the window).
+its causal impulse, since its whole error comes from the history before the window.
 
 What the margin does and does not promise:
 
@@ -412,9 +417,11 @@ processSEG's QC modules score this automatically (experimental for land data):
 - `initFirstBreakPlan(T, params, dtMs, samples)` and `plan.pickInto(samples, meta, ws,
   picks)` (`qc/firstbreak`): STA/LTA, modified energy ratio or modified Coppens, after an
   optional minimum-phase band-pass, in a fixed or LMO-guided window, with an SNR-based
-  confidence per pick. The input samples are not changed (the workspace holds the
-  filtered copy); a plan is shareable, one `Workspace` per thread. Picks for the overlay
-  are `picks[row].timeMs`.
+  confidence per pick. The input samples are not changed: a plan with a band-pass filters
+  `fftLanes` rows at a time into copies in the workspace (`plan.workspaceSize` holds
+  them), one without picks from the rows in place. A plan is shareable, one `Workspace`
+  per thread. Picks for the overlay are `picks[row].timeMs`. On a 2000-trace shot, picking
+  takes 5–19 ms on one thread, 31–44 ms with the band-pass (bench/README).
 - `fitShot([samples,] meta, picks, params, fit)` (`qc/shotfit`), per shot (a `meta.sub`
   of its rows): a two-segment (crossover) L1 fit or an offset-binned one on the confident
   picks; residuals minus the neighbours' median along the spread (a laterally varying
