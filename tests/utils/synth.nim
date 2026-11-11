@@ -67,6 +67,15 @@ proc addRicker*[T: SampleType](x: var openArray[T], dtMs, centreMs,
     if abs(tau) <= halfMs:
       x[j] += T(amp * ricker(tau, freqHz))
 
+proc addOnset*[T: SampleType](x: var openArray[T], dtMs, onsetMs, freqHz: float64,
+    amp = 1.0, decayMs = 30.0) =
+  ## Adds a causal wavelet that starts at `onsetMs` (a first break):
+  ## `amp · sin(2π f τ) · exp(−τ / decay)` for `τ ≥ 0`, zero before.
+  for j in 0..<x.len:
+    let tau = (float64(j) * dtMs - onsetMs) / 1000
+    if tau >= 0:
+      x[j] += T(amp * sin(2 * PI * freqHz * tau) * exp(-tau * 1000 / decayMs))
+
 proc addDc*[T: SampleType](x: var openArray[T], level: float64) =
   ## Adds a constant offset.
   for j in 0..<x.len:

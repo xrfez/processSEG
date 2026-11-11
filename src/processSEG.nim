@@ -26,6 +26,7 @@
 ## - `processSEG/stack/stack`: `StackAccumulator`, any order, per-sample fold;
 ## - `processSEG/batch`: `bruteStack` of a file (prefetch transform, per-worker stacks), `writeStack`;
 ## - `processSEG/qc/geometry`: geometry QC flags per trace (`checkGeometryInto`);
+## - `processSEG/qc/firstbreak`: first-break pickers with a confidence (`FirstBreakPlan`, `pickInto`);
 ## - `processSEG/pipeline`: `Op`, `Pipeline`, `compile` → `PipelinePlan`, `apply`;
 ## - `processSEG/core/pool`: `ProcessPool`, persistent workers that apply plans;
 ## - `processSEG/adapters`: `chunkMeta` from a prefetch chunk or a trace read.
@@ -39,7 +40,7 @@ import processSEG/core/pool
 import processSEG/velocity/[model, formats, moveout]
 import processSEG/statics/elevation
 import processSEG/stack/[nmo, binning, stack]
-import processSEG/qc/geometry
+import processSEG/qc/[geometry, firstbreak]
 export types, rows, workspace, basic, mute, plan, spectrum, design,
     apply, iir, gain, curves, stats, pipeline, adapters, pool, shift, model,
-    formats, moveout, elevation, nmo, binning, stack, batch, geometry
+    formats, moveout, elevation, nmo, binning, stack, batch, geometry, firstbreak
