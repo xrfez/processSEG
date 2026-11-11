@@ -36,18 +36,25 @@ jobs:
       # nimpretty has no check mode: format to a copy and fail on any diff.
       - name: Verify code formatting
         run: |
-          for f in src/*.nim tests/*.nim; do
+          # Every .nim file in src/, tests/ and bench/, subdirectories included.
+          shopt -s globstar nullglob
+          status=0
+          for f in src/**/*.nim tests/**/*.nim bench/**/*.nim; do
             out="$RUNNER_TEMP/fmt/$f"
             mkdir -p "$(dirname "$out")"
-            nimpretty --indent:2 --out:"$out" "$f"
-            diff -u "$f" "$out"
+            nimpretty --indent:2 --maxLineLen:100 --out:"$out" "$f"
+            diff -u "$f" "$out" || status=1
           done
+          exit $status
 
       - name: Run test suite
         run: nim test
 
       - name: Run test suite in release and danger builds
         run: nim testRelease
+
+      - name: Run test suite under AddressSanitizer
+        run: nim asan
 
       - name: Build the API docs
         run: nim docs

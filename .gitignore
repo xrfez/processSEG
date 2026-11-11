@@ -35,3 +35,7 @@ deps/*
 *~
 .DS_Store
 Thumbs.db
+
+# Fuzzing: binaries and the corpus the fuzzer grows (seeds are in tests/fuzz/seeds)
+/tests/fuzz/bin/
+/tests/fuzz/corpus/

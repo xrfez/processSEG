@@ -1,0 +1,9 @@
+* Sample Western VELF cards: line L12, three CDPs, RMS velocities (m/s).
+LINE    L12
+SPNT    L12        1001     101
+VELF       101       0   1500    400   1650    900   1900   1500   2150
+VELF                2200   2450   3000   2700
+SPNT    L12        1011     121
+VELF       121     100   1520    500   1700   1000   1950   2000   2380
+VELF       141     100   1540    600   1760   1200   2050   2500   2520
+VELF                3500   2900
