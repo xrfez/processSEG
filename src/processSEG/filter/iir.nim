@@ -1,6 +1,6 @@
 ## Time-domain Butterworth filters (`IirPlan`, decision D3): cascades of
 ## biquads, minimum phase (one causal pass) or zero phase (forward-backward),
-## started from steady state so that the trace ends do not ring.
+## started so that the trace ends do not ring ("Edge handling" below).
 ##
 ## ```nim
 ## let spec = butterBandPass(4, 60, slopeDbPerOctave = 24)   # effective slope
@@ -29,29 +29,47 @@
 ##   causal filter's is.
 ##
 ## **Edge handling.** As for the FFT filters (D4), on each trace's live
-## samples: the trend is removed (`trendRemoval`), each end that a pass
-## starts from is padded by odd reflection for `requiredMargin` samples, and each pass of each
-## section starts in the steady state of its first input sample (the
-## `lfilter_zi` method), so a DC offset does not start a transient. The trend
-## `a + b·i` is then added back as the filter's steady-state response to it:
-## `G(1)·(a + b·i) − b·G′(1)`, with `G(q)` the cascade's transfer function
-## in `q = z⁻¹` (for zero phase, `G′(1)` cancels between the passes and the
-## gain is `G(1)²`). For minimum phase this includes the filter's delay of
-## the trend; without `trLinear`, a drift starts a transient there (a
-## steady-state start assumes a constant). The pads are not tapered: the
-## steady-state start replaces the taper.
+## samples: the trend is removed (`trendRemoval`), then
+## - when the response rejects 0 Hz (a low-cut or a band-pass) and the line
+##   was removed, every pass starts from rest, as if zeros had come before
+##   the trace; a zero-phase filter runs `requiredMargin` samples of zeros
+##   past the end, where the forward pass rings out before the backward one
+##   starts;
+## - otherwise (a high-cut, or `trMean`/`trNone`) each end that a pass
+##   starts from is padded by odd reflection for `requiredMargin` samples,
+##   and each pass of each section starts in the steady state of its first
+##   input sample (the `lfilter_zi` method), so a level does not start a
+##   transient. These pads are not tapered: the steady-state start replaces
+##   the taper.
 ##
-## **Rows.** As for `filter/apply`: live rows, each to its live length,
-## `fftLanes` traces at a time: a recursion is a serial dependency chain, so
-## eight independent ones run side by side and the CPU overlaps them (the
-## compiler keeps them scalar: a zero-phase band-pass costs about twice the
-## FFT filter's time; see bench/README). A NaN stays in its row; no
-## allocation once the workspace is reserved.
+## (A steady-state start under a low-cut pins the first output to 0, as the
+## odd reflection does for the FFT filter: see `filter/apply`. Measured on
+## white noise against the same samples inside a longer trace, the first and
+## last 50 samples of a zero-phase 4–60 Hz band-pass were off by 48 % of the
+## signal there; from rest, 7 %.)
+##
+## The trend `a + b·i` is then added back as the filter's steady-state
+## response to it: `G(1)·(a + b·i) − b·G′(1)`, with `G(q)` the cascade's
+## transfer function in `q = z⁻¹` (for zero phase, `G′(1)` cancels between
+## the passes and the gain is `G(1)²`). For minimum phase this includes the
+## filter's delay of the trend; without `trLinear`, a drift starts a
+## transient there (a steady-state start assumes a constant).
+##
+## A zoom window decoded with `requiredMargin` samples of context matches
+## the whole trace to about 0.4 % of its peak on broadband data (white noise,
+## zero-phase 4–60 Hz) and about 2.8 % for a steady sinusoid on a corner.
+##
+## **Rows.** As for `filter/apply`: live rows, each to its live length, 24
+## traces at a time. A recursion is a serial dependency chain in time, so the
+## block form runs it across traces: each time step is one packed operation
+## on 24 traces (four float64 per AVX2 register). A row's result does not
+## depend on the rows batched with it. A NaN stays in its row; a state left
+## to decay after the input stops reaches exactly 0 (no subnormal numbers);
+## no allocation once the workspace is reserved.
 
 import std/[complex, math]
 import parseSEG
 import ../core/[rows, types, workspace]
-import ../fft/plan
 import design, edges
 export edges.TrendRemoval
 
@@ -71,7 +89,10 @@ type
     spec: FilterSpec
     sections: seq[Biquad]
     phase: IirPhase
-    pad: int
+    pad: int # requiredMargin
+    lead, tail: int # padded samples before and after the data
+    reflect: bool # the pads hold the odd reflection and the passes start in
+                    # steady state (else zeros and a zero state)
     samples: int
     dtMs: float64
     dcGain: float64 # G(1), or G(1)² for zero phase
@@ -213,6 +234,9 @@ proc initIirPlan*(T: typedesc[SampleType], spec: FilterSpec, dtMs: float64,
   result.dcGain = if phase == ipZero: g * g else: g
   result.dcSlope = if phase == ipZero: 0.0 else: dg
   result.trend = trend
+  result.reflect = abs(result.dcGain) >= 0.5 or trend != trLinear
+  result.lead = if result.reflect: result.pad else: 0
+  result.tail = if phase == ipZero: result.pad else: 0
 
 func requiredMargin*[T](plan: IirPlan[T]): int {.inline, raises: [].} =
   ## The samples a zoom window needs on each side (before it, for minimum
@@ -247,79 +271,114 @@ func magnitudeAt*[T](plan: IirPlan[T], f: float64): float64 {.raises: [].} =
     h *= (s.b0 + s.b1 * z1 + s.b2 * z1 * z1) / (1.0 + s.a1 * z1 + s.a2 * z1 * z1)
   if plan.phase == ipZero: abs(h) ^ 2 else: abs(h)
 
+const iirLanes = 24
+  # Traces per batch of the block form. The recursion is serial in time, so
+  # the lanes are what a SIMD register can hold: from 16 lanes GCC keeps the
+  # lane loop and packs it (four float64 per AVX2 register); at 8 it unrolled
+  # the loop and left 48 scalar operations per step. Cycles per 8 lanes per
+  # time step, measured: 28.9 at 8 lanes, 9.3 at 16, 7.3 at 24, 7.0 at 32
+  # (whose buffer starts to leave L2).
+
 func span[T](plan: IirPlan[T], n: int): int {.inline.} =
   ## The padded length of a trace of `n` samples.
-  if plan.phase == ipZero: n + 2 * plan.pad else: n + plan.pad
+  plan.lead + n + plan.tail
 
 func workspaceSize*[T](plan: IirPlan[T]): WorkspaceSize {.raises: [].} =
   ## The scratch of `applyFilter` (block and single-trace forms).
-  WorkspaceSize(f64: plan.span(plan.samples) * fftLanes)
+  WorkspaceSize(f64: plan.span(plan.samples) * iirLanes)
 
 # ------------------------------------------------------------------ kernels --
 
+const
+  flushEvery = 256 # time steps between two subnormal checks of the state
+  tiny = 1e-250    # a state below this is flushed to 0
+
+type Lanes[L: static int] = array[L, float64]
+
+proc steadyStart[L: static int](s1, s2: var Lanes[L], u: Buf,
+    c: Biquad) {.noinline, raises: [].} =
+  ## The state of a section that has seen `u[l]` for ever, per lane.
+  for l in 0..<L:
+    let y = c.g * u[l]
+    s2[l] = c.b2 * u[l] - c.a2 * y
+    s1[l] = y - c.b0 * u[l]
+
+proc flushTiny[L: static int](s1, s2: var Lanes[L]) {.noinline, raises: [].} =
+  ## Sets a state on its way into the subnormal numbers to 0.
+  for l in 0..<L:
+    s1[l] = (if abs(s1[l]) < tiny: 0.0 else: s1[l])
+    s2[l] = (if abs(s2[l]) < tiny: 0.0 else: s2[l])
+
 {.push boundChecks: off, overflowChecks: off.} # inline kernels keep the checks
                                               # of their definition site
-proc sosKernel(buf {.noalias.}: Buf, m: int, c: Biquad, L: static int,
-    backward: static bool) {.inline.} =
+proc sosKernel(buf {.noalias.}: Buf, m: int, c: Biquad, steady: bool,
+    L: static int, backward: static bool) {.inline.} =
   ## One pass of one section over `m` samples of `L` interleaved traces, in
-  ## place, started in the steady state of each trace's first input sample.
+  ## place. With `steady` it starts in the steady state of each trace's
+  ## first input sample (as if that value had come in for ever), else from
+  ## rest (as if zeros had).
+  ##
+  ## Once the input is exactly zero the state decays for ever and would run
+  ## on in subnormal numbers, which are slow (microcode on some CPUs): a
+  ## state below `tiny` is set to 0 every `flushEvery` steps. No decay
+  ## crosses the 58 decades from `tiny` to the subnormals in that many steps
+  ## unless its pole is below 0.6, and such a state is gone in a few dozen
+  ## steps anyway. The start and the flush are calls: they run once per pass
+  ## and per `flushEvery` steps, and the loop below is all that is hot.
   let (b0, b1, b2, a1, a2) = (c.b0, c.b1, c.b2, c.a1, c.a2)
-  var s1, s2: array[L, float64]
-  let first = when backward: m - 1 else: 0
-  for l in 0..<L:
-    let u = buf[first * L + l]
-    let y = c.g * u
-    s2[l] = b2 * u - a2 * y
-    s1[l] = y - b0 * u
-  when backward:
-    var j = m - 1
-    while j >= 0:
+  var s1, s2: Lanes[L]
+  if steady:
+    let first = when backward: m - 1 else: 0
+    steadyStart(s1, s2, cast[Buf](addr buf[first * L]), c)
+  var done = 0
+  while done < m:
+    let run = min(flushEvery, m - done)
+    for k in 0..<run:
+      let j = when backward: m - 1 - done - k else: done + k
       for l in 0..<L:
         let x = buf[j * L + l]
         let y = b0 * x + s1[l]
         s1[l] = b1 * x - a1 * y + s2[l]
         s2[l] = b2 * x - a2 * y
         buf[j * L + l] = y
-      dec j
-  else:
-    for j in 0..<m:
-      for l in 0..<L:
-        let x = buf[j * L + l]
-        let y = b0 * x + s1[l]
-        s1[l] = b1 * x - a1 * y + s2[l]
-        s2[l] = b2 * x - a2 * y
-        buf[j * L + l] = y
+    flushTiny(s1, s2)
+    done += run
 {.pop.}
 
-proc sosLanes(buf: Buf, m: int, c: Biquad, backward: bool) {.noinline, raises: [].} =
-  if backward: sosKernel(buf, m, c, fftLanes, true)
-  else: sosKernel(buf, m, c, fftLanes, false)
-
-proc sosSingle(buf: Buf, m: int, c: Biquad, backward: bool) {.noinline,
+proc sosLanes(buf: Buf, m: int, c: Biquad, steady, backward: bool) {.noinline,
     raises: [].} =
-  if backward: sosKernel(buf, m, c, 1, true)
-  else: sosKernel(buf, m, c, 1, false)
+  if backward: sosKernel(buf, m, c, steady, iirLanes, true)
+  else: sosKernel(buf, m, c, steady, iirLanes, false)
+
+proc sosSingle(buf: Buf, m: int, c: Biquad, steady, backward: bool) {.noinline,
+    raises: [].} =
+  if backward: sosKernel(buf, m, c, steady, 1, true)
+  else: sosKernel(buf, m, c, steady, 1, false)
 
 proc packInto[T](plan: IirPlan[T], x: ptr UncheckedArray[T], n: int,
     a, b: float64, dst: Buf, stride: int) {.raises: [].} =
-  ## The detrended `x[0 ..< n]` with odd-reflection pads (both ends for zero
-  ## phase, the start only for minimum phase) into `dst[j·stride]`.
-  let p = plan.pad
+  ## The detrended `x[0 ..< n]` with its pads into `dst[j·stride]`: odd
+  ## reflections (before the data, and after it for zero phase) or zeros
+  ## (after it only: a pass from rest needs none before).
+  let p = plan.lead
   {.push boundChecks: off, overflowChecks: off.}
   for i in 0..<n:
     dst[(p + i) * stride] = float64(x[i]) - (a + b * float64(i))
-  let d0 = dst[p * stride]
-  for k in 1..p:
-    dst[(p - k) * stride] = 2 * d0 - dst[(p + min(k, n - 1)) * stride]
-  if plan.phase == ipZero:
-    let dn = dst[(p + n - 1) * stride]
+  if plan.reflect:
+    let d0 = dst[p * stride]
     for k in 1..p:
+      dst[(p - k) * stride] = 2 * d0 - dst[(p + min(k, n - 1)) * stride]
+    let dn = dst[(p + n - 1) * stride]
+    for k in 1..plan.tail:
       dst[(p + n - 1 + k) * stride] = 2 * dn - dst[(p + n - 1 - min(k, n - 1)) * stride]
+  else:
+    for k in 1..plan.tail:
+      dst[(p + n - 1 + k) * stride] = 0
   {.pop.}
 
 proc unpackFrom[T](plan: IirPlan[T], src: Buf, stride: int, a, b: float64,
     x: ptr UncheckedArray[T], n: int) {.raises: [].} =
-  let p = plan.pad
+  let p = plan.lead
   let ga = a * plan.dcGain - b * plan.dcSlope
   let gb = b * plan.dcGain
   {.push boundChecks: off, overflowChecks: off.}
@@ -327,23 +386,24 @@ proc unpackFrom[T](plan: IirPlan[T], src: Buf, stride: int, a, b: float64,
   {.pop.}
 
 proc runSingle[T](plan: IirPlan[T], buf: Buf, m: int) {.raises: [].} =
-  for c in plan.sections: sosSingle(buf, m, c, false)
+  for c in plan.sections: sosSingle(buf, m, c, plan.reflect, false)
   if plan.phase == ipZero:
-    for c in plan.sections: sosSingle(buf, m, c, true)
+    for c in plan.sections: sosSingle(buf, m, c, plan.reflect, true)
 
 proc runLanes[T](plan: IirPlan[T], buf: Buf, m: int,
-    spans: array[fftLanes, int], used: int) {.raises: [].} =
+    spans: array[iirLanes, int], used: int) {.raises: [].} =
   ## The passes over a batch whose lane `l < used` holds `spans[l]` padded
-  ## samples (≤ m). Before the backward passes, each shorter lane holds its
-  ## last forward output out to `m`: a constant in steady state reaches the
-  ## lane's own end in exactly the start-up state the backward pass would
-  ## give it there, so each lane is filtered as if alone.
-  for c in plan.sections: sosLanes(buf, m, c, false)
+  ## samples (≤ m). Before the backward passes, each shorter lane is filled
+  ## out to `m` with what leaves a backward pass in its own start-up state
+  ## when it reaches the lane's end: its last forward output for a steady
+  ## start (a constant in steady state stays there), zeros for a start from
+  ## rest. So each lane is filtered as if alone.
+  for c in plan.sections: sosLanes(buf, m, c, plan.reflect, false)
   if plan.phase == ipZero:
     for l in 0..<used:
-      let last = buf[(spans[l] - 1) * fftLanes + l]
-      for j in spans[l]..<m: buf[j * fftLanes + l] = last
-    for c in plan.sections: sosLanes(buf, m, c, true)
+      let fill = (if plan.reflect: buf[(spans[l] - 1) * iirLanes + l] else: 0.0)
+      for j in spans[l]..<m: buf[j * iirLanes + l] = fill
+    for c in plan.sections: sosLanes(buf, m, c, plan.reflect, true)
 
 proc checkPlan[T](plan: IirPlan[T]) {.inline.} =
   doAssert plan.samples > 0, "an IirPlan must come from initIirPlan"
@@ -370,7 +430,7 @@ proc applyFilter*[T: SampleType](x: var openArray[T], plan: IirPlan[T],
 proc applyFilter*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
     plan: IirPlan[T], ws: var Workspace) =
   ## Filters the live rows of `b` in place, each to its live length,
-  ## `fftLanes` rows at a time (module documentation). `ws` must hold
+  ## `iirLanes` rows at a time (module documentation). `ws` must hold
   ## `plan.workspaceSize`. Raises `ValueError`, before any sample changes,
   ## when `b` does not match `meta`, has more columns than `plan.samples`, or
   ## its rows' interval (`meta.dtMs`) is not the plan's.
@@ -382,37 +442,36 @@ proc applyFilter*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
   if b.cols > plan.samples:
     badIir("the block has " & $b.cols & " columns, the plan takes " &
       $plan.samples & " samples")
-  let buf = ws.scratch(float64, plan.span(plan.samples) * fftLanes, 0)
+  let buf = ws.scratch(float64, plan.span(plan.samples) * iirLanes, 0)
   var lane = 0
-  var rowOf, lenOf: array[fftLanes, int]
-  var ta, tb: array[fftLanes, float64]
+  var rowOf, lenOf: array[iirLanes, int]
+  var ta, tb: array[iirLanes, float64]
   var m = 0 # the longest padded length in the batch
 
   template flush() =
     if lane > 0:
-      var spans: array[fftLanes, int]
-      for l in 0..<fftLanes: # shorter traces and unused lanes: zeros after
+      var spans: array[iirLanes, int]
+      for l in 0..<iirLanes: # shorter traces and unused lanes: zeros after
         spans[l] = if l < lane: plan.span(lenOf[l]) else: 0
-        for j in spans[l]..<m: buf[j * fftLanes + l] = 0
+        for j in spans[l]..<m: buf[j * iirLanes + l] = 0
       plan.runLanes(buf, m, spans, lane)
       for l in 0..<lane:
-        plan.unpackFrom(cast[Buf](addr buf[l]), fftLanes, ta[l], tb[l],
+        plan.unpackFrom(cast[Buf](addr buf[l]), iirLanes, ta[l], tb[l],
           b.rowPtr(rowOf[l]), lenOf[l])
       lane = 0
       m = 0
 
   for r in 0..<b.len:
-    if not meta.isLive(r): continue
-    let n = meta.liveSamples(r, b.cols)
-    if n == 0: continue
-    let src = b.rowPtr(r)
-    (ta[lane], tb[lane]) = trendOf(plan.trend, src, n)
-    plan.packInto(src, n, ta[lane], tb[lane], cast[Buf](addr buf[lane]), fftLanes)
-    rowOf[lane] = r
-    lenOf[lane] = n
-    m = max(m, plan.span(n))
-    inc lane
-    if lane == fftLanes: flush()
+    let n = (if meta.isLive(r): meta.liveSamples(r, b.cols) else: 0)
+    if n > 0:
+      let src = b.rowPtr(r)
+      (ta[lane], tb[lane]) = trendOf(plan.trend, src, n)
+      plan.packInto(src, n, ta[lane], tb[lane], cast[Buf](addr buf[lane]), iirLanes)
+      rowOf[lane] = r
+      lenOf[lane] = n
+      m = max(m, plan.span(n))
+      inc lane
+      if lane == iirLanes: flush()
   flush()
 
 proc applyFilter*[T: SampleType](samples: var Tensor[T], meta: ChunkMeta,

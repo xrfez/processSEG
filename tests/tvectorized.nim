@@ -34,13 +34,33 @@ const
     "accumulate"]
   # Non-generic kernels: their symbols carry their own module (and GCC clones
   # such as `.constprop.0` count too).
-  # (The IIR section kernel, `sosLanes`, is not here: a recursion is a serial
-  # chain per trace, and GCC keeps its eight lanes scalar.)
   moduleKernels = [
+    # IIR: the recursion across 24 lanes (`mostlyPacked` below).
+    ("sosKernel", "ZfilterZiir"),
     # NMO: the input columns (sqrt and division; -fno-math-errno there).
     ("moveoutCols", "ZstackZnmo"),
     # The shot fit's normal-equation sums.
     ("l1Fit", "ZqcZshotfit")]
+
+const mostlyPacked = ["sosKernel"]
+  # Kernels whose loop must be packed as a whole: over all their instances,
+  # more packed than scalar floating-point arithmetic. "Some packed
+  # instruction" is not enough for these: the IIR kernel at 8 lanes had 8
+  # packed instructions in its start-up loop and 48 scalar ones in the
+  # recursion, and passed for vectorized while it ran at a third of the
+  # speed. (Its one-trace instances are scalar by design: a few
+  # instructions against the lane instances' hundreds.)
+
+proc isScalarFp(insn: string): bool =
+  ## Scalar floating-point arithmetic (`vmulsd`, `vfmadd231sd`, `addss`, ...);
+  ## not moves, compares or conversions.
+  if "%xmm" notin insn: return false
+  var m = insn.splitWhitespace()[0]
+  if m.startsWith("v"): m = m[1 .. ^1]
+  if not (m.endsWith("sd") or m.endsWith("ss")): return false
+  for op in ["add", "sub", "mul", "div", "fmadd", "fmsub", "fnmadd", "fnmsub", "sqrt"]:
+    if m.startsWith(op): return true
+  false
 
 proc isPacked(insn: string): bool =
   ## Packed arithmetic, compares or conversions on vector registers; not
@@ -96,7 +116,7 @@ proc checkBuild(mode: string) =
     # An instance and its GCC parts and clones (`name.part.0`,
     # `name.constprop.0`) count as one: a split function keeps its loops in
     # the part, and its outer symbol is a thin wrapper.
-    var packedOf = initOrderedTable[string, int]()
+    var packedOf, scalarOf = initOrderedTable[string, int]()
     for line in syms.output.splitLines:
       let sym = line.splitWhitespace()
       if sym.len < 3: continue
@@ -107,14 +127,24 @@ proc checkBuild(mode: string) =
       let dis = execCmdEx("objdump -d --no-show-raw-insn --disassemble=" &
         name & " " & quoteShell(bin))
       doAssert dis.exitCode == 0, dis.output
-      var packed = 0
+      var packed, scalar = 0
       for l in dis.output.splitLines:
         let cols = l.split('\t')
-        if cols.len >= 2 and cols[1 .. ^1].join(" ").strip().isPacked:
-          inc packed
+        if cols.len >= 2:
+          let insn = cols[1 .. ^1].join(" ").strip()
+          if insn.isPacked: inc packed
+          elif insn.isScalarFp: inc scalar
       packedOf[base] = packedOf.getOrDefault(base) + packed
-    for base, packed in packedOf:
-      doAssert packed > 0, base & " has no packed SIMD instructions"
+      scalarOf[base] = scalarOf.getOrDefault(base) + scalar
+    if k in mostlyPacked:
+      var packed, scalar = 0
+      for base, n in packedOf: packed += n
+      for base, n in scalarOf: scalar += n
+      doAssert packed > 2 * scalar, k & " is not packed: " & $packed & " packed and " &
+        $scalar & " scalar floating-point instructions"
+    else:
+      for base, packed in packedOf:
+        doAssert packed > 0, base & " has no packed SIMD instructions"
     doAssert packedOf.len > 0, "no instance of " & k & " in the kernel build"
     echo "  ", k, ": ", packedOf.len, " instance(s) vectorized"
 

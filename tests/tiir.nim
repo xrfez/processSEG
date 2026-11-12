@@ -210,6 +210,52 @@ block nan_and_shapes:
   var p0: IirPlan[float32]
   doAssertRaises AssertionDefect: long.applyFilter(p0, ws)
 
+block trace_ends_match_a_long_context:
+  # As for the FFT filter: a zero-phase low-cut or band-pass gives at the
+  # ends of a trace what it gives there inside a longer one (pads of zeros
+  # and passes from rest; the reflected pads with a steady-state start gave
+  # 48 % and 50 % here, now 7 % and 3 %).
+  for (spec, limit) in [(butterBandPass(4, 60, 24), 0.15), (butterLowCut(3, 24), 0.08)]:
+    let n = 2001
+    let L = initIirPlan(float64, spec, dt, n).requiredMargin
+    let ctx = 6 * L
+    var err, sig = 0.0 # over the first and last 50 samples of 20 traces
+    for seed in 1'i64..20:
+      var long = zeroSignal[float64](n + 2 * ctx)
+      long.addNoise(1, seed = seed)
+      let truth = filtered(long, initIirPlan(float64, spec, dt, long.len))
+      let got = filtered(long[ctx ..< ctx + n], initIirPlan(float64, spec, dt, n))
+      for i in 0..<50:
+        for j in [i, n - 1 - i]:
+          err += (got[j] - truth[ctx + j]) ^ 2
+          sig += truth[ctx + j] ^ 2
+    doAssert sqrt(err / sig) < limit, $sqrt(err / sig) & " (limit " & $limit & ")"
+
+block no_subnormal_state:
+  # After the input stops, a section's state decays for ever; it must reach
+  # exactly 0, not run on in subnormal numbers (slow on every CPU, by
+  # microcode on some): a spike, then silence, at 0.25 ms through a 100 Hz
+  # high-cut (subnormal from sample 6338 on for good, before the flush).
+  for phase in [ipZero, ipMinimum]:
+    var x = zeroSignal[float64](40_000)
+    x.addSpike(10)
+    let y = filtered(x, initIirPlan(float64, butterHighCut(100, 24), 0.25, x.len, phase,
+      trNone))
+    var subnormal = 0
+    for v in y:
+      if v.classify == fcSubnormal: inc subnormal
+    doAssert subnormal < 600, $phase & ": " & $subnormal & " subnormal samples"
+    doAssert y[30_000] == 0 and y[^1] == 0, $phase & ": the tail is exactly zero"
+  # Rows in the lane kernel too (a block of them).
+  var g = cmpGather[float32](cmpX = 0, offsets = newSeq[float64](30), 40_000, 0.25)
+  for r in 0..<30: g.data[r, 10 + r] = 1
+  let meta = initChunkMeta(g.rows, dtMs = 0.25)
+  let plan = initIirPlan(float32, butterHighCut(100, 24), 0.25, 40_000, ipMinimum, trNone)
+  var ws = initWorkspace()
+  ws.reserve(plan.workspaceSize)
+  g.data.applyFilter(meta, plan, ws)
+  for r in 0..<30: doAssert g.data[r, 39_999] == 0
+
 block zoom_window_with_margin:
   # A window decoded with requiredMargin (before it, for minimum phase; both
   # sides for zero phase) matches the whole trace filtered, over the window.

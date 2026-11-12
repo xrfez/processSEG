@@ -35,7 +35,12 @@ block plan_shape:
   let s = lowCut(0.5, 1)
   let p = initFilterPlan(float32, s, dt, ns)
   doAssert p.requiredMargin == s.impulseLength(dt) and p.requiredMargin > 0
-  doAssert p.nfft >= ns + 4 * p.requiredMargin and p.nfft mod 2 == 0
+  # A low-cut pads with zeros: 2L between the trace's ends. A high-cut pads
+  # with reflections of L each, and 2L of zeros between them.
+  doAssert p.nfft >= ns + 2 * p.requiredMargin and p.nfft mod 2 == 0
+  doAssert p.nfft < ns + 4 * p.requiredMargin
+  let hc = initFilterPlan(float32, highCut(60, 80), dt, ns)
+  doAssert hc.nfft >= ns + 4 * hc.requiredMargin
   doAssert isFastLen(p.nfft)
   doAssert p.binHz <= s.narrowestRampHz / 2, "bins resolve the ramp"
   doAssert p.samples == ns and p.dtMs == dt and p.spec.kind == rkTrapezoid
@@ -248,6 +253,65 @@ block rows_do_not_depend_on_their_batch:
   for spec in specs:
     rowsIgnoreTheirBatch(float32, spec)
     rowsIgnoreTheirBatch(float64, spec)
+
+proc endError(spec: FilterSpec, n: int, seed: int64): float64 =
+  ## The RMS error over the first and last L/2 samples of a trace cut out of
+  ## a longer one (6L more on each side), against the long trace filtered,
+  ## as a fraction of the filtered signal's RMS there.
+  let L = spec.impulseLength(dt)
+  let ctx = 6 * L
+  var long = zeroSignal[float64](n + 2 * ctx)
+  long.addNoise(1, seed = seed)
+  let truth = filtered(long, initFilterPlan(float64, spec, dt, long.len))
+  let got = filtered(long[ctx ..< ctx + n], initFilterPlan(float64, spec, dt, n))
+  var err, sig = 0.0
+  for i in 0..<max(8, L div 2):
+    for j in [i, n - 1 - i]:
+      err += (got[j] - truth[ctx + j]) ^ 2
+      sig += truth[ctx + j] ^ 2
+  sqrt(err / sig)
+
+block trace_ends_match_a_long_context:
+  # What a low-cut or a band-pass gives at the ends of a trace is what it
+  # gives there inside a longer one, as far as the missing samples allow.
+  # (Padding by odd reflection pinned the end samples to 0, whatever the
+  # data: 41 % and 92 % error here. Zeros after the trend removal give 4 %
+  # and 15 %.) A high-cut keeps the reflection, the better choice for it.
+  var lc, bp = 0.0
+  for seed in 1'i64..8:
+    lc = max(lc, endError(lowCut(2, 4), ns, seed))
+    bp = max(bp, endError(bandPass(Corners(f1: 4, f2: 8, f3: 60, f4: 80)), ns, seed))
+  doAssert lc < 0.10, "low-cut 2-4: " & $lc
+  doAssert bp < 0.30, "band-pass 4-8-60-80: " & $bp
+  # The end sample itself is not forced to zero.
+  var x = zeroSignal[float64](3 * ns)
+  x.addNoise(1, seed = 5)
+  let plan = initFilterPlan(float64, lowCut(2, 4), dt, 3 * ns)
+  let whole = filtered(x, plan)
+  let cut = filtered(x[ns ..< 2 * ns], initFilterPlan(float64, lowCut(2, 4), dt, ns))
+  doAssert abs(whole[ns]) > 0.05, "pick another seed: the truth is near 0 here"
+  doAssert abs(cut[0] - whole[ns]) < 0.5 * abs(whole[ns]), $cut[0] & " for " & $whole[ns]
+
+block zoom_window_on_noise:
+  # A window of white noise decoded with requiredMargin, against the whole
+  # trace: within 0.7 % of the peak (0.3 % measured; 2.3 % with the reflected
+  # pads). Broadband data is the usual case; a steady sinusoid inside the
+  # narrowest ramp is the worst (about 2.5 %, see the module documentation).
+  const total = 6001
+  let spec = bandPass(Corners(f1: 4, f2: 8, f3: 60, f4: 80))
+  var worst = 0.0
+  for seed in 1'i64..6:
+    var x = zeroSignal[float64](total)
+    x.addNoise(1, seed = seed)
+    let whole = filtered(x, initFilterPlan(float64, spec, dt, total))
+    let m = spec.impulseLength(dt)
+    for a in [1000, 2500, 4200]:
+      let b = a + 499
+      let win = filtered(x[a - m .. b + m], initFilterPlan(float64, spec, dt, b - a + 1 + 2 * m))
+      var e = 0.0
+      for j in a..b: e = max(e, abs(win[j - (a - m)] - whole[j]))
+      worst = max(worst, e / maxAbs(whole))
+  doAssert worst < 0.007, $worst
 
 block zoom_window_with_margin:
   # A window decoded with requiredMargin on each side, filtered, matches the

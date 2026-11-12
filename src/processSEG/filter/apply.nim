@@ -13,20 +13,34 @@
 ## **Edge handling** (D4), per trace, on its live samples only:
 ## 1. remove the mean or the least-squares line (`trendRemoval`, default
 ##    `trLinear`);
-## 2. pad each end by odd reflection, `2·x₀ − x[k]`, which keeps the value and
-##    the slope continuous, for `L` samples, the impulse length of the
-##    response (`impulseLength`, 99.9 % of its energy);
-## 3. taper the pads only, with a cos² ramp that is 1 with zero slope at the
-##    data and falls to 0 at the outer end (the data is never tapered);
-## 4. transform with an FFT of `nfft ≥ samples + 4L` (a 2·3·5 length: not a
-##    power of two, which only costs time here) and with bins no wider than
-##    half the narrowest ramp of the response. After the two pads, at least
-##    `2L` zeros separate one end of the trace from the other, so the
-##    response does not wrap: the tail past `L` (0.1 % of the energy, but a
-##    cos² ramp's impulse decays only as 1/t³) leaks less than −60 dB of the
-##    peak, measured with a spike on the last sample, the worst case (with
-##    `samples + 2L` it was −40 dB);
-## 5. multiply by the response, transform back, and add the removed trend
+## 2. pad each end for `L` samples, the impulse length of the response
+##    (`impulseLength`, 99.9 % of its energy):
+##    - **with zeros**, when the response rejects 0 Hz (a low-cut or a
+##      band-pass: gain under 0.5 there) and the line was removed. Nothing is
+##      known about the samples beyond the trace, and with the trend gone
+##      zero is the unbiased guess;
+##    - **by odd reflection**, `2·x₀ − x[k]`, otherwise (a high-cut or a
+##      notch, which pass the level and slope the reflection keeps
+##      continuous; and `trMean`/`trNone`, where a drift or an offset left in
+##      the data must not meet a step), tapered with a cos² ramp that is 1
+##      with zero slope at the data and falls to 0 at the outer end. The
+##      data itself is never tapered.
+##
+##    (An odd reflection under a low-cut pins the end samples: with a
+##    symmetric impulse `h`, `y₀ = h₀x₀ + Σ hₖ·(xₖ + 2x₀ − xₖ) = H(0)·x₀ = 0`,
+##    whatever the data. Measured on white noise against the same samples
+##    inside a longer trace, the first `L/2` samples were off by 41 %
+##    (low-cut 2–4 Hz) and 92 % (4-8-60-80 Hz) of the signal there; with
+##    zeros 4 % and 15 %.)
+## 3. transform with an FFT of `nfft ≥ samples + 2L` (zeros) or
+##    `samples + 4L` (reflections: the two pads, then `2L` of zeros), a 2·3·5
+##    length, with bins no wider than half the narrowest ramp of the
+##    response. At least `2L` zeros separate one end of the trace from the
+##    other, so the response does not wrap: its tail past `L` (0.1 % of the
+##    energy, but a cos² ramp's impulse decays only as 1/t³) leaks less than
+##    −60 dB of the peak (−75 dB with zero pads), measured with a spike on
+##    the last sample, the worst case;
+## 4. multiply by the response, transform back, and add the removed trend
 ##    back scaled by the response at 0 Hz (0 for a low-cut, 1 for a high-cut;
 ##    exact for a zero-phase filter, whose symmetric impulse maps a line to
 ##    itself times its sum). A high-cut therefore keeps the trend, and a
@@ -44,11 +58,14 @@
 ##
 ## **Margin.** `requiredMargin` is `L`: a zoom window decoded with `L` extra
 ## samples on each side, filtered, matches the whole trace filtered over the
-## window to within about 1 % of the peak on seismic data (tested), and
-## 2.5 % in the worst case, a steady in-band sinusoid, whose tail adds up
-## coherently over the 0.1 % of the impulse energy left out of `L` (measured
-## 1.6–2.4 % for 4-8-60-80, 5-10-40-60 and a 0.5–1 Hz low-cut at 2 ms). A
-## margin of `1.5·L` brings that case under 0.5 %.
+## window to within about 0.5 % of the trace's peak on broadband data
+## (measured on white noise at 2 ms: 0.30 % for 4-8-60-80, 0.43 % for
+## 5-10-40-60, 0.06 % for a 0.5–1 Hz low-cut), and about 2.5 % in the worst
+## case, a steady sinusoid inside the narrowest ramp, whose tail adds up
+## coherently over the 0.1 % of the impulse energy left out of `L` (2.4–2.7 %
+## for the same filters). A margin of `1.5·L` brings that case under 0.7 %.
+## A high-cut alone has a short `L` and more of the signal inside its ramp:
+## 2.8 % on noise for 60–80 Hz (`L` = 20 samples), 0.3 % at `1.5·L`.
 ##
 ## **Rows.** The block forms filter the live rows, each to its live length
 ## (`ChunkMeta.liveSamples`); dead, auxiliary and failed rows and the padding
@@ -74,6 +91,7 @@ type
     gain: seq[T] # one value per bin
     fall: seq[T] # pad weights, k = 1 .. pad (fall[k − 1])
     pad: int
+    reflect: bool # the pads hold the odd reflection (else zeros)
     samples: int
     dtMs: float64
     dcGain: float64
@@ -96,7 +114,10 @@ proc initFilterPlan*(T: typedesc[SampleType], spec: FilterSpec, dtMs: float64,
   if samples < 1: badPlan("a filter plan needs samples ≥ 1, got " & $samples)
   spec.validate(dtMs)
   let pad = spec.impulseLength(dtMs)
-  var n = samples + 4 * pad # pads of L each, then a gap of ≥ 2L of zeros
+  let dcGain = spec.response(0, dtMs)
+  let reflect = dcGain >= 0.5 or trend != trLinear
+  # Reflected pads of L each and 2L of zeros between them, or 2L of zeros.
+  var n = samples + (if reflect: 4 else: 2) * pad
   let ramp = spec.narrowestRampHz
   if ramp < Inf: # bins no wider than half the narrowest ramp
     n = max(n, int(ceil(2000 / (ramp * dtMs))))
@@ -111,8 +132,9 @@ proc initFilterPlan*(T: typedesc[SampleType], spec: FilterSpec, dtMs: float64,
   result.pad = pad
   result.samples = samples
   result.dtMs = dtMs
-  result.dcGain = spec.response(0, dtMs)
+  result.dcGain = dcGain
   result.trend = trend
+  result.reflect = reflect
 
 func requiredMargin*[T](plan: FilterPlan[T]): int {.inline, raises: [].} =
   ## The samples a zoom window needs on each side: the impulse length `L`.
@@ -162,14 +184,19 @@ proc packInto[T](plan: FilterPlan[T], x: Buf[T], n: int, a, b: float64,
   {.push boundChecks: off, overflowChecks: off.}
   for i in 0..<n:
     dst[(p + i) * stride] = T(float64(x[i]) - (a + b * float64(i)))
-  let d0 = dst[p * stride]
-  let dn = dst[(p + n - 1) * stride]
-  for k in 1..p:
-    let r = dst[(p + min(k, n - 1)) * stride]
-    dst[(p - k) * stride] = (d0 + d0 - r) * plan.fall[k - 1]
-  for k in 1..p:
-    let r = dst[(p + n - 1 - min(k, n - 1)) * stride]
-    dst[(p + n - 1 + k) * stride] = (dn + dn - r) * plan.fall[k - 1]
+  if plan.reflect:
+    let d0 = dst[p * stride]
+    let dn = dst[(p + n - 1) * stride]
+    for k in 1..p:
+      let r = dst[(p + min(k, n - 1)) * stride]
+      dst[(p - k) * stride] = (d0 + d0 - r) * plan.fall[k - 1]
+    for k in 1..p:
+      let r = dst[(p + n - 1 - min(k, n - 1)) * stride]
+      dst[(p + n - 1 + k) * stride] = (dn + dn - r) * plan.fall[k - 1]
+  else:
+    for k in 1..p:
+      dst[(p - k) * stride] = T(0)
+      dst[(p + n - 1 + k) * stride] = T(0)
   for j in (2 * p + n)..<plan.fft.len: dst[j * stride] = T(0)
   {.pop.}
 
@@ -241,14 +268,18 @@ proc packLanes[T](plan: FilterPlan[T], rows: LaneRows[T], n: int,
   let p = plan.pad
   for i in 0..<n:
     packSample(dst +@ ((p + i) * L), rows, i, a, b)
-  let first = dst +@ (p * L)
-  let last = dst +@ ((p + n - 1) * L)
-  for k in 1..p:
-    let m = min(k, n - 1)
-    reflectSample(dst +@ ((p - k) * L), dst +@ ((p + m) * L), first, plan.fall[k - 1])
-    reflectSample(dst +@ ((p + n - 1 + k) * L), dst +@ ((p + n - 1 - m) * L), last,
-      plan.fall[k - 1])
-  for j in (2 * p + n) * L..<plan.fft.len * L: dst[j] = T(0)
+  if plan.reflect:
+    let first = dst +@ (p * L)
+    let last = dst +@ ((p + n - 1) * L)
+    for k in 1..p:
+      let m = min(k, n - 1)
+      reflectSample(dst +@ ((p - k) * L), dst +@ ((p + m) * L), first, plan.fall[k - 1])
+      reflectSample(dst +@ ((p + n - 1 + k) * L), dst +@ ((p + n - 1 - m) * L), last,
+        plan.fall[k - 1])
+    for j in (2 * p + n) * L..<plan.fft.len * L: dst[j] = T(0)
+  else:
+    for j in 0..<p * L: dst[j] = T(0)
+    for j in (p + n) * L..<plan.fft.len * L: dst[j] = T(0)
 
 proc unpackSample[T](s {.noalias.}: Buf[T], rows: LaneRows[T], i: int,
     ga, gb: LaneTrend) {.inline.} =
