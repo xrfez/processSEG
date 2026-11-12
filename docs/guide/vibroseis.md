@@ -211,7 +211,9 @@ doAssert leak < 1.0                                              # vertical: abo
 ```
 
 Record blocks go in with `addRecord(samples, meta, ws, rowMap)`, which adds only the live
-rows. For threads, give each its own `RecordStack` and `merge` them at the end.
+rows; the meta must be of whole records at the stack's interval (a window, or another
+`dtMs`, raises `ValueError`). For threads, give each its own `RecordStack` and `merge` them
+at the end.
 
 ## Continuous recordings
 

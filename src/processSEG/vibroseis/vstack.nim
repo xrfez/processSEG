@@ -361,11 +361,18 @@ proc addRecord*[T](acc: var RecordStack[T], b: RowBlock[T], meta: ChunkMeta,
   ## `liveSamples`, row `r` to output row `rowMap[r]` (`< 0`: skipped; an
   ## empty map: row `r`). Returns the rows added (not counting skipped,
   ## non-live and non-finite rows). Raises `ValueError`, adding nothing,
-  ## when `meta` does not match `b`, `b` is wider than `samples`, or the map
-  ## does not have one entry per row within the stack's rows.
+  ## when `meta` does not match `b`, `b` is wider than `samples`, the
+  ## record's interval is not the stack's, the meta is of a window
+  ## (`firstSample > 0`: column 0 would be stacked onto sample 0), or the
+  ## map does not have one entry per row within the stack's rows.
   meta.checkShape(b)
   if b.cols > acc.samples:
     badArg("the record has " & $b.cols & " samples, the stack " & $acc.samples)
+  if abs(meta.dtMs - acc.dtMs) > 1e-9 * acc.dtMs:
+    badArg("the record is at " & $meta.dtMs & " ms, the stack at " & $acc.dtMs & " ms")
+  if meta.firstSample != 0:
+    badArg("stacking needs whole records from sample 0, got firstSample " &
+      $meta.firstSample)
   acc.checkMap(b.len, rowMap)
   for r in 0..<b.len:
     let o = rowMap.outRowOf(r)
@@ -375,7 +382,9 @@ proc addRecord*[T](acc: var RecordStack[T], b: RowBlock[T], meta: ChunkMeta,
 proc addRecord*[T](acc: var RecordStack[T], b: RowBlock[T], ws: var Workspace,
     rowMap: openArray[int] = []): int =
   ## Adds every row of the record `b`, in full, as the `ChunkMeta` form does
-  ## (no row is dead without a meta). Raises `ValueError` as that form.
+  ## (no row is dead without a meta, and the caller answers for the
+  ## interval and for column 0 being sample 0). Raises `ValueError` as that
+  ## form for the width and the map.
   if b.cols > acc.samples:
     badArg("the record has " & $b.cols & " samples, the stack " & $acc.samples)
   acc.checkMap(b.len, rowMap)
