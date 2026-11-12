@@ -59,11 +59,12 @@ type
 
   SweepTaper* = object
     ## The ramps at the two ends of a sweep: lengths in ms (0 or NaN: none)
-    ## and one shape for both. Make with `initSweepTaper`.
+    ## and one shape for both. Make with `initSweepTaper`, or as an object:
+    ## a `param` left out is the shape's default.
     startMs*: float64
     endMs*: float64
     shape*: TaperShape
-    param*: float64 ## β (Kaiser), σ (Gaussian) or p (power); unused otherwise.
+    param*: float64 = NaN ## β (Kaiser), σ (Gaussian) or p (power); NaN: the shape's default.
 
 func defaultParam(shape: TaperShape): float64 =
   case shape
@@ -76,21 +77,22 @@ proc badTaper(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
 
 proc validate*(t: SweepTaper) =
-  ## Checks the lengths (≥ 0 or NaN) and the shape's parameter. Raises
-  ## `ValueError`.
+  ## Checks the lengths (≥ 0 or NaN) and the shape's parameter (NaN: its
+  ## default, which is valid). Raises `ValueError`.
   for (name, v) in [("startMs", t.startMs), ("endMs", t.endMs)]:
     if not v.isNaN and not (v >= 0 and v < Inf):
       badTaper("a taper " & name & " must be ≥ 0 and finite (or NaN for none), got " & $v)
+  let param = if t.param.isNaN: defaultParam(t.shape) else: t.param
   case t.shape
   of tpKaiser:
-    if not (t.param >= 0 and t.param <= 50):
-      badTaper("a Kaiser taper needs 0 ≤ β ≤ 50, got " & $t.param)
+    if not (param >= 0 and param <= 50):
+      badTaper("a Kaiser taper needs 0 ≤ β ≤ 50, got " & $param)
   of tpGaussian:
-    if not (t.param > 0 and t.param < Inf):
-      badTaper("a Gaussian taper needs σ > 0, got " & $t.param)
+    if not (param > 0 and param < Inf):
+      badTaper("a Gaussian taper needs σ > 0, got " & $param)
   of tpPower:
-    if not (t.param > 0 and t.param < Inf):
-      badTaper("a power taper needs an exponent > 0, got " & $t.param)
+    if not (param > 0 and param < Inf):
+      badTaper("a power taper needs an exponent > 0, got " & $param)
   else: discard
 
 proc initSweepTaper*(startMs, endMs: float64, shape = tpCos2,
