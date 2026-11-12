@@ -20,8 +20,8 @@
 ## **Sample rate** (task 10.3b). Correlation refuses a pilot whose `dtMs`
 ## differs from the records': `resamplePilot` converts it explicitly, with a
 ## band-limited (Kaiser-windowed sinc) interpolation, and refuses a pilot
-## whose samples hold energy above the new anti-alias limit (`energyAbove`;
-## what its headers say of the sweep is not asked).
+## whose samples hold energy above the interpolator's passband
+## (`energyAbove`; what its headers say of the sweep is not asked).
 ##
 ## **Instrument response.** Data reach the recorder through its anti-alias
 ## filter, often minimum phase; a recorded pilot went through it too, a
@@ -236,49 +236,72 @@ proc energyAbove*[T: SampleType](p: Pilot[T], fHz: float64): float64 =
 
 # ------------------------------------------------------------ resampling --
 
-const resampleLeak = 0.005
-  # The share of a pilot's energy that may lie above the resampling cutoff:
-  # the side lobes of an 8 s sweep that ends there (0.06 % with 250 ms
-  # tapers, 0.4 % without) pass, a sweep that runs 1 % of its band beyond
-  # does not.
+const
+  resampleLeak = 0.005
+    # The share of a pilot's energy that may lie above the resampling
+    # passband: the side lobes of an 8 s sweep that ends there (0.06 % with
+    # 250 ms tapers, 0.4 % without) pass, a sweep that runs 1 % of its band
+    # beyond does not.
+  kaiserBeta = 8.0
+  transitionWidth = sqrt(1 + (kaiserBeta / PI) * (kaiserBeta / PI))
+    # 2.736: the half width of the Kaiser window's main lobe, in units of
+    # 1 / (the window's length).
 
 proc resamplePilot*[T: SampleType](p: Pilot[T], dtMs: float64, cutoffFraction = 0.9,
-    halfWidth = 24, bandLimit = false): Pilot[T] =
+    halfWidth = 32, bandLimit = false): Pilot[T] =
   ## `p` at the interval `dtMs`, by band-limited interpolation: a sinc low-pass
   ## at `cutoffFraction` of the lower of the two Nyquist frequencies, Kaiser
   ## windowed (β = 8) over `halfWidth` samples of the coarser interval on
   ## each side. The new pilot covers the same time span from the same
   ## `t0Ms`.
   ##
-  ## A pilot whose samples hold energy above the cutoff (`energyAbove`: more
-  ## than 0.5 % of it) is refused, whatever its sweep description says: the
-  ## result would not be the same sweep. With `bandLimit` it is cut there
-  ## instead, which is what matches records that went through an anti-alias
-  ## filter at the new interval; the result is then no longer described.
-  ## Otherwise the description, when there is one, takes the new `dtMs` and
-  ## `cutoffFraction` as its `maxNyquistFraction` (the band the new pilot
-  ## holds), and is kept only if it is still valid (not, for instance, when
-  ## its length is not a whole number of the new samples).
+  ## **Band.** The window gives the low-pass a transition band of
+  ## `2.736 / halfWidth` of that Nyquist on each side of the cutoff: flat
+  ## (to 0.01 dB) up to the passband edge, `cutoffFraction − 2.736 /
+  ## halfWidth` (0.8145 with the defaults, so a sweep generated with the
+  ## default `maxNyquistFraction` of 0.8 fits), and closed (−80 dB) from
+  ## `cutoffFraction + 2.736 / halfWidth` (0.9855: below Nyquist, nothing
+  ## aliases). A pilot whose samples hold energy above the passband edge
+  ## (`energyAbove`: more than 0.5 % of it) is refused, whatever its sweep
+  ## description says: the result would not be the same sweep. With
+  ## `bandLimit` it is cut there instead, which is what matches records
+  ## that went through an anti-alias filter at the new interval; the result
+  ## is then no longer described. Otherwise the description, when there is
+  ## one, takes the new `dtMs` and the passband edge as its
+  ## `maxNyquistFraction` (the band the new pilot holds), and is kept only
+  ## if it is still valid (not, for instance, when its length is not a
+  ## whole number of the new samples).
+  ##
+  ## **Ends.** Within the window's reach of the pilot's ends part of the
+  ## kernel has no samples under it; the rest is rescaled to the whole
+  ## kernel's sum, so a pilot that does not start at zero keeps its level
+  ## there (to the extent that a one-sided kernel can interpolate).
   ##
   ## Raises `ValueError` for a bad `dtMs`, `cutoffFraction` outside (0, 1],
-  ## `halfWidth < 2`, a result of over 2³¹ samples, or energy above the
-  ## cutoff without `bandLimit`.
+  ## a `halfWidth` that leaves no passband (`≤ 2.736 / cutoffFraction`), a
+  ## result of over 2³¹ samples, or energy above the passband without
+  ## `bandLimit`.
   p.validate
   if not (dtMs > 0 and dtMs < Inf): badPilot("dtMs must be finite and positive, got " & $dtMs)
   if not (cutoffFraction > 0 and cutoffFraction <= 1):
     badPilot("cutoffFraction must be in (0, 1], got " & $cutoffFraction)
-  if halfWidth < 2: badPilot("halfWidth must be ≥ 2, got " & $halfWidth)
+  if halfWidth < 1 or cutoffFraction <= transitionWidth / float64(halfWidth):
+    badPilot("halfWidth = " & $halfWidth & " leaves no passband below the cutoff: it " &
+      "must be above " & $(transitionWidth / cutoffFraction))
   let coarse = max(dtMs, p.dtMs)
-  let fc = cutoffFraction * 500 / coarse # Hz
-  let cut = p.energyAbove(fc) > resampleLeak
+  let nyquist = 500 / coarse # Hz
+  let fc = cutoffFraction * nyquist
+  let edge = fc - transitionWidth / float64(halfWidth) * nyquist       # the passband's end
+  let cut = p.energyAbove(edge) > resampleLeak
   if cut and not bandLimit:
-    badPilot($(100 * p.energyAbove(fc)) & " % of the pilot's energy is above the " &
-      "resampling cutoff " & $fc & " Hz at " & $dtMs & " ms (bandLimit = true cuts it)")
+    badPilot($(round(1e4 * p.energyAbove(edge)) / 100) & " % of the pilot's energy is " &
+      "above " & $(round(10 * edge) / 10) & " Hz, where the resampling to " & $dtMs &
+      " ms starts to cut (bandLimit = true accepts that)")
   var sweep = none(SweepSpec)
   if p.sweep.isSome and not cut:
     var s = p.sweep.get
     s.dtMs = dtMs
-    s.maxNyquistFraction = cutoffFraction # what the resampled pilot holds
+    s.maxNyquistFraction = min(edge * dtMs / 500, 1.0) # what the resampled pilot holds
     try:
       s.validate
       sweep = some(s)
@@ -290,22 +313,25 @@ proc resamplePilot*[T: SampleType](p: Pilot[T], dtMs: float64, cutoffFraction = 
   let n = int(floor(steps * (1 + 1e-9))) + 1
   var outS = newSeq[T](n)
   let w = float64(halfWidth) * coarse # ms
-  let beta = 8.0
-  let i0b = besselI0(beta)
-  let scale = 2 * fc / 1000 * p.dtMs # sinc gain per input sample
+  let i0b = besselI0(kaiserBeta)
+  let whole = 1000 / (2 * fc * p.dtMs) # the sum of a whole kernel's taps
   for j in 0 ..< n:
     let t = float64(j) * dtMs # from t0
     let lo = max(0, int(ceil((t - w) / p.dtMs)))
     let hi = min(p.samples.len - 1, int(floor((t + w) / p.dtMs)))
-    var acc = 0.0
+    var acc, sum = 0.0
     for i in lo .. hi:
       let d = float64(i) * p.dtMs - t # ms
       let u = d / w
-      if abs(u) >= 1: continue
-      let x = 2 * fc / 1000 * d
-      let sinc = if x == 0: 1.0 else: sin(PI * x) / (PI * x)
-      acc += float64(p.samples[i]) * sinc * besselI0(beta * sqrt(1 - u * u)) / i0b
-    outS[j] = T(acc * scale)
+      if abs(u) < 1:
+        let x = 2 * fc / 1000 * d
+        let sinc = if x == 0: 1.0 else: sin(PI * x) / (PI * x)
+        let h = sinc * besselI0(kaiserBeta * sqrt(1 - u * u)) / i0b
+        acc += float64(p.samples[i]) * h
+        sum += h
+    # The taps' own sum: the whole kernel's away from the ends (unit gain at
+    # 0 Hz), the part under the pilot at them. Half a kernel sums to half.
+    outS[j] = T(acc / (if sum > 0.25 * whole: sum else: whole))
   initPilot(outS, dtMs, p.t0Ms, sweep)
 
 # -------------------------------------------------------- instrument filter --

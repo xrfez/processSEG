@@ -171,6 +171,53 @@ block resample_down_and_up:
   doAssertRaises(ValueError): discard anon.resamplePilot(1e-9) # over 2³¹ samples
   doAssertRaises(ValueError): discard fine.resamplePilot(2, cutoffFraction = 0)
 
+proc bandAmplitude(x: openArray[float64], fHz, dtMs: float64): float64 =
+  ## The RMS spectral amplitude of `x` over `fHz ± 1` Hz (a direct DFT).
+  var e = 0.0
+  for k in -10 .. 10:
+    var re, im = 0.0
+    let w = 2 * PI * (fHz + 0.1 * float64(k)) * dtMs / 1000
+    for j, v in x:
+      re += v * cos(w * float64(j))
+      im += v * sin(w * float64(j))
+    e += re * re + im * im
+  sqrt(e / 21)
+
+block resampling_keeps_its_passband_flat:
+  # The kernel's passband ends a transition width below the cutoff: with the
+  # defaults at 0.9 − 2.736 / 32 = 0.8145 of the lower Nyquist, 203.6 Hz at
+  # 2 ms. A sweep is taken up to there and comes out unattenuated; one that
+  # runs into the transition band (it used to lose 0.45 dB at 210 Hz and
+  # 1.3 dB at 215) is refused.
+  let taper = initSweepTaper(300, 300)
+  let fine = generatePilot(linearSweep(10, 200, 8000, 0.5, taper, maxNyquistFraction = 0.25))
+  let res = fine.resamplePilot(2)
+  let want = generatePilot(linearSweep(10, 200, 8000, 2, taper))
+  doAssert res.len == want.len
+  doAssert abs(res.sweep.get.maxNyquistFraction - (0.9 - sqrt(1 + (8 / PI) ^ 2) / 32)) < 1e-12
+  for f in [50.0, 150.0, 190.0, 195.0, 199.0]:
+    let gain = bandAmplitude(res.samples, f, 2) / bandAmplitude(want.samples, f, 2)
+    doAssert abs(20 * log10(gain)) < 0.01, $f & " Hz: " & $(20 * log10(gain)) & " dB"
+  doAssert maxDiff(res.samples, want.samples, 0) < 2e-3
+  for top in [210.0, 220.0]:
+    let over = generatePilot(linearSweep(10, top, 8000, 0.5, taper, maxNyquistFraction = 0.25))
+    doAssertRaises(ValueError): discard over.resamplePilot(2)
+  # A sweep generated with the default limit (0.8 of Nyquist) at the new
+  # interval fits the default passband, down and up.
+  discard generatePilot(linearSweep(10, 200, 8000, 1, taper, maxNyquistFraction = 0.5))
+    .resamplePilot(2)
+  discard generatePilot(linearSweep(10, 100, 8000, 4, taper)).resamplePilot(1)
+  # A window too short to have a passband.
+  doAssertRaises(ValueError): discard fine.resamplePilot(2, halfWidth = 3)
+  doAssertRaises(ValueError): discard fine.resamplePilot(2, halfWidth = 0)
+  # At the pilot's ends part of the kernel has no samples under it: the
+  # rest is rescaled to the whole (an untapered cosine start read 0.61).
+  let step = generatePilot(linearSweep(10, 100, 2000, 0.5, maxNyquistFraction = 0.25,
+    startPhaseDeg = 90))
+  let ends = step.resamplePilot(2)
+  doAssert abs(ends.samples[0] - 1) < 0.02, $ends.samples[0]
+  doAssert abs(ends.samples[1] - step.samples[4]) < 0.02, $ends.samples[1]
+
 block instrument_filter_causality:
   var s = newSeq[float64](400)
   s[200] = 1

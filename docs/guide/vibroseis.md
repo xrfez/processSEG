@@ -79,8 +79,10 @@ The SEG-Y binary header has the same sweep fields (3233-3248). After writing,
 
 **Sample interval.** Correlation refuses a pilot at another interval than the records.
 Vibrator controllers often log the pilot at 0.5 or 1 ms while the data are at 2 ms:
-`resamplePilot` converts it with a band-limited (Kaiser-windowed sinc) interpolation, and
-refuses a pilot whose samples hold energy above the new cutoff (more than 0.5 % of it;
+`resamplePilot` converts it with a band-limited (Kaiser-windowed sinc) interpolation. The
+interpolator is flat up to 0.8145 of the coarser interval's Nyquist frequency with the
+defaults (203 Hz at 2 ms: `cutoffFraction − 2.736 / halfWidth`) and rolls off from there,
+so it refuses a pilot whose samples hold energy above that edge (more than 0.5 % of it;
 `energyAbove(pilot, fHz)` gives the fraction), whatever its headers say of the sweep.
 `bandLimit = true` cuts that energy instead, for records that were decimated through an
 anti-alias filter; the result is then no longer the described sweep and has none. A pilot
