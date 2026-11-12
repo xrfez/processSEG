@@ -21,8 +21,9 @@
 ##   (iteratively reweighted), the crossover by a search over the picks'
 ##   offsets (at least 3 picks on each segment; up to 64 quantiles of them
 ##   on long spreads) refined by golden section, the second segment faster
-##   than the first; a single segment when that fits as well; no model
-##   when all used picks share one offset;
+##   than the first; a single segment when that fits as well (to a part in
+##   10⁶ of the misfit, or to 1e-9 ms a pick); no model when all used picks
+##   share one offset;
 ## - `rmOffsetBinned`: the median pick time in offset bins of `binWidth`,
 ##   linear between the bins' median offsets and extended linearly beyond
 ##   the end bins: for refractors no two lines describe. Bins should be
@@ -309,7 +310,10 @@ proc fitTwoSegment(fit: var ShotFit) =
     if xc == last or xc <= fit.tmp[0] or xc >= fit.tmp[n - 1]: continue
     last = xc
     let s = l1Fit(fit.xs, fit.ts, fit.ws, xc, c)
-    if s < best * (1 - 1e-6) and valid(c):
+    # A second segment must lower the misfit by a part in 10⁶ and by more
+    # than rounding leaves of an exact fit (1e-9 ms a pick): picks on one
+    # line have a misfit near 1e-13, and any split "improves" on that.
+    if s < best * (1 - 1e-6) and best - s > 1e-9 * float64(n) and valid(c):
       best = s
       bestC = c
       bestXc = xc

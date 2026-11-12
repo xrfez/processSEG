@@ -210,6 +210,23 @@ block degenerate_fits:
   var fit: ShotFit
   fitShot(meta, picks, ShotFitParams(), fit)
   doAssert fit.v1.isNaN and fit.modelMs[0].isNaN and suspects(fit).len == 0
+  # Picks that one line fits to rounding are one segment. A second one that
+  # lowers the misfit from 1e-13 to 1e-14 ms describes nothing (flat picks
+  # came back as two segments of 2e19 and 8e19 units/s meeting at 425).
+  var line = makeShot(5000, offsets = endOn(24, 25, 25))
+  let lmeta = initChunkMeta(line.g.rows, dt)
+  var lp = newSeq[FirstBreakPick](line.g.len)
+  for slowness in [0.0, 0.5]: # flat; 2000 units/s
+    for r in 0 ..< line.g.len:
+      lp[r] = FirstBreakPick(timeMs: 100 + slowness * abs(line.g.keys[r].offset), col: 0,
+        snrDb: 30, confidence: 1)
+    fitShot(lmeta, lp, ShotFitParams(), fit)
+    doAssert fit.used == 24 and fit.crossover == Inf and fit.v2.isNaN, $slowness & ": " &
+      $fit.crossover & " " & $fit.v2
+    doAssert abs(fit.interceptMs - 100) < 1e-6 and suspects(fit).len == 0
+    for r in 0 ..< line.g.len: doAssert abs(fit.residualMs[r]) < 1e-6
+    if slowness > 0: doAssert abs(fit.v1 - 2000) < 1e-3, $fit.v1
+    else: doAssert fit.v1.isNaN or fit.v1 > 1e9, $fit.v1 # no slope: no velocity
   # A long spread (2000 traces) fits quickly: crossover candidates are capped.
   var big = makeShot(50_000, offsets = splitSpread(1000, 5, 5))
   var bp = newSeq[FirstBreakPick](big.g.len)
