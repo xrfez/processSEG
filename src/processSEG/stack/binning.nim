@@ -29,8 +29,11 @@
 ##
 ## **Conventions.** Azimuths are in degrees clockwise from north (+y), so
 ## 90° is +x. Distances are in the file's coordinate units. A trace falls
-## in the nearest bin (a midpoint exactly half-way goes to the higher
-## one); a NaN key, or a position outside the bins, gives −1.
+## in the nearest bin: bin `i` holds the positions from half a bin before
+## its centre (included) to half a bin after it (excluded), so a midpoint
+## exactly half-way goes to the higher one, and the first bin's lower edge
+## is in, the last bin's upper edge out. A NaN key, or a position outside
+## the bins, gives −1; no key gives a bin outside `0 ..< len`.
 
 import std/math
 import parseSEG
@@ -181,9 +184,15 @@ func is3D*(b: Binning): bool {.inline, raises: [].} =
   b.kind in {bnGrid, bnInlineCrossline}
 
 func nearest(u: float64, n: int): int {.inline.} =
-  # The index of the nearest bin to position `u` (in bins), −1 outside.
-  if not (u > -0.5 and u < float64(n) - 0.5): return -1
-  int(floor(u + 0.5))
+  # The index of the nearest bin to position `u` (in bins): bin i holds
+  # [i − 0.5, i + 0.5), and −1 is outside [−0.5, n − 0.5) or NaN.
+  # floor(u + 0.5) is not it: one ulp below an upper edge the sum rounds up
+  # to the next integer (pred(0.5) + 0.5 == 1.0), which gave the next bin
+  # and, on the last one, bin n. u − floor(u) is exact, so the half-way test
+  # is; the `min` only guards an n beyond float64's integers.
+  if not (u >= -0.5 and u < float64(n) - 0.5): return -1
+  let whole = floor(u)
+  min(int(whole) + int(u - whole >= 0.5), n - 1)
 
 func gridBin(b: Binning, u, v: float64): int {.inline.} =
   let i = nearest(v, b.inlines)
