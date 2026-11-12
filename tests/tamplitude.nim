@@ -65,7 +65,7 @@ proc record[T](): SynthGather[T] =
       for v in x: s += v * v
       x.addDc(sqrt(s / cols)) # one standard deviation
     elif r == injectedRow[inNoisy]:
-      x.addNoise(2.0, 77)     # some +25 dB
+      x.addNoise(2.0, 77) # some +25 dB
     elif r == injectedRow[inWeak]:
       for v in x.mitems: v *= 0.01
     elif r == injectedRow[inNan]:

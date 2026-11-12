@@ -18,10 +18,10 @@ proc close(a, b: float64, tol = 1e-6): bool = abs(a - b) <= tol
 type Ortho = object
   azimuthDeg, x0, y0: float64
   receiverLines, stations: int
-  interval, lineSpacing: float64 # receivers: along (a) and across (c) the azimuth
+  interval, lineSpacing: float64             # receivers: along (a) and across (c) the azimuth
   sourceLines, sourcePoints: int
   sourceInterval, sourceLineSpacing: float64 # sources: across (c) and along (a)
-  sourceA0, sourceC0: float64 # first source line (a), first source point (c)
+  sourceA0, sourceC0: float64                # first source line (a), first source point (c)
 
 func at(o: Ortho, a, c: float64): (float64, float64) =
   ## Frame position (a along the azimuth, c 90° clockwise of it) → (x, y).
@@ -63,7 +63,7 @@ block natural_grid:
     doAssert b.kind == bnGrid
     # midpoints: a in [(0 + 25)/2, (1000 + 1625)/2], c in [(0 − 90)/2, (1500 + 1710)/2]
     doAssert b.crosslines == int((1312.5 - 12.5) / 25) + 1, $b.crosslines # 53
-    doAssert b.inlines == int((1605 - -45) / 30) + 1, $b.inlines          # 56
+    doAssert b.inlines == int((1605 - -45) / 30) + 1, $b.inlines # 56
     let first = b.location(0)
     let (x0, y0) = o.at(12.5, -45)
     doAssert first.inline == 1 and first.crossline == 1
@@ -355,9 +355,9 @@ proc swathTraces(o: Ortho, fateOf: proc (n: int): Fate, keys: var seq[TraceKeys]
       k.offset = hypot(rx - sx, ry - sy)
       if n mod 2 == 0: (k.cmpX, k.cmpY) = ((sx + rx) / 2, (sy + ry) / 2) # else NaN: from coordinates
       k.status = case fate
-                 of fDead: tsDead
-                 of fAux: tsAuxiliary
-                 else: (if n mod 3 == 0: tsUnknown else: tsLive)
+        of fDead: tsDead
+        of fAux: tsAuxiliary
+        else: (if n mod 3 == 0: tsUnknown else: tsLive)
       if fate == fFailed: failed.add keys.len
       keys.add k
 
@@ -445,7 +445,8 @@ block actual_fold:
   bare.addFold(rowsOf(lone, @[0]))
   doAssert bare.noCoordinates == 1 and bare.binned == 0
   # different binnings are refused
-  doAssertRaises(ValueError): discard foldDifference(pre, initFoldMap(surveyGrid(g, binInline = 10)))
+  doAssertRaises(ValueError): discard foldDifference(pre, initFoldMap(surveyGrid(g,
+      binInline = 10)))
 
 block actual_header_binning:
   let b = inlineCrosslineBinning(101, 3, 1001, 4)

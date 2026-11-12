@@ -79,34 +79,34 @@ type
   AmplitudeParams* = object
     ## What the amplitude QC measures and its thresholds; the defaults
     ## suit field records.
-    startMs*: float64 = -Inf   ## Window start on the trace axis, ms.
-    endMs*: float64 = Inf      ## Window end, ms (both ends included).
-    clipRun*: int = 3          ## Shortest run at the maximum that is a clip (≥ 2).
+    startMs*: float64 = -Inf ## Window start on the trace axis, ms.
+    endMs*: float64 = Inf ## Window end, ms (both ends included).
+    clipRun*: int = 3 ## Shortest run at the maximum that is a clip (≥ 2).
     clipTolerance*: float64 = 0 ## Relative: `|x| ≥ (1 − tol)·max` is at the maximum.
     spikeFactor*: float64 = 10 ## A spike: deviation > factor × the neighbours' RMS.
     spikeWindowMs*: float64 = 20 ## Half-width of the neighbourhood, ms.
-    dcRatio*: float64 = 0.2    ## DC offset: `|mean| > dcRatio × σ` (Inf: off).
-    outlierZ*: float64 = 3.5   ## Weak / noisy: `|robustZ| > outlierZ` (Inf: off).
+    dcRatio*: float64 = 0.2 ## DC offset: `|mean| > dcRatio × σ` (Inf: off).
+    outlierZ*: float64 = 3.5 ## Weak / noisy: `|robustZ| > outlierZ` (Inf: off).
 
   TraceAmplitude* = object
     ## The amplitude statistics of one trace (module documentation).
-    samples*: int       ## Samples examined: live, in the window.
-    rmsDb*: float64     ## `20·log₁₀ RMS` of the finite samples; NaN without any.
-    maxDb*: float64     ## `20·log₁₀ max |x|`; NaN without finite samples.
-    mean*: float64      ## The mean (DC level); NaN without finite samples.
-    nonFinite*: int     ## NaN and Inf samples.
-    clipped*: int       ## Samples in clipped runs.
-    spikes*: int        ## Spike samples.
+    samples*: int           ## Samples examined: live, in the window.
+    rmsDb*: float64         ## `20·log₁₀ RMS` of the finite samples; NaN without any.
+    maxDb*: float64         ## `20·log₁₀ max |x|`; NaN without finite samples.
+    mean*: float64          ## The mean (DC level); NaN without finite samples.
+    nonFinite*: int         ## NaN and Inf samples.
+    clipped*: int           ## Samples in clipped runs.
+    spikes*: int            ## Spike samples.
     robustZ*: float64 = NaN ## Of `rmsDb` in its record (`recordAmplitude`).
     flags*: set[AmplitudeFlag]
 
   RecordAmplitude* = object
     ## The amplitude statistics of one record.
-    traces*: int           ## Traces in the statistics (module documentation).
-    medianRmsDb*: float64  ## Their median `rmsDb`; NaN without traces.
-    madDb*: float64        ## The median absolute deviation of `rmsDb`, dB.
+    traces*: int                       ## Traces in the statistics (module documentation).
+    medianRmsDb*: float64              ## Their median `rmsDb`; NaN without traces.
+    madDb*: float64                    ## The median absolute deviation of `rmsDb`, dB.
     counts*: array[AmplitudeFlag, int] ## Traces with each flag.
-    flagged*: int          ## Traces with any flag.
+    flagged*: int                      ## Traces with any flag.
 
 proc badAmplitude(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
@@ -177,7 +177,7 @@ func traceAmplitudeImpl[T](x: openArray[T], half: int,
   var run = 0
   for i in 0 .. x.len:
     let v = (if i < x.len: float64(x[i]) else: 0.0)
-    let at = i < x.len and v - v == 0 and abs(v) >= level # Inf is not a clip
+    let at = i < x.len and v - v == 0 and abs(v) >= level         # Inf is not a clip
     if at: inc run
     else:
       if run >= p.clipRun: result.clipped += run
@@ -203,7 +203,7 @@ func traceAmplitudeImpl[T](x: openArray[T], half: int,
           else:
             win -= leaving
       let d = dev(i)
-      let count = min(i + half, x.len - 1) - max(i - half, 0) # neighbours
+      let count = min(i + half, x.len - 1) - max(i - half, 0)                     # neighbours
       let others = max(win - d, 0.0)
       if count > 0 and d > 0 and d * float64(count) > k2 * others:
         inc result.spikes

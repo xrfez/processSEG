@@ -119,14 +119,14 @@ block faults:
   echo "  ", c
   doAssert c.xpsRecord == shot.record and not c.recordMismatch and not c.sourceMismatch
   doAssert c.expected == 44
-  doAssert c.present == 44 - 3 - 1, $c.present             # dropped, mis-stationed
-  doAssert c.presentLive == c.present - 2                    # dead, failed
+  doAssert c.present == 44 - 3 - 1, $c.present # dropped, mis-stationed
+  doAssert c.presentLive == c.present - 2 # dead, failed
   doAssert c.missingStations == 4
   doAssert c.missing.len == 3, $c.missing
   doAssert c.missing[0] == StationRange(line: l0, firstPoint: p(3), lastPoint: p(4), count: 2)
   doAssert c.missing[1] == StationRange(line: l2, firstPoint: p(6), lastPoint: p(6), count: 1)
   doAssert c.missing[2] == StationRange(line: l2, firstPoint: p(9), lastPoint: p(9), count: 1)
-  doAssert c.unlisted == 2, $c.unlisted                      # mis-stationed, extra
+  doAssert c.unlisted == 2, $c.unlisted # mis-stationed, extra
   doAssert c.duplicates == 1 and c.channelMismatch == 2 and c.noStation == 1
   doAssert c.traces == kept.len and c.aux == 1 and c.dead == 1 and c.failed == 1
   doAssert c.live == kept.len - 3

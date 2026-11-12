@@ -80,7 +80,7 @@ block offsets:
   var t = initPatchTemplate(2, 11)
   t.stationOffset = 5
   t.lineOffset = 1 # the line pair one line higher in crossline
-  let shot = PatchShot(record: 9, source: stationKey(1004, 120, 1)) # j = 3, k = 20
+  let shot = PatchShot(record: 9, source: stationKey(1004, 120, 1))                   # j = 3, k = 20
   let gen = g.generateRelations([shot], t)
   # crossline grows towards lower line numbers here (lines grow anticlockwise)
   doAssert gen.len == 2 and gen[0].rcvLine == 1003 and gen[1].rcvLine == 1004, $runs(gen)

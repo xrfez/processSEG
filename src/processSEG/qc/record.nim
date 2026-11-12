@@ -56,15 +56,15 @@ import ../core/types
 type
   RecordMatch* = enum
     ## How a record's traces find their X record.
-    rmAuto = "auto"              ## By source station when the headers have one, else FFID.
-    rmSourceStation = "source"   ## By the header source station (`recordsAt`).
-    rmFieldRecord = "FFID"       ## By the header field record number.
+    rmAuto = "auto"            ## By source station when the headers have one, else FFID.
+    rmSourceStation = "source" ## By the header source station (`recordsAt`).
+    rmFieldRecord = "FFID"     ## By the header field record number.
 
   TraceMatch* = enum
     ## How traces find their X channels.
-    tmAuto = "auto"        ## By station when the headers have receiver stations, else channel.
-    tmStation = "station"  ## By receiver line and point.
-    tmChannel = "channel"  ## By the header channel number.
+    tmAuto = "auto"       ## By station when the headers have receiver stations, else channel.
+    tmStation = "station" ## By receiver line and point.
+    tmChannel = "channel" ## By the header channel number.
 
   StationRange* = object
     ## Consecutive X stations of one receiver line (in run order).
@@ -78,16 +78,16 @@ type
 
   RecordCompleteness* = object
     ## One field record against its X record (see the module documentation).
-    fieldRecord*: float64    ## Header FFID (NaN: none).
-    source*: StationKey      ## Header source station (`hasSource`).
+    fieldRecord*: float64         ## Header FFID (NaN: none).
+    source*: StationKey           ## Header source station (`hasSource`).
     hasSource*: bool
-    recordMatch*: RecordMatch ## How the X record was found (never `rmAuto`).
-    traceMatch*: TraceMatch   ## How traces were matched (never `tmAuto`).
-    xpsRecord*: int64        ## The X record; −1 for none (no match, or ambiguous).
-    candidates*: seq[int64]  ## The source station's X records (`rmSourceStation`).
-    xpsSource*: StationKey   ## The X record's source.
-    recordMismatch*: bool    ## The X record's number is not the header FFID.
-    sourceMismatch*: bool    ## The X record's source is not the header source.
+    recordMatch*: RecordMatch     ## How the X record was found (never `rmAuto`).
+    traceMatch*: TraceMatch       ## How traces were matched (never `tmAuto`).
+    xpsRecord*: int64             ## The X record; −1 for none (no match, or ambiguous).
+    candidates*: seq[int64]       ## The source station's X records (`rmSourceStation`).
+    xpsSource*: StationKey        ## The X record's source.
+    recordMismatch*: bool         ## The X record's number is not the header FFID.
+    sourceMismatch*: bool         ## The X record's source is not the header source.
     traces*, live*, dead*, aux*, failed*: int
     expected*, present*, presentLive*, unlisted*, duplicates*, channelMismatch*: int
     noStation*: int
@@ -96,12 +96,12 @@ type
 
   CompletenessSummary* = object
     ## Many records against the X records of a survey.
-    records*: int            ## Records checked.
-    matched*: int            ## With an X record.
+    records*: int                                                                  ## Records checked.
+    matched*: int                                                                  ## With an X record.
     unmatched*, ambiguous*: int ## No X record; several candidates, none chosen.
     recordMismatches*, sourceMismatches*: int
     xpsWithoutData*: seq[int64] ## X records no checked record matched, ascending.
-    expected*, present*, presentLive*, missing*, unlisted*, duplicates*: int ## Totals.
+    expected*, present*, presentLive*, missing*, unlisted*, duplicates*: int       ## Totals.
 
 func missingStations*(c: RecordCompleteness): int {.inline.} =
   ## Expected stations not in the data (`expected − present`).
@@ -119,7 +119,7 @@ func `$`*(c: RecordCompleteness): string =
               else: "no X record")
            else: "XPS " & $c.xpsRecord
   result.add " (by " & (if c.recordMatch == rmSourceStation: "source " & $c.source
-                        else: "FFID " & fmt(c.fieldRecord)) & ", traces by " & $c.traceMatch & ")"
+    else: "FFID " & fmt(c.fieldRecord)) & ", traces by " & $c.traceMatch & ")"
   if c.recordMismatch: result.add "; FFID " & fmt(c.fieldRecord) & " differs"
   if c.sourceMismatch: result.add "; X source " & $c.xpsSource & " differs from header " & $c.source
   result.add ": " & $c.expected & " expected, " & $c.present & " present (" & $c.presentLive &
@@ -131,7 +131,7 @@ func `$`*(c: RecordCompleteness): string =
 type
   Seen = object
     seismic, live: int32
-    channel: float64      ## Header channel of the first seismic trace.
+    channel: float64 ## Header channel of the first seismic trace.
     components: set[uint8]
     listed: bool
 
@@ -216,7 +216,7 @@ proc check[S: ChunkMeta | TraceRows](g: SurveyGeometry, src: S, recordMatch: Rec
         if not (finite(k.rcvLine) and finite(k.rcvPoint)):
           inc result.noStation
           continue
-        stationKey(k.rcvLine, k.rcvPoint, max(k.rcvIndex, 0'i16)) # 0: unknown index
+        stationKey(k.rcvLine, k.rcvPoint, max(k.rcvIndex, 0'i16))             # 0: unknown index
       else:
         if not finite(k.channel):
           inc result.noStation

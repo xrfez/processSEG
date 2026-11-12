@@ -56,15 +56,15 @@ type
   LineStation* = object
     ## One receiver station of a line in the layout frame.
     point*: float64
-    index*: int16   ## Point index, as the R record has it.
+    index*: int16                ## Point index, as the R record has it.
     inline*, crossline*: float64 ## Position along and across the receiver lines.
 
   ReceiverLine* = object
     ## One receiver line in the layout frame.
-    line*: float64                ## Line number.
-    stations*: seq[LineStation]   ## Stations with coordinates, by point (then index).
-    pointStep*: float64           ## Median point-number increment between its stations (NaN: one station).
-    crossline*: float64           ## Mean crossline position of its stations.
+    line*: float64                  ## Line number.
+    stations*: seq[LineStation]     ## Stations with coordinates, by point (then index).
+    pointStep*: float64             ## Median point-number increment between its stations (NaN: one station).
+    crossline*: float64             ## Mean crossline position of its stations.
     inlineMin*, inlineMax*: float64 ## Inline extent of its stations.
     short*: bool
       ## Fewer stations than `minLineStations`: an infill or relocated
@@ -72,37 +72,37 @@ type
 
   ReceiverLayout* = object
     ## The receiver lines of a survey: direction, spacing and extent.
-    azimuthDeg*: float64 ## Inline direction, degrees clockwise from north.
-    interval*: float64   ## Median distance between consecutive stations of a line.
-    lineSpacing*: float64 ## Median crossline distance between adjacent lines that are not short.
-    minLineStations*: int ## Stations a line needs not to be `short`.
+    azimuthDeg*: float64      ## Inline direction, degrees clockwise from north.
+    interval*: float64        ## Median distance between consecutive stations of a line.
+    lineSpacing*: float64     ## Median crossline distance between adjacent lines that are not short.
+    minLineStations*: int     ## Stations a line needs not to be `short`.
     lines*: seq[ReceiverLine] ## By ascending crossline position.
 
   PatchSide* = enum
     ## A side of a patch, relative to its source.
-    psInlineBack = "inline back"       ## Towards decreasing inline position.
-    psInlineForward = "inline forward" ## Along the azimuth.
-    psCrosslineLeft = "crossline left" ## Anticlockwise of the azimuth.
+    psInlineBack = "inline back"         ## Towards decreasing inline position.
+    psInlineForward = "inline forward"   ## Along the azimuth.
+    psCrosslineLeft = "crossline left"   ## Anticlockwise of the azimuth.
     psCrosslineRight = "crossline right" ## Clockwise of the azimuth.
 
   PatchLine* = object
     ## The stations of one receiver line in a record.
     line*: float64
-    stations*: int             ## Distinct stations (channels of one component).
+    stations*: int                   ## Distinct stations (channels of one component).
     firstPoint*, lastPoint*: float64 ## Lowest and highest point number.
 
   RecordPatch* = object
     ## The receivers of one X record.
     record*: int64
     source*: StationKey
-    sourceX*, sourceY*: float64 ## NaN when the source has no coordinates.
-    channels*: int             ## Channels listed (all components).
-    lines*: seq[PatchLine]     ## Ascending line number.
-    noCoordinates*: int        ## Listed receiver stations without coordinates.
+    sourceX*, sourceY*: float64     ## NaN when the source has no coordinates.
+    channels*: int                  ## Channels listed (all components).
+    lines*: seq[PatchLine]          ## Ascending line number.
+    noCoordinates*: int             ## Listed receiver stations without coordinates.
     inlineMin*, inlineMax*: float64 ## Receiver extent relative to the source (NaN: unknown).
     crosslineMin*, crosslineMax*: float64
     maxOffset*: float64
-    clipped*: set[PatchSide]   ## Sides where the receivers stop short of the full patch.
+    clipped*: set[PatchSide]        ## Sides where the receivers stop short of the full patch.
 
   Spread* = object
     ## Five-number summary (nearest rank); NaN when empty.
@@ -111,13 +111,13 @@ type
   PatchDescription* = object
     ## The patches of every X record of a survey, and their summary.
     layout*: ReceiverLayout
-    records*: seq[RecordPatch] ## Ascending record number.
-    lines*, channels*: Spread  ## Over all records.
+    records*: seq[RecordPatch]                                ## Ascending record number.
+    lines*, channels*: Spread                                 ## Over all records.
     inlineHalfWidth*, crosslineHalfWidth*, maxOffset*: Spread ## Over records with coordinates.
-    boxInline*, boxCrossline*: float64 ## The full patch: median half-widths.
+    boxInline*, boxCrossline*: float64                        ## The full patch: median half-widths.
     clippedRecords*: int
-    noSource*: int             ## Records whose source has no coordinates.
-    regular*: bool             ## Unclipped records share one lines × stations template.
+    noSource*: int                                            ## Records whose source has no coordinates.
+    regular*: bool ## Unclipped records share one lines × stations template.
     templateLines*, templateChannels*: int
       ## Lines × stations per line: exact when `regular`, else medians of the
       ## unclipped records (stations per line from channels / lines).
@@ -391,8 +391,8 @@ type
 
   PatchTemplate* = object
     ## A lines × channels patch (see `generateRelations`).
-    lines*: int    ## Template lines (`peRoll`, `peShift`).
-    channels*: int ## Station slots per line.
+    lines*: int               ## Template lines (`peRoll`, `peShift`).
+    channels*: int            ## Station slots per line.
     lineOffset*: float64
       ## Patch centre relative to the source, in lines: towards higher
       ## crossline (`ppCoordinates`) or higher line numbers (`ppNumbers`).
@@ -407,13 +407,13 @@ type
       ## `ppNumbers`: the (fractional) receiver line and point at the source,
       ## from its line and point numbers.
     # Distance field (11.9): limits around the source; Inf: none.
-    inlineHalfWidth* = Inf    ## Box half-width along `boxAzimuthDeg`.
+    inlineHalfWidth* = Inf ## Box half-width along `boxAzimuthDeg`.
     crosslineHalfWidth* = Inf ## Box half-width across it (90° clockwise).
-    boxAzimuthDeg* = NaN      ## The box's inline direction; NaN: the receiver-line azimuth.
+    boxAzimuthDeg* = NaN ## The box's inline direction; NaN: the receiver-line azimuth.
     inlineDistance*, crosslineDistance*: float64
       ## Box (and radius) centre relative to the source, in distance along and
       ## across `boxAzimuthDeg`.
-    radius* = Inf    ## Distance from the box centre.
+    radius* = Inf ## Distance from the box centre.
     maxOffset* = Inf ## Distance from the source.
 
   PatchShot* = object
@@ -526,8 +526,8 @@ type
     a, c: float64 # in the box frame
 
   DistanceField = object
-    az: float64                  # box azimuth
-    stations: seq[Placed]        # every layout station, with its grid position
+    az: float64                     # box azimuth
+    stations: seq[Placed]           # every layout station, with its grid position
     aMin, aMax, cMin, cMax: float64 # their extent in the box frame
 
 func xyOf(layout: ReceiverLayout, st: LineStation): (float64, float64) {.inline.} =
@@ -767,7 +767,7 @@ type
     record*: int64
     listed*, generated*, common*: int
     missing*: seq[StationKey] ## Listed, not generated (line, point order).
-    extra*: seq[StationKey]   ## Generated, not listed: e.g. receivers dropped in the field.
+    extra*: seq[StationKey] ## Generated, not listed: e.g. receivers dropped in the field.
 
 func jaccard*(a: RecordAgreement): float64 =
   ## common / (listed ∪ generated); 1 when both are empty.

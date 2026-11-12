@@ -254,9 +254,9 @@ type
     ## What a `FoldMap` counts besides the fold.
     offsetBounds*: seq[float64]
       ## Ascending offset class edges; n edges make n − 1 classes (none: no classes).
-    azimuthSectors*: int    ## Sectors of the source → receiver bearing (0: none).
+    azimuthSectors*: int     ## Sectors of the source → receiver bearing (0: none).
     sectorStartDeg*: float64 ## Start of sector 0, degrees clockwise from north.
-    offsetRange*: bool      ## Keep each bin's minimum and maximum offset.
+    offsetRange*: bool       ## Keep each bin's minimum and maximum offset.
 
   FoldMap* = object
     ## Source–receiver pairs per bin; build it with `initFoldMap` or

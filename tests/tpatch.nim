@@ -62,7 +62,7 @@ block regular_template:
       var expected: set[PatchSide]
       if t.sourceStation - 5 < 0: expected.incl psInlineBack
       if t.sourceStation + 5 > 40: expected.incl psInlineForward
-      if t.sourceLine - 1 < 0: expected.incl psCrosslineRight  # lower lines: clockwise
+      if t.sourceLine - 1 < 0: expected.incl psCrosslineRight # lower lines: clockwise
       if t.sourceLine + 2 > 7: expected.incl psCrosslineLeft
       doAssert r.clipped == expected, $r.record & ": " & $r.clipped & " vs " & $expected
       if expected != {}: inc clipped
