@@ -108,6 +108,44 @@ block header_columns:
   doAssertRaises ValueError: staticsInto(meta, d, short)
   doAssertRaises ValueError: staticsInto(meta, d, [st], out1)
 
+block unset_datums_take_the_requested_datum:
+  # Header columns whose datum elevations are unknown (NaN, as parseSEG
+  # gives them for SEG-Y headers that leave bytes 53-60 unset, and for SEG-D
+  # and SEG-2) give the statics of the requested datum: the same as columns
+  # that hold that datum, and as the form without columns.
+  let d = datumStatics(datumZ = 100, vReplacement = 2000)
+  var g = cmpGather[float32](0, [100.0, 200, 300], 10, dtMs = 2)
+  for r, (s, z) in [(100.0, 86.09), (131.5, 120.25), (99.0, NaN)]:
+    g.keys[r].srcZ = s
+    g.keys[r].rcvZ = z
+  let meta = initChunkMeta(g.rows, dtMs = 2)
+  var unset = newSeq[TraceStatics](3)
+  var same = newSeq[TraceStatics](3)
+  for i in 0..<3:
+    unset[i] = initTraceStatics()
+    doAssert unset[i].srcDatum.isNaN and unset[i].rcvDatum.isNaN
+    same[i] = initTraceStatics()
+    same[i].srcDatum = d.datumZ
+    same[i].rcvDatum = d.datumZ
+  var byKeys, byUnset, bySame = newSeq[float64](3)
+  staticsInto(meta, d, byKeys)
+  staticsInto(meta, d, unset, byUnset)
+  staticsInto(meta, d, same, bySame)
+  for i in 0..<2:
+    doAssert byUnset[i] == byKeys[i] and bySame[i] == byKeys[i], $i
+    doAssert d.staticMs(g.keys[i], unset[i]) == d.staticMs(g.keys[i], same[i])
+  doAssert near(byKeys[0], 6.955) and near(byKeys[1], -25.875)
+  doAssert byKeys[2].isNaN and byUnset[2].isNaN and bySame[2].isNaN
+  # One datum unknown, the other given: each end takes its own.
+  var mixed = initTraceStatics()
+  mixed.srcDatum = 120
+  doAssert near(d.staticMs(g.keys[1], mixed), -(131.5 - 120 + 120.25 - 100) / 2)
+  # An elevation of 0 is a datum (sea level), not "unset": only NaN is.
+  var sea = initTraceStatics()
+  sea.srcDatum = 0
+  sea.rcvDatum = 0
+  doAssert near(d.staticMs(g.keys[0], sea), -(100 + 86.09) / 2)
+
 block nan_and_dead_rows_untouched:
   var g = cmpGather[float32](0, [100.0, 200, 300, 400], 50, dtMs = 2)
   for r in 0..<g.len:

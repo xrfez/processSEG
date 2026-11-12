@@ -24,7 +24,11 @@
 ## fields on demand (`traceStatics`; NaN where unknown, and for SEG-D and
 ## SEG-2). The `TraceStatics` forms take a trace's own datum elevations
 ## (`srcDatum`, `rcvDatum`) and the source depth where the headers give
-## them, and the datum of `DatumStatics` otherwise. `headerStaticMs` is the
+## them, and the datum of `DatumStatics` otherwise: for columns with NaN
+## datums they give the statics of the form without columns. Only NaN is
+## "not given": a datum elevation of 0 is a datum (sea level), so what
+## decides whether a file's zero datum fields are a datum or unset is
+## parseSEG's reading of them, not this module. `headerStaticMs` is the
 ## source plus group static the headers record (bytes 99-102), for data
 ## whose statics were computed elsewhere; `totalStatic` (bytes 103-104) is
 ## what was already applied to the samples, which processSEG never undoes
