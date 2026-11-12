@@ -20,7 +20,7 @@ block layout:
     doAssert close(l.interval, 50) and close(l.lineSpacing, 200)
     doAssert l.lines.len == 8
     for line in l.lines:
-      doAssert line.stations == 41 and close(line.inlineMax - line.inlineMin, 40 * 50)
+      doAssert line.stations.len == 41 and close(line.inlineMax - line.inlineMin, 40 * 50)
     # crossline grows 90° clockwise of the azimuth: line numbers grow anticlockwise here
     doAssert l.lines[0].line == 1008 and l.lines[^1].line == 1001
     # a given azimuth is kept

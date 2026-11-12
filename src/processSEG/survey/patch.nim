@@ -1,5 +1,6 @@
 ## Receiver patches of a survey: which receivers each shot was recorded on,
-## described as a template (lines × channels) and as a distance box.
+## described as a template (lines × channels) and as a distance box, and X
+## records generated from a template (`generateRelations`).
 ##
 ## ```nim
 ## var g = initSurveyGeometry()                   # parseSEG
@@ -8,6 +9,7 @@
 ## echo p                                         # "22 × 160 template, ..." or the box
 ## for r in p.records:
 ##   if r.clipped != {}: echo r.record, " clipped at ", r.clipped
+## let xs = g.generateRelations(f.patchShots, initPatchTemplate(22, 160))
 ## ```
 ##
 ## **Frame.** Distances are measured along the receiver lines (*inline*, the
@@ -38,23 +40,40 @@
 ## *regular* when they all have the same number of lines and stations on
 ## every line (e.g. 22 × 160); otherwise the medians are nominal and the
 ## box describes the patch.
+##
+## **Generation.** `generateRelations` lays a `PatchTemplate` over the R
+## stations for each `PatchShot` (from an S file's order with `patchShots`,
+## or the caller's record numbers): roll (clip), shift or static at the
+## edges, the source placed by coordinates or by line and point numbers.
+## The result is parseSEG `SpsRelation`s (D14: parseSEG writes them).
 
 import std/[algorithm, math, sets, strutils, tables]
 import parseSEG
 
 type
+  LineStation* = object
+    ## One receiver station of a line in the layout frame.
+    point*: float64
+    index*: int16   ## Point index, as the R record has it.
+    inline*, crossline*: float64 ## Position along and across the receiver lines.
+
   ReceiverLine* = object
     ## One receiver line in the layout frame.
     line*: float64                ## Line number.
-    stations*: int                ## Receiver stations with coordinates.
+    stations*: seq[LineStation]   ## Stations with coordinates, by point (then index).
+    pointStep*: float64           ## Median point-number increment between its stations (NaN: one station).
     crossline*: float64           ## Mean crossline position of its stations.
     inlineMin*, inlineMax*: float64 ## Inline extent of its stations.
+    short*: bool
+      ## Fewer stations than `minLineStations`: an infill or relocated
+      ## line, not a template line, and left out of the line spacing.
 
   ReceiverLayout* = object
     ## The receiver lines of a survey: direction, spacing and extent.
     azimuthDeg*: float64 ## Inline direction, degrees clockwise from north.
     interval*: float64   ## Median distance between consecutive stations of a line.
-    lineSpacing*: float64 ## Median crossline distance between adjacent lines.
+    lineSpacing*: float64 ## Median crossline distance between adjacent lines that are not short.
+    minLineStations*: int ## Stations a line needs not to be `short`.
     lines*: seq[ReceiverLine] ## By ascending crossline position.
 
   PatchSide* = enum
@@ -142,21 +161,34 @@ proc lookup(t: Table[StationKey, Coordinates], s: StationKey, c: var Coordinates
       c = t[k]
       return true
 
-proc receiverLayout*(g: SurveyGeometry, azimuthDeg = NaN): ReceiverLayout =
-  ## Measures the receiver lines of `g` (its R stations). The azimuth is
-  ## measured unless given. Raises `ValueError` when no line has two
-  ## stations with coordinates and no azimuth is given.
-  var byLine: Table[float64, seq[(float64, Coordinates)]]
+proc receiverLayout*(g: SurveyGeometry, azimuthDeg = NaN, interval = NaN, lineSpacing = NaN,
+    minLineStations = 0): ReceiverLayout =
+  ## Measures the receiver lines of `g` (its R stations). The azimuth, the
+  ## station interval and the line spacing are measured unless given (> 0).
+  ## A line with fewer than `minLineStations` stations is `short` (0: half
+  ## the median line's count). Raises `ValueError` for a given value that is
+  ## not positive and finite, or when a value cannot be measured (no line with
+  ## two stations, or one line only) and is not given.
+  for (v, name) in [(interval, "interval"), (lineSpacing, "lineSpacing")]:
+    if not v.isNaN and not (v > 0 and v < Inf):
+      raise newException(ValueError, "receiverLayout: " & name & " must be > 0 and finite")
+  if not azimuthDeg.isNaN and abs(azimuthDeg) == Inf:
+    raise newException(ValueError, "receiverLayout: azimuthDeg must be finite")
+  if minLineStations < 0:
+    raise newException(ValueError, "receiverLayout: minLineStations must be ≥ 0")
+  var byLine: Table[float64, seq[(LineStation, Coordinates)]]
   for k, c in g.table.receivers:
     if not (c.x.isNaN or c.y.isNaN):
-      byLine.mgetOrPut(k.line, @[]).add (k.point, c)
+      byLine.mgetOrPut(k.line, @[]).add (LineStation(point: k.point, index: k.index), c)
   var lineNumbers: seq[float64]
   for l in byLine.keys: lineNumbers.add l
   lineNumbers.sort
   var bearings, steps: seq[float64]
   for l in lineNumbers:
     var st = byLine[l]
-    st.sort(proc (a, b: (float64, Coordinates)): int = cmp(a[0], b[0]))
+    st.sort(proc (a, b: (LineStation, Coordinates)): int =
+      result = cmp(a[0].point, b[0].point)
+      if result == 0: result = cmp(a[0].index, b[0].index))
     for i in 1 ..< st.len:
       let (dx, dy) = (st[i][1].x - st[i - 1][1].x, st[i][1].y - st[i - 1][1].y)
       let d = hypot(dx, dy)
@@ -172,22 +204,46 @@ proc receiverLayout*(g: SurveyGeometry, azimuthDeg = NaN): ReceiverLayout =
     let reference = bearings[0] # unwrap around one bearing, so 359° and 1° agree
     for b in bearings.mitems: b = reference + floorMod(b - reference + 180.0, 360.0) - 180.0
     result.azimuthDeg = floorMod(median(bearings), 360.0)
-  result.interval = median(steps)
+  result.interval = if interval.isNaN: median(steps) else: interval
+  if result.interval.isNaN:
+    raise newException(ValueError, "receiverLayout: no receiver line has two stations " &
+      "with coordinates; give interval")
+  var counts: seq[float64]
+  for l in lineNumbers: counts.add float64(byLine[l].len)
+  result.minLineStations = if minLineStations > 0: minLineStations
+                           else: max(1, int(ceil(median(counts) / 2)))
   for l in lineNumbers:
-    var line = ReceiverLine(line: l, stations: byLine[l].len, inlineMin: Inf, inlineMax: -Inf)
+    var line = ReceiverLine(line: l, inlineMin: Inf, inlineMax: -Inf, pointStep: NaN)
     var c = 0.0
-    for (_, p) in byLine[l]:
-      let a = inlineOf(result.azimuthDeg, p.x, p.y)
-      line.inlineMin = min(line.inlineMin, a)
-      line.inlineMax = max(line.inlineMax, a)
-      c += crosslineOf(result.azimuthDeg, p.x, p.y)
-    line.crossline = c / float64(line.stations)
+    var pointSteps: seq[float64]
+    for (st, p) in byLine[l]:
+      var st = st
+      st.inline = inlineOf(result.azimuthDeg, p.x, p.y)
+      st.crossline = crosslineOf(result.azimuthDeg, p.x, p.y)
+      line.inlineMin = min(line.inlineMin, st.inline)
+      line.inlineMax = max(line.inlineMax, st.inline)
+      c += st.crossline
+      if line.stations.len > 0 and st.point > line.stations[^1].point:
+        pointSteps.add st.point - line.stations[^1].point
+      line.stations.add st
+    line.crossline = c / float64(line.stations.len)
+    line.pointStep = median(pointSteps)
+    line.short = line.stations.len < result.minLineStations
     result.lines.add line
   result.lines.sort(proc (a, b: ReceiverLine): int = cmp(a.crossline, b.crossline))
-  var gaps: seq[float64]
-  for i in 1 ..< result.lines.len:
-    gaps.add result.lines[i].crossline - result.lines[i - 1].crossline
-  result.lineSpacing = median(gaps)
+  if not lineSpacing.isNaN:
+    result.lineSpacing = lineSpacing
+  else:
+    var gaps: seq[float64]
+    var last = NaN
+    for line in result.lines:
+      if not line.short:
+        if not last.isNaN: gaps.add line.crossline - last
+        last = line.crossline
+    result.lineSpacing = median(gaps)
+    if result.lineSpacing.isNaN:
+      raise newException(ValueError, "receiverLayout: fewer than two receiver lines; " &
+        "give lineSpacing")
 
 proc describeRecord(g: SurveyGeometry, layout: ReceiverLayout, record: int64): RecordPatch =
   result = RecordPatch(record: record, sourceX: NaN, sourceY: NaN, inlineMin: NaN,
@@ -304,6 +360,270 @@ proc describePatches*(g: SurveyGeometry, azimuthDeg = NaN,
   ## `describePatches` in the measured receiver layout of `g` (the azimuth
   ## measured unless given).
   g.describePatches(g.receiverLayout(azimuthDeg), clipTolerance)
+
+# ------------------------------------------------------------- generation --
+
+type
+  PatchEdge* = enum
+    ## What a template patch does at the survey edges.
+    peRoll = "roll"     ## Centred on the source, clipped at the edges (roll on / roll off).
+    peShift = "shift"   ## Kept whole, shifted inside the survey: the source is off-centre.
+    peStatic = "static" ## One fixed spread for every shot (`PatchTemplate.staticBox`).
+
+  PatchPlacement* = enum
+    ## How the source's place in the receiver grid is found.
+    ppCoordinates = "coordinates" ## By position: lines by crossline, stations by inline.
+    ppNumbers = "numbers"         ## By arithmetic on the line and point numbers (`NumberMap`).
+
+  NumberMap* = object
+    ## receiver value = `scale` × source value + `offset`.
+    scale* = 1.0
+    offset* = 0.0
+
+  PatchBox* = object
+    ## A box in the layout frame, absolute positions; everything by default.
+    inlineMin* = -Inf
+    inlineMax* = Inf
+    crosslineMin* = -Inf
+    crosslineMax* = Inf
+
+  PatchTemplate* = object
+    ## A lines × channels patch (see `generateRelations`).
+    lines*: int    ## Template lines (`peRoll`, `peShift`).
+    channels*: int ## Station slots per line.
+    lineOffset*: float64
+      ## Patch centre relative to the source, in lines: towards higher
+      ## crossline (`ppCoordinates`) or higher line numbers (`ppNumbers`).
+    stationOffset*: float64
+      ## Patch centre relative to the source, in stations: along the azimuth
+      ## (`ppCoordinates`) or towards higher points (`ppNumbers`); e.g.
+      ## `channels / 2` for an off-end spread.
+    edge* = peRoll
+    staticBox*: PatchBox ## `peStatic`: the receivers inside (default: all).
+    placement* = ppCoordinates
+    lineMap*, pointMap*: NumberMap
+      ## `ppNumbers`: the (fractional) receiver line and point at the source,
+      ## from its line and point numbers.
+
+  PatchShot* = object
+    ## A field record to generate: its number and source station.
+    record*: int64
+    source*: StationKey
+
+func initPatchTemplate*(lines, channels: int, edge = peRoll): PatchTemplate =
+  ## A centred `lines × channels` template.
+  PatchTemplate(lines: lines, channels: channels, edge: edge)
+
+proc patchShots*(f: SpsFile, firstRecord = 1'i64): seq[PatchShot] =
+  ## One shot per S record with a numeric line and point, in file order,
+  ## numbered from `firstRecord`.
+  var record = firstRecord
+  for p in f.points:
+    if p.kind == pkSource and not (p.line.isNaN or p.point.isNaN):
+      result.add PatchShot(record: record, source: stationKey(p.line, p.point, int16(p.index)))
+      inc record
+
+proc patchShots*(g: SurveyGeometry, firstRecord = 1'i64): seq[PatchShot] =
+  ## One shot per source station of `g`, in line, point, index order,
+  ## numbered from `firstRecord`.
+  var keys: seq[StationKey]
+  for k in g.table.sources.keys: keys.add k
+  keys.sort(proc (a, b: StationKey): int =
+    result = cmp(a.line, b.line)
+    if result == 0: result = cmp(a.point, b.point)
+    if result == 0: result = cmp(a.index, b.index))
+  for i, k in keys: result.add PatchShot(record: firstRecord + int64(i), source: k)
+
+func roundUp(x: float64): int {.inline.} =
+  ## Nearest integer, ties up (with slack for rounding error).
+  int(floor(x + 0.5 + 1e-9))
+
+func fractionalIndex(xs: openArray[float64], v, step: float64): float64 =
+  ## Fractional position of `v` among ascending `xs`, extrapolated by `step`.
+  if v <= xs[0]: return (v - xs[0]) / step
+  if v >= xs[^1]: return float64(xs.high) + (v - xs[^1]) / step
+  let i = xs.upperBound(v) - 1
+  float64(i) + (v - xs[i]) / (xs[i + 1] - xs[i])
+
+func slotOf(line: ReceiverLine, i: int): int {.inline.} =
+  if line.pointStep.isNaN: 0
+  else: int(round((line.stations[i].point - line.stations[0].point) / line.pointStep))
+
+func slotAt(line: ReceiverLine, inline, interval: float64): float64 =
+  ## Fractional slot of an inline position, from the stations' positions
+  ## (extrapolated by one slot per interval).
+  let st = line.stations
+  let d = if st[^1].inline >= st[0].inline: 1.0 else: -1.0
+  let a = d * inline
+  if st.len == 1 or a <= d * st[0].inline:
+    return float64(line.slotOf(0)) + (a - d * st[0].inline) / interval
+  if a >= d * st[^1].inline:
+    return float64(line.slotOf(st.high)) + (a - d * st[^1].inline) / interval
+  var lo = 0 # last station at or before a (positions assumed monotone)
+  var hi = st.high
+  while hi - lo > 1:
+    let m = (lo + hi) div 2
+    if d * st[m].inline <= a: lo = m else: hi = m
+  let (a0, a1) = (d * st[lo].inline, d * st[hi].inline)
+  let f = if a1 > a0: (a - a0) / (a1 - a0) else: 0.0
+  float64(line.slotOf(lo)) + f * float64(line.slotOf(hi) - line.slotOf(lo))
+
+type Picked = object
+  line, step: float64
+  st: LineStation
+
+proc validate(t: PatchTemplate) =
+  if t.edge != peStatic and (t.lines < 1 or t.channels < 1):
+    raise newException(ValueError, "generateRelations: template lines and channels must be ≥ 1")
+  for v in [t.lineOffset, t.stationOffset, t.lineMap.scale, t.lineMap.offset,
+      t.pointMap.scale, t.pointMap.offset]:
+    if v.isNaN or abs(v) == Inf:
+      raise newException(ValueError, "generateRelations: offsets and number maps must be finite")
+
+proc pickTemplate(layout: ReceiverLayout, main: seq[int], t: PatchTemplate,
+    cl, sa, srcPoint: float64, picked: var seq[Picked]) =
+  ## Roll or shift: the template lines around fractional line `cl`, the
+  ## station slots around the source on each, then short lines inside.
+  var first = roundUp(cl - float64(t.lines - 1) / 2 + t.lineOffset)
+  if t.edge == peShift:
+    first = if main.len >= t.lines: clamp(first, 0, main.len - t.lines) else: 0
+  var amin = Inf
+  var amax = -Inf
+  var xmin = Inf
+  var xmax = -Inf
+  for li in first ..< first + t.lines:
+    if li < 0 or li >= main.len: continue
+    let line = layout.lines[main[li]]
+    let u = if t.placement == ppNumbers:
+              (if line.pointStep.isNaN: 0.0
+               else: (t.pointMap.scale * srcPoint + t.pointMap.offset - line.stations[0].point) /
+                 line.pointStep) + t.stationOffset
+            else:
+              let d = if line.stations[^1].inline >= line.stations[0].inline: 1.0 else: -1.0
+              line.slotAt(sa, layout.interval) + d * t.stationOffset
+    var s0 = roundUp(u - float64(t.channels - 1) / 2)
+    if t.edge == peShift:
+      let maxSlot = line.slotOf(line.stations.high)
+      s0 = if maxSlot + 1 >= t.channels: clamp(s0, 0, maxSlot - t.channels + 1) else: 0
+    let s1 = s0 + t.channels - 1
+    xmin = min(xmin, line.crossline)
+    xmax = max(xmax, line.crossline)
+    for i in 0 ..< line.stations.len:
+      let s = line.slotOf(i)
+      if s >= s0 and s <= s1:
+        picked.add Picked(line: line.line, step: line.pointStep, st: line.stations[i])
+        amin = min(amin, line.stations[i].inline)
+        amax = max(amax, line.stations[i].inline)
+  if amin > amax: return
+  let half = layout.lineSpacing / 2
+  for line in layout.lines:
+    if line.short and line.crossline >= xmin - half and line.crossline <= xmax + half:
+      for st in line.stations:
+        if st.inline >= amin - 1e-9 and st.inline <= amax + 1e-9:
+          picked.add Picked(line: line.line, step: line.pointStep, st: st)
+
+proc emitRuns(picked: var seq[Picked], shot: PatchShot, relations: var seq[SpsRelation]) =
+  ## X records: channels 1..n by ascending line and point, one record per
+  ## run of consecutive stations (a numbering gap or an index change starts
+  ## another).
+  picked.sort(proc (a, b: Picked): int =
+    result = cmp(a.line, b.line)
+    if result == 0: result = cmp(a.st.point, b.st.point)
+    if result == 0: result = cmp(a.st.index, b.st.index))
+  var channel = 1'i64
+  var i = 0
+  while i < picked.len:
+    var j = i
+    while j + 1 < picked.len and picked[j + 1].line == picked[i].line and
+        picked[j + 1].st.index == picked[i].st.index and not picked[i].step.isNaN and
+        abs(picked[j + 1].st.point - picked[j].st.point - picked[i].step) <=
+          1e-6 * max(1.0, abs(picked[i].step)):
+      inc j
+    var r = initSpsRelation()
+    r.fieldRecord = shot.record
+    (r.srcLine, r.srcPoint) = (shot.source.line, shot.source.point)
+    r.srcIndex = max(1, int(shot.source.index))
+    r.fromChannel = channel
+    r.toChannel = channel + int64(j - i)
+    r.rcvLine = picked[i].line
+    (r.fromReceiver, r.toReceiver) = (picked[i].st.point, picked[j].st.point)
+    r.rcvIndex = max(1, int(picked[i].st.index))
+    relations.add r
+    channel = r.toChannel + 1
+    i = j + 1
+
+proc generateRelations*(g: SurveyGeometry, layout: ReceiverLayout,
+    shots: openArray[PatchShot], t: PatchTemplate): seq[SpsRelation] =
+  ## X records for `shots` from template `t` over the receivers of
+  ## `layout` (its stations: R stations with coordinates; stations missing
+  ## from R are never listed).
+  ##
+  ## Template lines are the layout lines that are not `short`. The source's
+  ## place: with `ppCoordinates` (the source needs coordinates in `g`, else
+  ## the shot gets no records), its fractional line index among the template
+  ## lines by crossline position, and on each line its fractional station
+  ## slot by inline position; with `ppNumbers`, `lineMap` and `pointMap` of
+  ## its numbers, among the template lines by line number. The patch is the
+  ## `lines` template lines centred there (ties: the higher line) plus
+  ## `lineOffset`, and on each the `channels` station slots centred on the
+  ## source plus `stationOffset` (a slot is one `pointStep` of the line). A
+  ## slot with no R station is a hole: the line gets fewer channels. Short
+  ## lines join with their stations inside the patch: within half a line
+  ## spacing of the chosen lines, and inside their inline extent.
+  ## `peShift` keeps the line range and each line's slots inside the survey;
+  ## `peStatic` lists, for every shot, the stations inside `staticBox`.
+  ##
+  ## Channels run 1..n in ascending line and point order; each run of
+  ## consecutive stations (step `pointStep`, one point index) is one X
+  ## record. Point index 0 is written as 1. Write the result with parseSEG
+  ## (`SpsFile.relations`, `writeSps`); `receiverRelations` gives the O
+  ## records. Raises `ValueError` for a template without lines or channels
+  ## (roll, shift) or with a non-finite offset or map.
+  t.validate
+  var main: seq[int]
+  for i, line in layout.lines:
+    if not line.short: main.add i
+  if t.placement == ppNumbers:
+    main.sort(proc (a, b: int): int = cmp(layout.lines[a].line, layout.lines[b].line))
+  var mainPos: seq[float64]
+  for i in main:
+    mainPos.add(if t.placement == ppNumbers: layout.lines[i].line else: layout.lines[i].crossline)
+  var posStep = layout.lineSpacing
+  if t.placement == ppNumbers:
+    var d: seq[float64]
+    for i in 1 ..< mainPos.len: d.add mainPos[i] - mainPos[i - 1]
+    posStep = if d.len > 0: median(d) else: 1.0
+  var staticPicks: seq[Picked]
+  if t.edge == peStatic:
+    let b = t.staticBox
+    for line in layout.lines:
+      for st in line.stations:
+        if st.inline >= b.inlineMin and st.inline <= b.inlineMax and
+            st.crossline >= b.crosslineMin and st.crossline <= b.crosslineMax:
+          staticPicks.add Picked(line: line.line, step: line.pointStep, st: st)
+  var picked: seq[Picked]
+  for shot in shots:
+    picked.setLen 0
+    if t.edge == peStatic:
+      picked.add staticPicks
+    elif main.len > 0:
+      var cl, sa = NaN
+      if t.placement == ppNumbers:
+        cl = fractionalIndex(mainPos, t.lineMap.scale * shot.source.line + t.lineMap.offset,
+          posStep)
+      else:
+        var c: Coordinates
+        if not g.table.sources.lookup(shot.source, c) or c.x.isNaN or c.y.isNaN: continue
+        sa = layout.inlineOf(c.x, c.y)
+        cl = fractionalIndex(mainPos, layout.crosslineOf(c.x, c.y), posStep)
+      pickTemplate(layout, main, t, cl, sa, shot.source.point, picked)
+    emitRuns(picked, shot, result)
+
+proc generateRelations*(g: SurveyGeometry, shots: openArray[PatchShot],
+    t: PatchTemplate): seq[SpsRelation] =
+  ## `generateRelations` over the measured receiver layout of `g`.
+  g.generateRelations(g.receiverLayout, shots, t)
+
 
 func `$`*(s: Spread): string =
   ## "min/q1/median/q3/max".

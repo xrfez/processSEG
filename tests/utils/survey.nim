@@ -12,10 +12,17 @@
 ##
 ## The template takes receiver lines `j − lines/2 + 1 .. j + lines/2`
 ## (`lines` even: as many on each side of the source) and stations
-## `k − channels div 2 .. k + channels div 2` (`channels` odd).
+## `k − channels div 2 .. k + channels div 2` (`channels` odd), clipped at
+## the edges (`edge = peRoll`), shifted inside (`peShift`), or every
+## receiver (`peStatic`).
+##
+## Numbers: line `i` is `firstLine + i·lineStep`, station `k` is point
+## `firstPoint + k·pointStep` (steps may be negative: numbered against the
+## azimuth). X channels run 1..n in ascending line and point order.
 
-import std/math
+import std/[algorithm, math]
 import parseSEG
+import processSEG/survey/patch
 
 type
   SyntheticSurvey* = object
@@ -25,11 +32,16 @@ type
     azimuthDeg*, x0*, y0*: float64
     lines*, channels*: int
     firstLine*, firstPoint*: int
+    lineStep*, pointStep*: int
+    edge*: PatchEdge
 
 func initSyntheticSurvey*(): SyntheticSurvey =
   SyntheticSurvey(receiverLines: 8, stations: 41, interval: 50, lineSpacing: 200,
     sourceEvery: 2, azimuthDeg: 90, x0: 0, y0: 0, lines: 4, channels: 11,
-    firstLine: 1001, firstPoint: 100)
+    firstLine: 1001, firstPoint: 100, lineStep: 1, pointStep: 1, edge: peRoll)
+
+func lineNumber*(s: SyntheticSurvey, i: int): float64 = float64(s.firstLine + i * s.lineStep)
+func pointNumber*(s: SyntheticSurvey, k: int): float64 = float64(s.firstPoint + k * s.pointStep)
 
 func position*(s: SyntheticSurvey, u, v: float64): (float64, float64) =
   ## Grid position (u along the lines, v across: line i at v = i·lineSpacing)
@@ -49,11 +61,21 @@ func shots*(s: SyntheticSurvey): seq[ShotTemplate] =
   for j in 0 .. s.receiverLines - 2:
     var k = 0
     while k < s.stations:
-      var t = ShotTemplate(record: record, sourceLine: j, sourceStation: k,
-        firstStation: max(0, k - s.channels div 2),
-        lastStation: min(s.stations - 1, k + s.channels div 2))
-      for i in j - s.lines div 2 + 1 .. j + s.lines div 2:
-        if i in 0 ..< s.receiverLines: t.lines.add i
+      var t = ShotTemplate(record: record, sourceLine: j, sourceStation: k)
+      case s.edge
+      of peRoll:
+        t.firstStation = max(0, k - s.channels div 2)
+        t.lastStation = min(s.stations - 1, k + s.channels div 2)
+        for i in j - s.lines div 2 + 1 .. j + s.lines div 2:
+          if i in 0 ..< s.receiverLines: t.lines.add i
+      of peShift:
+        t.firstStation = clamp(k - s.channels div 2, 0, s.stations - s.channels)
+        t.lastStation = t.firstStation + s.channels - 1
+        let first = clamp(j - s.lines div 2 + 1, 0, s.receiverLines - s.lines)
+        for i in first ..< first + s.lines: t.lines.add i
+      of peStatic:
+        (t.firstStation, t.lastStation) = (0, s.stations - 1)
+        for i in 0 ..< s.receiverLines: t.lines.add i
       result.add t
       inc record
       k += s.sourceEvery
@@ -64,35 +86,31 @@ proc spsFile*(s: SyntheticSurvey): SpsFile =
   for i in 0 ..< s.receiverLines:
     for k in 0 ..< s.stations:
       var p = initSpsPoint(pkReceiver)
-      p.line = float64(s.firstLine + i)
-      p.lineName = $(s.firstLine + i)
-      p.point = float64(s.firstPoint + k)
-      p.pointName = $(s.firstPoint + k)
+      p.line = s.lineNumber(i)
+      p.point = s.pointNumber(k)
       (p.easting, p.northing) = s.position(float64(k) * s.interval, float64(i) * s.lineSpacing)
       p.elevation = 0
       result.points.add p
   for t in s.shots:
     var p = initSpsPoint(pkSource)
-    p.line = float64(s.firstLine + t.sourceLine)
-    p.lineName = $(s.firstLine + t.sourceLine)
-    p.point = float64(s.firstPoint + t.sourceStation)
-    p.pointName = $(s.firstPoint + t.sourceStation)
+    p.line = s.lineNumber(t.sourceLine)
+    p.point = s.pointNumber(t.sourceStation)
     (p.easting, p.northing) = s.position(float64(t.sourceStation) * s.interval,
       (float64(t.sourceLine) + 0.5) * s.lineSpacing)
     p.elevation = 0
     result.points.add p
+    var lines = t.lines
+    lines.sort(proc (a, b: int): int = cmp(s.lineNumber(a), s.lineNumber(b)))
     var channel = 1'i64
-    for i in t.lines:
+    for i in lines:
       var r = initSpsRelation()
       r.fieldRecord = t.record
       (r.srcLine, r.srcPoint) = (p.line, p.point)
-      (r.srcLineName, r.srcPointName) = (p.lineName, p.pointName)
       r.fromChannel = channel
       r.toChannel = channel + int64(t.lastStation - t.firstStation)
-      r.rcvLine = float64(s.firstLine + i)
-      r.rcvLineName = $(s.firstLine + i)
-      r.fromReceiver = float64(s.firstPoint + t.firstStation)
-      r.toReceiver = float64(s.firstPoint + t.lastStation)
+      r.rcvLine = s.lineNumber(i)
+      let (a, b) = (s.pointNumber(t.firstStation), s.pointNumber(t.lastStation))
+      (r.fromReceiver, r.toReceiver) = (min(a, b), max(a, b))
       result.relations.add r
       channel = r.toChannel + 1
 
