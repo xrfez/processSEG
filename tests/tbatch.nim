@@ -344,6 +344,24 @@ block errors:
     discard bruteStack(f, float32, inlineCrosslineBinning(1, 2, 1, 2), field2)
   doAssertRaises ValueError:
     discard bruteStack(f, float32, binning, VelocityFunction())
+  # A field must reach the stack's last sample (2000 ms here): past its end
+  # its velocities stay constant, which is not what a short field means.
+  proc fieldTo(tMaxMs: float64): VelocityField =
+    initVelocityField([1.0, float64(cdps)], [vel, vel], dtMs = 4, tMaxMs = tMaxMs)
+  doAssert fieldTo(1996).tMaxMs == 1996
+  try:
+    discard bruteStack(f, float32, binning, fieldTo(1996))
+    doAssert false, "a field that ends before the stack must be refused"
+  except ValueError as e:
+    doAssert "1996" in e.msg and "2000" in e.msg and "tMaxMs" in e.msg, e.msg
+  doAssert bruteStack(f, float32, binning, fieldTo(2000)).stacked == flat.traces
+  opts = initBruteStackOptions()
+  opts.samples = 500 # the stack ends at 998 ms
+  doAssert bruteStack(f, float32, binning, fieldTo(1000), opts).stacked > 0
+  opts.startMs = 4 # ... at 1002 ms
+  doAssertRaises ValueError: discard bruteStack(f, float32, binning, fieldTo(1000), opts)
+  doAssertRaises ValueError:
+    discard bruteStack(f, float32, [0, 1, 2], binning, fieldTo(1000))
   doAssertRaises ValueError: discard bruteStack(f, float32, 0 .. f.len, binning, vel)
 
 block demo_files:
@@ -479,6 +497,24 @@ block memory_bound:
   let big = stackMemory(float32, 100_000, 2001)
   doAssert bruteStackMemory(float32, 100_000, 2001, 2001, workers = 8) -
     bruteStackMemory(float32, 100_000, 2001, 2001, workers = 1) < big div 4
+  # Sizes beyond int are a ValueError in every build mode, as bad
+  # arguments are (they were an OverflowDefect, or wrapped in danger).
+  doAssertRaises ValueError:
+    discard bruteStackMemory(float32, high(int) div 16, 2001, 2001, 4)
+  doAssertRaises ValueError:
+    discard bruteStackMemory(float32, 10, 10, high(int) div 8, 4)
+  doAssertRaises ValueError:
+    discard bruteStackMemory(float32, 10, high(int) div 4, 10, 1)
+  doAssertRaises ValueError:
+    discard bruteStackMemory(float32, 10, 10, 10, high(int) div 2)
+  doAssertRaises ValueError:
+    discard bruteStackMemory(float32, 10, 10, 10, 1, chunkTraces = high(int) div 3)
+  doAssertRaises ValueError:
+    discard bruteStackMemory(float32, 10, 10, 10, 1, maxRingBytes = high(int))
+  doAssertRaises ValueError: discard bruteStackMemory(float32, -1, 10, 10, 1)
+  doAssertRaises ValueError: discard bruteStackMemory(float32, 10, 10, 10, 0)
+  doAssertRaises ValueError:
+    discard bruteStackMemory(float32, 10, 10, 10, 1, chunkTraces = 0)
   # A stack longer than the input widens the chunks.
   doAssert bruteStackMemory(float32, 10, 4000, 2001, 1) -
     bruteStackMemory(float32, 10, 2001, 2001, 1) >= 2 * 256 * 1999 * 4

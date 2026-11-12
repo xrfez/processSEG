@@ -252,6 +252,15 @@ block validation_memory_allocation:
       int) div 4, dt)
   doAssert stackMemory(float32, 10_000, 2001) == 160_080_000
   doAssert stackMemory(float64, 2, 3) == 72
+  # A size beyond int is a ValueError in every build mode (it was an
+  # OverflowDefect, and a wrapped number in a danger build).
+  doAssertRaises ValueError: discard stackMemory(float32, high(int) div 2, 10)
+  doAssertRaises ValueError: discard stackMemory(float32, 3_037_000_500, 3_037_000_500)
+  doAssertRaises ValueError: discard stackMemory(float64, high(int) div 11, 1)
+  doAssertRaises ValueError: discard stackMemory(float32, -1, 10)
+  doAssertRaises ValueError: discard stackMemory(float32, 10, -1)
+  doAssert stackMemory(float64, high(int) div 12, 1) == high(int) div 12 * 12
+  doAssert stackMemory(float32, 0, high(int)) == 0
   var acc = initStackAccumulator[float32](8, 500, dt)
   var x = newSeq[float32](500)
   for j in 100..<400: x[j] = 1

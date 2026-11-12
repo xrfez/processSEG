@@ -175,6 +175,9 @@ block field_2d:
   # between grid times.
   let one = initVelocityField([500.0], [a], dtMs = 4, tMaxMs = 3000)
   doAssert one.kind == fk2D and one.len == 1 and one.samples == 751
+  # The last grid time: at most tMaxMs (a tMaxMs off the grid is cut to it).
+  doAssert one.tMaxMs == 3000 and VelocityField().tMaxMs == 0
+  doAssert initVelocityField([500.0], [a], dtMs = 4, tMaxMs = 3002).tMaxMs == 3000
   for t in [0.0, 1000, 1002, 2001, 2999.5, 3000, 4000]:
     doAssert near(one.vrmsAt(500, t), a.vrmsAt(t), 1e-12), $t
   # In the first segment from a knot at zero, W is not linear: within the

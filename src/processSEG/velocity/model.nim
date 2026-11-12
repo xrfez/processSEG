@@ -45,7 +45,8 @@
 ## coordinate (a CDP number or a distance along the line); 3D fields are on a
 ## full inline × crossline grid of nodes (bilinear). Outside the nodes the
 ## nearest node's values are used, and past `tMax` the RMS velocity stays
-## constant. Memory: nodes × grid samples × 8 bytes (2500 nodes at 6 s and
+## constant (`tMaxMs`; `bruteStack` refuses a field that ends before its
+## stack does). Memory: nodes × grid samples × 8 bytes (2500 nodes at 6 s and
 ## 4 ms: 36 MB); a grid coarser than the data's interval is fine, the time
 ## interpolation is exact for knots on the grid (between knots past a first
 ## segment from zero), and otherwise the RMS velocity is within ≲ 1e-3
@@ -393,6 +394,11 @@ func dtMs*(field: VelocityField): float64 {.inline, raises: [].} =
 func samples*(field: VelocityField): int {.inline, raises: [].} =
   ## The number of grid times, `0 .. (samples − 1)·dtMs`.
   field.samples
+
+func tMaxMs*(field: VelocityField): float64 {.inline, raises: [].} =
+  ## The last grid time, `(samples − 1)·dtMs`: the field's functions are
+  ## known up to it, and its velocities stay constant after it.
+  float64(max(field.samples - 1, 0)) * field.dtMs
 
 func locations*(field: VelocityField): lent seq[float64] {.inline, raises: [].} =
   ## The 2D node locations, or the 3D inline axis.

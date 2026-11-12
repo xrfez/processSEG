@@ -89,6 +89,14 @@ proc `=dup`*[T](src: StackAccumulator[T]): StackAccumulator[T] =
 
 func stackMemory*(T: typedesc[SampleType], bins, samples: int): int =
   ## The bytes a stack of `bins × samples` holds: `sizeof(T) + 4` per sample.
+  ## Raises `ValueError` for a negative argument or a size beyond `int`.
+  if bins < 0 or samples < 0:
+    raise newException(ValueError, "bins and samples must be ≥ 0, got " &
+      $bins & " × " & $samples)
+  # Compared before multiplying: a danger build has no overflow checks.
+  if samples > 0 and bins > high(int) div (sizeof(T) + 4) div samples:
+    raise newException(ValueError, "a stack of " & $bins & " × " & $samples &
+      " samples is too large")
   bins * samples * (sizeof(T) + 4)
 
 proc initStackAccumulator*[T: SampleType](bins, samples: int, dtMs: float64,
@@ -98,12 +106,7 @@ proc initStackAccumulator*[T: SampleType](bins, samples: int, dtMs: float64,
   ## Raises `ValueError` unless `bins` and `samples` are ≥ 0 (and their
   ## product does not overflow), `dtMs` is finite and positive and `startMs`
   ## finite.
-  if bins < 0 or samples < 0:
-    raise newException(ValueError, "bins and samples must be ≥ 0, got " &
-      $bins & " × " & $samples)
-  if samples > 0 and bins > high(int) div (sizeof(T) + 4) div samples:
-    raise newException(ValueError, "a stack of " & $bins & " × " & $samples &
-      " samples is too large")
+  discard stackMemory(T, bins, samples) # refuses a negative or too large size
   if dtMs.classify notin {fcNormal, fcSubnormal} or dtMs <= 0:
     raise newException(ValueError, "dtMs must be finite and positive, got " & $dtMs)
   if startMs.classify in {fcNan, fcInf, fcNegInf}:

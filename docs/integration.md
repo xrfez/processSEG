@@ -447,7 +447,9 @@ trace's first and last non-zero samples, so muted zeros do not count.
   `gridBinning` (a rotated 3D grid) or `inlineCrosslineBinning` (header numbers).
 - **Velocities:** a `VelocityFunction` for every bin, or a `VelocityField` read at each
   bin's location: its CDP number in 2D, its inline and crossline in 3D
-  (`binning.location(bin)`).
+  (`binning.location(bin)`). The field must reach the stack's last sample
+  (`field.tMaxMs`; a `ValueError` otherwise, since past its end a field's velocities
+  stay constant).
 - **Threads:** `opts.workers` prefetch workers, each with its own `Workspace`, correct
   the traces; the calling thread owns the one `StackAccumulator` and adds the chunks in
   order. Everything is allocated on the calling thread before the workers start.

@@ -28,7 +28,9 @@
 ##
 ## **Velocities** are read at each bin's location (`Binning.location`): a
 ## 2D field by the bin's CDP number, a 3D field by its inline and
-## crossline numbers. A `VelocityFunction` serves every bin.
+## crossline numbers. A `VelocityFunction` serves every bin. A field must
+## reach the stack's last sample (`tMaxMs` ≥ `startMs + (samples − 1)·dtMs`;
+## `ValueError` otherwise): past its end its velocities would stay constant.
 ##
 ## **Traces.** Only live traces are stacked (`ChunkMeta.isLive`). A live
 ## trace is skipped, and counted in `StackResult.skipped`, when it falls
@@ -109,6 +111,19 @@ type
     skipped*: int        ## Live traces not stacked (see the module documentation).
     failed*: int         ## Traces that could not be decoded.
 
+proc badSize(msg: string) {.noinline, noreturn.} =
+  raise newException(ValueError, msg)
+
+func mulSize(a, b: int): int =
+  # a · b of two sizes; a ValueError when it does not fit an int, in every
+  # build mode (a danger build has no overflow checks).
+  if b != 0 and a > high(int) div b: badSize("the size overflows")
+  a * b
+
+func addSize(a, b: int): int =
+  if a > high(int) - b: badSize("the size overflows")
+  a + b
+
 proc initBruteStackOptions*(flow = initPipeline(), nmo = initNmoParams(),
     norm = fnFold, workers = 1): BruteStackOptions =
   ## Options with the flow `flow`, NMO `nmo`, normalization `norm` and
@@ -126,13 +141,18 @@ func bruteStackMemory*(T: typedesc[SampleType], bins, samples, inSamples,
   ## of a 4× padded trace, which bounds the FFT filters' scratch, plus
   ## 1 MiB for a percentile histogram, a velocity column and an output
   ## trace; a flow of several long filters may need more:
-  ## `plan.workspaceSize` is exact). Raises `OverflowDefect` for sizes
-  ## beyond `int`.
+  ## `plan.workspaceSize` is exact). Raises `ValueError` for a negative
+  ## size, `workers`, `chunkTraces` or `maxRingBytes` that are not
+  ## positive, or a total beyond `int`.
+  if inSamples < 0 or workers <= 0 or chunkTraces <= 0 or maxRingBytes <= 0:
+    badSize("inSamples must be ≥ 0 and workers, chunkTraces and " &
+      "maxRingBytes positive")
   let stack = stackMemory(T, bins, samples)
-  let chunk = chunkTraces * max(inSamples, samples) * sizeof(T)
-  let ring = max(maxRingBytes, (workers + 1) * chunk) + chunk
-  let scratch = workers * (16 * 4 * inSamples * 8 + (1 shl 20) + 2 * samples * 8)
-  stack + ring + scratch
+  let chunk = mulSize(mulSize(chunkTraces, max(inSamples, samples)), sizeof(T))
+  let ring = addSize(max(maxRingBytes, mulSize(addSize(workers, 1), chunk)), chunk)
+  let perWorker = addSize(addSize(mulSize(16 * 4 * 8, inSamples), 1 shl 20),
+    mulSize(2 * 8, samples))
+  addSize(addSize(stack, ring), mulSize(workers, perWorker))
 
 type
   VelKind = enum velFunction, velField
@@ -296,6 +316,16 @@ proc checkOptions(o: BruteStackOptions) =
   if o.statics.isSome and not (o.statics.get.vReplacement > 0):
     raise newException(ValueError, "opts.statics must hold a datumStatics(...)")
 
+proc checkCovers(field: VelocityField, startMs, dtMs: float64, samples: int) =
+  # Past its last grid time a field's velocity stays constant: a field
+  # shorter than the stack would correct the deep part with the velocity of
+  # its end (2749 instead of 3747 m/s at 6 s for one that stops at 4 s).
+  let lastMs = startMs + float64(max(samples - 1, 0)) * dtMs
+  if lastMs > field.tMaxMs + 1e-6 * dtMs:
+    raise newException(ValueError, "the velocity field ends at " &
+      $field.tMaxMs & " ms, the stack at " & $lastMs & " ms: build the field " &
+      "with tMaxMs ≥ " & $lastMs & " (or stack fewer samples)")
+
 proc runStack[T](f: SeismicFile, sel: TraceSel, binning: Binning,
     job: var Job[T], opts: BruteStackOptions, progress: Progress): StackResult[T] =
   if not f.hasKeys:
@@ -307,6 +337,8 @@ proc runStack[T](f: SeismicFile, sel: TraceSel, binning: Binning,
     if sel.listed: f.rowsOf(sel.list) else: f.rowsOf(sel.span))
   let dtMs = intervalUs / 1000
   let samples = if opts.samples > 0: opts.samples else: inSamples
+  if job.velKind == velField:
+    checkCovers(job.field[], opts.startMs, dtMs, samples)
   let plan = opts.flow.compile(T, dtMs, max(inSamples, 1))
   # Everything the workers use is allocated here, on the calling thread.
   var states = newSeq[WorkerState[T]](opts.workers)
@@ -391,7 +423,8 @@ proc bruteStack*(f: SeismicFile, T: typedesc[SampleType], traces: Slice[int],
   ## crossline). Blocks until done; see the module documentation. Raises
   ## `ValueError` when the file has no keys, a trace is outside the file,
   ## the live traces have no single sample interval, the field does not
-  ## suit the binning, an option is invalid or the flow does not compile,
+  ## suit the binning or ends before the stack's last sample
+  ## (`field.tMaxMs`), an option is invalid or the flow does not compile,
   ## and `SegCancelledError` when `progress` cancels.
   checkField(binning, velocity)
   var job = Job[T](velKind: velField, field: addr velocity)
