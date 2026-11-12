@@ -461,12 +461,19 @@ proc patchShots*(g: SurveyGeometry, firstRecord = 1'i64): seq[PatchShot] =
   for i, k in keys: result.add PatchShot(record: firstRecord + int64(i), source: k)
 
 func roundUp(x: float64): int {.inline.} =
-  ## Nearest integer, ties up (with slack for rounding error).
-  int(floor(x + 0.5 + 1e-9))
+  ## Nearest integer, ties up (with slack for rounding error). A number map
+  ## can send a source anywhere: beyond ±1e15 the result stays there, where
+  ## the conversion to an int is still defined (NaN: the low end).
+  const far = 1_000_000_000_000_000
+  let y = floor(x + 0.5 + 1e-9)
+  if y >= float64(far): far
+  elif y > -float64(far): int(y)
+  else: -far
 
 func fractionalIndex(xs: openArray[float64], v, step: float64): float64 =
-  ## Fractional position of `v` among ascending `xs`, extrapolated by `step`.
-  if v <= xs[0]: return (v - xs[0]) / step
+  ## Fractional position of `v` among ascending `xs`, extrapolated by `step`
+  ## (NaN for a NaN `v`).
+  if not (v > xs[0]): return (v - xs[0]) / step
   if v >= xs[^1]: return float64(xs.high) + (v - xs[^1]) / step
   let i = xs.upperBound(v) - 1
   float64(i) + (v - xs[i]) / (xs[i + 1] - xs[i])
@@ -665,7 +672,9 @@ proc generateRelations*(g: SurveyGeometry, layout: ReceiverLayout,
   ## source plus `stationOffset` (a slot is one `pointStep` of the line). A
   ## slot with no R station is a hole: the line gets fewer channels. Short
   ## lines join with their stations inside the patch: within half a line
-  ## spacing of the chosen lines, and inside their inline extent.
+  ## spacing of the chosen lines, and inside their inline extent. A shot
+  ## whose source line or point is not a finite number gets no records, in
+  ## any mode: an X record names its source.
   ## `peShift` keeps the line range and each line's slots inside the survey;
   ## `peStatic` lists, for every shot, the stations inside `staticBox`.
   ##
@@ -720,12 +729,18 @@ proc generateRelations*(g: SurveyGeometry, layout: ReceiverLayout,
   var picked: seq[Picked]
   for shot in shots:
     picked.setLen 0
-    if t.edge == peStatic:
+    var c: Coordinates
+    # An X record names its source: a shot without a line or a point number
+    # gets none, in any mode. One without coordinates gets none where its
+    # position is needed.
+    let numbered = finite(shot.source.line) and finite(shot.source.point)
+    let located = numbered and t.edge != peStatic and
+      g.table.sources.lookup(shot.source, c) and finite(c.x) and finite(c.y)
+    if not numbered:
+      discard
+    elif t.edge == peStatic:
       picked.add staticPicks
-    else:
-      var c: Coordinates
-      let located = g.table.sources.lookup(shot.source, c) and finite(c.x) and finite(c.y)
-      if (t.placement == ppCoordinates or t.hasDistance) and not located: continue
+    elif located or not (t.placement == ppCoordinates or t.hasDistance):
       if t.hasTemplate and main.len > 0:
         var cl, sa = NaN
         if t.placement == ppNumbers:
