@@ -30,9 +30,8 @@
 ##
 ## The transforms do not allocate or raise. Buffers of the wrong length, and a
 ## plan not made by `initFftPlan`, are an `AssertionDefect` in every build
-## mode (the checks cost nothing next to a transform); a workspace reserved too
-## small is an `IndexDefect` with bound checks on. `initFftPlan` raises
-## `ValueError`.
+## mode (the checks cost nothing next to a transform), and so is a workspace
+## reserved too small (an `IndexDefect`). `initFftPlan` raises `ValueError`.
 
 import std/math
 import parseSEG

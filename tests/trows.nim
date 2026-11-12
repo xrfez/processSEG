@@ -125,13 +125,16 @@ block scratch_regions:
   let z = ws.scratch(float64, 8)
   z[7] = 3.5
   doAssert ws.scratch(float64, 1, at = 7)[0] == 3.5
-  when compileOption("boundChecks"):
-    doAssertRaises IndexDefect:
-      discard ws.scratch(float32, 7, at = 4)
-    doAssertRaises IndexDefect:
-      discard ws.scratch(float64, 9)
-    doAssertRaises IndexDefect:
-      discard ws.scratch(float64, 1, at = -1)
+  # Checked in every build mode, -d:danger included: a kernel handed a
+  # workspace reserved for a smaller plan must not write past it.
+  doAssertRaises IndexDefect:
+    discard ws.scratch(float32, 7, at = 4)
+  doAssertRaises IndexDefect:
+    discard ws.scratch(float64, 9)
+  doAssertRaises IndexDefect:
+    discard ws.scratch(float64, 1, at = -1)
+  doAssertRaises IndexDefect:
+    discard ws.scratch(float32, int.high, at = 4)
   doAssert ws.scratch(float32, 0, at = 10) == nil, "an empty request at the end"
   var empty = initWorkspace()
   doAssert empty.scratch(float32, 0) == nil

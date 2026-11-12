@@ -88,13 +88,15 @@ proc reserve*(ws: var Workspace, size: WorkspaceSize) =
   if ws.u32.len < size.u32: ws.u32.grow(size.u32)
 
 proc scratchOutside(at, n, cap: int) {.noinline, noreturn.} =
-  raise newException(IndexDefect, "scratch " & $at & " ..< " & $(at + n) &
+  raise newException(IndexDefect, "scratch of " & $n & " elements from element " & $at &
     " is outside the reserved 0 ..< " & $cap & " (reserve the plan first)")
 
 template scratchOf(r: Region, at, n: int): untyped =
-  when compileOption("boundChecks"):
-    if at < 0 or n < 0 or at + n > r.len:
-      scratchOutside(at, n, r.len)
+  # Checked in every build mode: a kernel writes all it asked for, so a
+  # workspace reserved for a smaller plan would be a heap overflow in
+  # `-d:danger`. Three compares per kernel call, never per sample.
+  if at < 0 or n < 0 or n > r.len - at:
+    scratchOutside(at, n, r.len)
   # `at` may equal `len` for an empty request: no element is addressed then.
   cast[ptr UncheckedArray[typeof(r.data[0])]](
     if n == 0 or r.len == 0: nil else: addr r.data[r.first + at])
@@ -103,8 +105,8 @@ proc scratch*(ws: var Workspace, T: typedesc[float32], n: int,
     at = 0): ptr UncheckedArray[float32] {.inline, raises: [].} =
   ## `n` float32 elements of scratch starting at element `at`, valid until
   ## `ws` is next reserved or destroyed (nil when `n` is 0). Element 0 is on
-  ## a 64-byte boundary. An `IndexDefect` beyond the reserved size, with
-  ## bound checks on.
+  ## a 64-byte boundary. An `IndexDefect` beyond the reserved size, in every
+  ## build mode (`-d:danger` too).
   scratchOf(ws.f32, at, n)
 
 proc scratch*(ws: var Workspace, T: typedesc[float64], n: int,

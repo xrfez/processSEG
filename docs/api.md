@@ -18,9 +18,11 @@ These hold throughout; a row below only mentions what departs from them.
   `ValueError` naming the problem. A block form raises `ValueError` when the tensor or
   block does not match the `ChunkMeta` (row count, C-contiguity, a width over
   `plan.samples`, another `dtMs`), **before any sample changes**. A buffer of the wrong
-  length passed to a single-row kernel, or a workspace reserved too small, is a defect
-  (`AssertionDefect`, or `IndexDefect` with bound checks on), not an exception. Applying a
-  valid plan to any data never raises: NaN and Inf stay in their own row.
+  length passed to a single-row kernel is a defect (`AssertionDefect`, or `IndexDefect` with
+  bound checks on), not an exception. A workspace reserved too small is one in every build
+  mode, `-d:danger` included (`IndexDefect` from `scratch`, or the `AssertionDefect` of a
+  plan's own check): no kernel writes past its scratch. Applying a valid plan to any data
+  never raises: NaN and Inf stay in their own row.
 - **`{.raises: [].}` kernels.** The single-row kernels (`openArray[T]`: `demean`, `agc`,
   `applyFilter`, `shiftSamples`, `nmoInto`, `plan.pick`, `forward`, ...), the accessors of
   plans and metas, and the per-trace primitives (`lmoTime`, `binOf`, `staticMs`,
