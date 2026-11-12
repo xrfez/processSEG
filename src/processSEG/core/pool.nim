@@ -20,11 +20,14 @@
 ##
 ## **A job.** `apply` validates its arguments on the caller's thread (it
 ## raises `ValueError` as `PipelinePlan.apply` does, before any sample
-## changes), splits the rows into one contiguous range per worker and
-## returns when every worker is done. The result is identical to the
-## single-thread `apply`. A per-panel normalization needs the whole panel:
-## its factor is computed by one worker over every row, then the next part
-## of the plan runs on all workers again.
+## changes) and returns when every worker is done. The workers take the rows
+## in runs of about 256 KB of samples, each from a shared counter as it
+## finishes its last one, so a block whose rows differ in cost (dead or
+## short traces, a busy core) is still shared out evenly. The result is
+## identical to the single-thread `apply`, bit for bit. A per-panel
+## normalization needs the whole panel: its factor is computed by one
+## worker over every row, then the next part of the plan runs on all
+## workers again.
 ##
 ## **What crosses threads.** No managed value does: a tensor's storage is
 ## reference counted without atomics, and copying a seq (a plan holds some)
@@ -40,7 +43,7 @@
 ## `apply`. A viewer that wants to abandon a frame checks `plan.generation`
 ## before drawing.
 
-import std/locks
+import std/[atomics, locks]
 import parseSEG
 import rows, types, workspace
 import ../pipeline
@@ -175,6 +178,34 @@ proc ping*(p: ProcessPool) =
   run(p.state, runEmpty, nil)
   release p.state.call
 
+# ---------------------------------------------------------------- row runs --
+
+type
+  RowQueue = object
+    ## The rows of a job, handed out in runs of `grain` rows to whichever
+    ## worker asks next (review xE P2: one fixed range per worker ran a
+    ## block whose first half was dead at half speed).
+    next: Atomic[int]
+    rows, grain: int
+
+const runBytes = 256 * 1024 # of samples per run: the tile of `runPart`
+
+proc reset(q: var RowQueue, rows, cols, sampleBytes: int) =
+  ## A queue of `rows` rows of `cols` samples of `sampleBytes` bytes each,
+  ## in runs of whole FFT batches.
+  q.rows = rows
+  q.grain = max(8, runBytes div max(1, cols * sampleBytes) div 8 * 8)
+  q.next.store(0)
+
+template eachRun(q: var RowQueue, span, body: untyped) =
+  ## Runs `body` with `span`, a `Slice[int]` of rows, for each run this
+  ## thread gets from `q`, until none is left.
+  while true:
+    let first = q.next.fetchAdd(q.grain)
+    if first >= q.rows: break
+    let span {.inject.} = first .. min(q.rows, first + q.grain) - 1
+    body
+
 # -------------------------------------------------------------------- apply --
 
 type
@@ -184,21 +215,17 @@ type
     meta: ChunkMeta
     part: int
     factor: float64
-    workers: int
-
-func workerRows(n, w, workers: int): Slice[int] {.inline.} =
-  (n * w div workers) .. (n * (w + 1) div workers) - 1
+    queue: RowQueue
 
 proc partJob[T](ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
     gcsafe, raises: [].} =
   let c = cast[ptr ApplyCtx[T]](ctx)
-  let rows = workerRows(c.dst.len, worker, c.workers)
-  if rows.len == 0: return
   try:
     ws.reserve(c.plan[].workspaceSize)
     let fromSrc = c.part == 0 and c.src.len > 0
-    let src = (if fromSrc: c.src.sub(rows) else: RowBlock[T]())
-    c.plan[].runPart(c.part, src, c.dst.sub(rows), c.meta.sub(rows), c.factor, ws)
+    c.queue.eachRun(span):
+      let src = (if fromSrc: c.src.sub(span) else: RowBlock[T]())
+      c.plan[].runPart(c.part, src, c.dst.sub(span), c.meta.sub(span), c.factor, ws)
   except ValueError as e:
     raiseAssert "checked by apply: " & e.msg
 
@@ -217,14 +244,14 @@ proc applyBlocks[T](p: ProcessPool, plan: PipelinePlan[T], src,
     dst: RowBlock[T], meta: ChunkMeta) =
   doAssert p.state != nil, "a ProcessPool must come from newProcessPool"
   plan.checkApply(src, dst, meta)
-  var ctx = ApplyCtx[T](plan: addr plan, src: src, dst: dst, meta: meta,
-    workers: p.state.workers)
+  var ctx = ApplyCtx[T](plan: addr plan, src: src, dst: dst, meta: meta)
   acquire p.state.call
   for part in 0 ..< plan.partCount:
     ctx.part = part
     ctx.factor = NaN
     if plan.partNeedsPanel(part):
       run(p.state, panelJob[T], addr ctx)
+    ctx.queue.reset(dst.len, dst.cols, sizeof(T))
     run(p.state, partJob[T], addr ctx)
   release p.state.call
 
@@ -268,16 +295,15 @@ type
     plan: ptr CorrelationPlan[T]
     src, dst: RowBlock[T]
     meta: ChunkMeta
-    workers: int
+    queue: RowQueue
 
 proc corrJob[T](ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
     gcsafe, raises: [].} =
   let c = cast[ptr CorrCtx[T]](ctx)
-  let rows = workerRows(c.dst.len, worker, c.workers)
-  if rows.len == 0: return
   try:
     ws.reserve(c.plan[].workspaceSize)
-    c.plan[].correlateInto(c.src.sub(rows), c.dst.sub(rows), c.meta.sub(rows), ws)
+    c.queue.eachRun(span):
+      c.plan[].correlateInto(c.src.sub(span), c.dst.sub(span), c.meta.sub(span), ws)
   except ValueError as e:
     raiseAssert "checked by correlateInto: " & e.msg
 
@@ -288,8 +314,8 @@ proc correlateInto*[T: SampleType](p: ProcessPool, plan: CorrelationPlan[T],
   ## `CorrelationPlan.correlateInto` does, before any sample changes.
   doAssert p.state != nil, "a ProcessPool must come from newProcessPool"
   plan.checkCorrelate(src, dst, meta) # on the caller's thread
-  var ctx = CorrCtx[T](plan: addr plan, src: src, dst: dst, meta: meta,
-    workers: p.state.workers)
+  var ctx = CorrCtx[T](plan: addr plan, src: src, dst: dst, meta: meta)
+  ctx.queue.reset(src.len, src.cols, sizeof(T))
   acquire p.state.call
   run(p.state, corrJob[T], addr ctx)
   release p.state.call
@@ -309,16 +335,15 @@ type
     src: RowBlock[T]
     meta: ChunkMeta
     dst: ptr UncheckedArray[TraceAmplitude]
-    workers: int
+    queue: RowQueue
 
 proc ampJob[T](ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
     gcsafe, raises: [].} =
   let c = cast[ptr AmpCtx[T]](ctx)
-  let rows = workerRows(c.src.len, worker, c.workers)
-  if rows.len == 0: return
   try:
-    traceAmplitudeInto(c.src.sub(rows), c.meta.sub(rows), c.params,
-      c.dst.toOpenArray(rows.a, rows.b))
+    c.queue.eachRun(span):
+      traceAmplitudeInto(c.src.sub(span), c.meta.sub(span), c.params,
+        c.dst.toOpenArray(span.a, span.b))
   except ValueError as e:
     raiseAssert "checked by traceAmplitudeInto: " & e.msg
 
@@ -335,7 +360,8 @@ proc traceAmplitudeInto*[T: SampleType](p: ProcessPool, b: RowBlock[T],
       $b.len & " rows")
   if b.len == 0: return
   var ctx = AmpCtx[T](params: params, src: b, meta: meta,
-    dst: cast[ptr UncheckedArray[TraceAmplitude]](addr dst[0]), workers: p.state.workers)
+    dst: cast[ptr UncheckedArray[TraceAmplitude]](addr dst[0]))
+  ctx.queue.reset(b.len, b.cols, sizeof(T))
   acquire p.state.call
   run(p.state, ampJob[T], addr ctx)
   release p.state.call

@@ -1,7 +1,7 @@
 ## ProcessPool (core/pool): results identical to the single-thread apply for
-## 1–8 workers (in place, src → dst, per-panel parts), many back-to-back
-## jobs, idle start-up and shutdown, moves, two callers sharing one pool,
-## argument errors and no allocation in a steady state.
+## 1–16 workers (in place, src → dst, per-panel parts, rows of uneven cost),
+## many back-to-back jobs, idle start-up and shutdown, moves, two callers
+## sharing one pool, argument errors and no allocation in a steady state.
 
 import std/[assertions, math]
 import processSEG
@@ -56,6 +56,26 @@ block identical_to_single_thread:
       var inPlace = g.data.clone()
       pool.apply(plan, inPlace, meta)
       doAssert maxDiff(inPlace, want) == 0, $workers & " workers, in place"
+
+block rows_of_uneven_cost:
+  # The first half of the block dead and a third of the rest short: the
+  # workers take runs of rows as they finish, so every worker count gives the
+  # single-thread result, on a block of several runs (600 × 1001 float32 is
+  # ten runs of 64 rows).
+  var g = noisyGather(600, 1001, seed = 11)
+  for r in 0..<300: g.keys[r].status = tsDead
+  for r in countup(300, 599, 3): g.setLive(r, 200 + r)
+  let meta = initChunkMeta(g.rows, dtMs = 2, failed = failed)
+  let plan = flow().compile(float32, 2, 1001)
+  var ws = initWorkspace()
+  ws.reserve(plan)
+  var want = zeros[float32](600, 1001)
+  plan.apply(g.data, want, meta, ws)
+  for workers in [2, 5, 16]:
+    var pool = newProcessPool(workers)
+    var dst = zeros[float32](600, 1001)
+    pool.apply(plan, g.data, dst, meta)
+    doAssert maxDiff(dst, want) == 0, $workers & " workers"
 
 block fewer_rows_than_workers:
   var g = noisyGather(3, 200, seed = 4)
