@@ -30,8 +30,9 @@ const
     "agcImpl",
     # Gain curves: the table multiply, on and off the grid.
     "mulTable", "mulTableLerp",
-    # Stacking: the sum and fold update.
-    "accumulate"]
+    # Stacking: the sum and fold update, and the finite check before it
+    # (an OR of exponent-bit flags).
+    "accumulate", "allFinite"]
   # Non-generic kernels: their symbols carry their own module (and GCC clones
   # such as `.constprop.0` count too).
   # (The IIR section kernel, `sosLanes`, is not here: a recursion is a serial

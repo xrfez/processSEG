@@ -210,6 +210,38 @@ block refused_traces:
     doAssertRaises IndexDefect: discard acc.foldAt(2, 0)
     doAssertRaises IndexDefect: discard acc.sumAt(-1, 0)
 
+block non_finite_samples_refused_anywhere:
+  # A NaN or an infinity at any position of the span refuses the trace (the
+  # check runs in vector blocks: first, last and odd positions, any length);
+  # the largest, the smallest and negative zero are finite.
+  proc check[T]() =
+    let quiet = T(NaN)
+    let payload =
+      when T is float32: cast[float32](0x7F80_0001'u32) # a signalling NaN
+      else: cast[float64](0xFFF0_0000_0000_0001'u64)
+    let largest = # finite (`high` of a float type is the infinity)
+      when T is float32: 3.4028234e38'f32
+      else: 1.7976931348623157e308
+    for n in [1, 2, 7, 8, 9, 31, 32, 33, 100]:
+      var acc = initStackAccumulator[T](1, n, dt)
+      var x = newSeq[T](n)
+      for j in 0..<n: x[j] = T(j mod 5) - 2
+      x[0] = T(-0.0)
+      x[n - 1] = largest
+      if n > 2: x[1] = T(1e-40) # float32: subnormal
+      doAssert acc.add(0, x), $n
+      for at in 0..<n:
+        for bad in [quiet, payload, T(Inf), T(-Inf)]:
+          var y = x
+          y[at] = bad
+          doAssert not acc.add(0, y), $n & " " & $at
+          # Outside the span it does not count.
+          if at > 0: doAssert acc.add(0, y, 0, at)
+          if at < n - 1: doAssert acc.add(0, y, at + 1, n)
+          acc.clear
+  check[float32]()
+  check[float64]()
+
 block validation_memory_allocation:
   doAssertRaises ValueError: discard initStackAccumulator[float32](-1, 10, dt)
   doAssertRaises ValueError: discard initStackAccumulator[float32](1, 10, 0)

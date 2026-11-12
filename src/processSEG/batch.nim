@@ -401,12 +401,43 @@ proc checkBin[T](res: StackResult[T], bin: int) =
   if bin notin 0 ..< res.data.shape[0]:
     raise newException(ValueError, "bin " & $bin & " is outside 0 ..< " & $res.data.shape[0])
 
+proc maxOf(x: ptr UncheckedArray[int32], n: int): int32 {.noinline, raises: [].} =
+  ## The largest of `x[0 ..< n]`, 0 at least (an integer max: it vectorizes).
+  {.push boundChecks: off.}
+  for j in 0 ..< n: result = max(result, x[j])
+  {.pop.}
+
 proc maxFold*[T](res: StackResult[T], bin: int): int32 =
   ## The largest per-sample fold of bin `bin`; 0 for a bin nothing was
   ## stacked into. Raises `ValueError` for a bin outside the stack or an
   ## inconsistent result.
   checkBin(res, bin)
-  for j in 0 ..< res.fold.shape[1]: result = max(result, res.fold[bin, j])
+  let n = res.fold.shape[1]
+  if res.fold.is_C_contiguous:
+    # The fold's own buffer: through `Tensor.[]` this took 9.2 ms for 1396
+    # bins of 1501 samples in a release build.
+    let fold = cast[ptr UncheckedArray[int32]](res.fold.unsafe_raw_offset(
+        aligned = false))
+    result = maxOf(cast[ptr UncheckedArray[int32]](addr fold[bin * n]), n)
+  else:
+    for j in 0 ..< n: result = max(result, res.fold[bin, j])
+
+proc keysOf[T](res: StackResult[T], bin: int, fold: int32): TraceKeys =
+  # The keys of bin `bin`, whose largest fold is `fold`.
+  let loc = res.binning.location(bin)
+  result = initTraceKeys()
+  result.ensemble = if loc.cdp.isNaN: float64(bin + 1) else: loc.cdp
+  result.inline = loc.inline
+  result.crossline = loc.crossline
+  result.cmpX = loc.x
+  result.cmpY = loc.y
+  result.offset = 0
+  result.t0Ms = res.startMs
+  result.intervalUs = res.dtMs * 1000
+  result.status = if fold > 0: tsLive else: tsDead
+
+func overridesOf(fold: int32): array[1, HeaderOverride] =
+  [headerOverride("trace.numHorzStacked", min(fold, int32(high(int16))))]
 
 proc stackKeys*[T](res: StackResult[T], bin: int): TraceKeys =
   ## The keys of bin `bin`'s stacked trace (decision D14: processSEG
@@ -418,24 +449,13 @@ proc stackKeys*[T](res: StackResult[T], bin: int): TraceKeys =
   ## `writeTrace(w, keys, samples, overrides)` to write a stack your own way
   ## (other options, extra overrides, a selection of bins); `writeStack`
   ## does exactly that for every bin. Raises `ValueError` as `maxFold`.
-  let live = res.maxFold(bin) > 0
-  let loc = res.binning.location(bin)
-  result = initTraceKeys()
-  result.ensemble = if loc.cdp.isNaN: float64(bin + 1) else: loc.cdp
-  result.inline = loc.inline
-  result.crossline = loc.crossline
-  result.cmpX = loc.x
-  result.cmpY = loc.y
-  result.offset = 0
-  result.t0Ms = res.startMs
-  result.intervalUs = res.dtMs * 1000
-  result.status = if live: tsLive else: tsDead
+  res.keysOf(bin, res.maxFold(bin))
 
 proc stackOverrides*[T](res: StackResult[T], bin: int): array[1, HeaderOverride] =
   ## The SEG-Y header fields of bin `bin` that `TraceKeys` cannot hold: the
   ## fold, as the largest per-sample fold in `numHorzStacked` (bytes 33-34,
   ## clamped to int16). Raises `ValueError` as `maxFold`.
-  [headerOverride("trace.numHorzStacked", min(res.maxFold(bin), int32(high(int16))))]
+  overridesOf(res.maxFold(bin))
 
 proc writeStack*[T](path: string, res: StackResult[T],
     opts = SegyOutputOptions(traceSorting: 4)): DiagLog =
@@ -465,5 +485,6 @@ proc writeStack*[T](path: string, res: StackResult[T],
   if o.traceSorting == 0: o.traceSorting = 4
   var w = openSeismicWriter(path, o)
   for bin in 0 ..< bins:
-    w.writeTrace(res.stackKeys(bin), data.row(bin), overrides = res.stackOverrides(bin))
+    let fold = res.maxFold(bin) # once per bin, for the keys and the header
+    w.writeTrace(res.keysOf(bin, fold), data.row(bin), overrides = overridesOf(fold))
   w.close()

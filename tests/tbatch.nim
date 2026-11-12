@@ -367,6 +367,24 @@ block demo_files:
   let gres = bruteStack(sg2, float32, cdpBinning(1, 10), constantVelocity(1500))
   doAssert gres.stacked == 0 and gres.skipped == sg2.len
 
+block max_fold_of_any_layout:
+  # maxFold reads the fold's buffer; a fold that is a strided view still
+  # gives its own values.
+  var res = StackResult[float32](binning: cdpBinning(1, 2), dtMs: 2,
+    data: newTensor[float32](2, 3))
+  var wide = newTensor[int32](2, 6)
+  for b in 0 ..< 2:
+    for j in 0 ..< 6: wide[b, j] = int32(10 * b + (if j mod 2 == 0: j else: 50))
+  res.fold = wide[_, 0..4|2] # columns 0, 2, 4
+  doAssert not res.fold.is_C_contiguous and res.fold.shape == [2, 3]
+  doAssert res.maxFold(0) == 4 and res.maxFold(1) == 14
+  res.fold = res.fold.clone()
+  doAssert res.fold.is_C_contiguous
+  doAssert res.maxFold(0) == 4 and res.maxFold(1) == 14
+  doAssert res.stackKeys(1).status == tsLive and res.stackKeys(1).ensemble == 2
+  res.fold[0, _] = 0'i32
+  doAssert res.maxFold(0) == 0 and res.stackKeys(0).status == tsDead
+
 block decode_failures_counted:
   # Traces whose samples lie past the end of the file fail to decode: they
   # are counted, not stacked.

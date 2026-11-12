@@ -168,14 +168,23 @@ proc accumulate[T](sum: ptr UncheckedArray[T], fold: ptr UncheckedArray[int32],
     fold[j] = fold[j] + 1
   {.pop.}
 
-func allFinite[T](x: openArray[T], first, last: int): bool {.inline.} =
-  # x − x is 0 for finite x and NaN otherwise; one sum checks the span.
-  var s = 0.0
-  {.push boundChecks: off.}
-  for j in first ..< last:
-    s += float64(x[j]) - float64(x[j])
+func allFinite[T](x: ptr UncheckedArray[T], n: int): bool {.noinline,
+    raises: [].} =
+  ## No NaN or infinite sample in `x[0 ..< n]`: none has all its exponent
+  ## bits set. An OR of flags, which vectorizes (a float64 sum of x − x,
+  ## 0 for a finite x and NaN otherwise, is an in-order reduction: 1.07 µs
+  ## against 0.07 µs for 1501 float32 samples).
+  when T is float32:
+    const expBits = 0x7F80_0000'u32
+    var bad = 0'u32
+  else:
+    const expBits = 0x7FF0_0000_0000_0000'u64
+    var bad = 0'u64
+  {.push boundChecks: off, overflowChecks: off.}
+  for j in 0 ..< n:
+    bad = bad or typeof(bad)((cast[typeof(bad)](x[j]) and expBits) == expBits)
   {.pop.}
-  s == 0
+  bad == 0
 
 proc add*[T](acc: var StackAccumulator[T], bin: int, x: openArray[T],
     first = 0, last = -1): bool {.raises: [].} =
@@ -192,12 +201,12 @@ proc add*[T](acc: var StackAccumulator[T], bin: int, x: openArray[T],
     " samples, the stack " & $acc.samples
   doAssert first >= 0 and first <= last and last <= x.len,
     "the span " & $first & " ..< " & $last & " is outside 0 ..< " & $x.len
-  if not allFinite(x, first, last): return false
   if last > first:
+    let span = cast[ptr UncheckedArray[T]](addr x[first])
+    if not allFinite(span, last - first): return false
     let at = bin * acc.samples + first
     accumulate(cast[ptr UncheckedArray[T]](addr acc.sumPtr[at]),
-      cast[ptr UncheckedArray[int32]](addr acc.foldPtr[at]),
-      cast[ptr UncheckedArray[T]](addr x[first]), last - first)
+      cast[ptr UncheckedArray[int32]](addr acc.foldPtr[at]), span, last - first)
   true
 
 func liveSpan*[T](x: openArray[T]): Slice[int] {.raises: [].} =
