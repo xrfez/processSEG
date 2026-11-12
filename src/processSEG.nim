@@ -43,7 +43,8 @@
 ## - `processSEG/survey/patch`: receiver patches of an X survey, template and distance box
 ##   (`describePatches`, `receiverLayout`);
 ## - `processSEG/qc/fold`: fold maps of a survey: its bin grid (`surveyGrid`), pre-plot and actual fold (`preplotFold`, `addFold`, `foldDifference`);
-## - `processSEG/qc/record`: field records against the XPS (`recordCompleteness`, `summarize`).
+## - `processSEG/qc/record`: field records against the XPS (`recordCompleteness`, `summarize`);
+## - `processSEG/qc/amplitude`: amplitude QC per trace and per record (`traceAmplitudeInto`, `recordAmplitude`).
 
 import processSEG/core/[types, rows, workspace, basic, mute, shift]
 import processSEG/fft/[plan, spectrum]
@@ -54,7 +55,7 @@ import processSEG/core/pool
 import processSEG/velocity/[model, formats, moveout]
 import processSEG/statics/elevation
 import processSEG/stack/[nmo, binning, stack]
-import processSEG/qc/[geometry, firstbreak, snr, shotfit, fold, record]
+import processSEG/qc/[geometry, firstbreak, snr, shotfit, fold, record, amplitude]
 import processSEG/vibroseis/[taper, sweep, pilot, correlate, vstack]
 import processSEG/continuous/slice
 import processSEG/survey/patch
@@ -62,4 +63,4 @@ export types, rows, workspace, basic, mute, plan, spectrum, design,
     apply, iir, gain, curves, stats, pipeline, adapters, pool, shift, model,
     formats, moveout, elevation, nmo, binning, stack, batch, geometry, firstbreak, snr,
     shotfit
-export taper, sweep, pilot, correlate, vstack, slice, patch, fold, record
+export taper, sweep, pilot, correlate, vstack, slice, patch, fold, record, amplitude

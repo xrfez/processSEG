@@ -8,6 +8,7 @@
 ## pool.apply(plan, raw, processed, meta)        # per frame or chunk; blocks
 ## pool.apply(plan, samples, meta)               # in place
 ## pool.correlateInto(corr, raw, correlated, meta) # vibroseis correlation
+## pool.traceAmplitudeInto(raw, meta, AmplitudeParams(), amps) # amplitude QC
 ## ```
 ##
 ## **Workers.** The threads start once, in `newProcessPool`, sleep on a
@@ -44,6 +45,7 @@ import parseSEG
 import rows, types, workspace
 import ../pipeline
 import ../vibroseis/correlate
+import ../qc/amplitude
 
 type
   JobFn = proc(ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
@@ -298,3 +300,48 @@ proc correlateInto*[T: SampleType](p: ProcessPool, plan: CorrelationPlan[T],
   meta.checkShape(src)
   meta.checkShape(dst)
   p.correlateInto(plan, rowBlock(src), rowBlock(dst), meta)
+
+# ------------------------------------------------------------ amplitude QC --
+
+type
+  AmpCtx[T: SampleType] = object
+    params: AmplitudeParams
+    src: RowBlock[T]
+    meta: ChunkMeta
+    dst: ptr UncheckedArray[TraceAmplitude]
+    workers: int
+
+proc ampJob[T](ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
+    gcsafe, raises: [].} =
+  let c = cast[ptr AmpCtx[T]](ctx)
+  let rows = workerRows(c.src.len, worker, c.workers)
+  if rows.len == 0: return
+  try:
+    traceAmplitudeInto(c.src.sub(rows), c.meta.sub(rows), c.params,
+      c.dst.toOpenArray(rows.a, rows.b))
+  except ValueError as e:
+    raiseAssert "checked by traceAmplitudeInto: " & e.msg
+
+proc traceAmplitudeInto*[T: SampleType](p: ProcessPool, b: RowBlock[T],
+    meta: ChunkMeta, params: AmplitudeParams, dst: var openArray[TraceAmplitude]) =
+  ## `qc/amplitude.traceAmplitudeInto` with the rows split across the
+  ## workers; blocks until they are done. The same results and errors
+  ## (raised on the caller's thread, before any work).
+  doAssert p.state != nil, "a ProcessPool must come from newProcessPool"
+  meta.checkShape(b)
+  params.validate
+  if dst.len != b.len:
+    raise newException(ValueError, "dst holds " & $dst.len & " values, the block has " &
+      $b.len & " rows")
+  if b.len == 0: return
+  var ctx = AmpCtx[T](params: params, src: b, meta: meta,
+    dst: cast[ptr UncheckedArray[TraceAmplitude]](addr dst[0]), workers: p.state.workers)
+  acquire p.state.call
+  run(p.state, ampJob[T], addr ctx)
+  release p.state.call
+
+proc traceAmplitudeInto*[T: SampleType](p: ProcessPool, samples: Tensor[T],
+    meta: ChunkMeta, params: AmplitudeParams, dst: var openArray[TraceAmplitude]) =
+  ## The tensor form of the pooled amplitude QC.
+  meta.checkShape(samples)
+  p.traceAmplitudeInto(rowBlock(samples), meta, params, dst)
