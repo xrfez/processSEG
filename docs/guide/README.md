@@ -3,7 +3,7 @@
 Task-oriented guides to the public API, for Nim developers who know seismic processing but
 not this library. Two users are in mind: the developer of a seismic **viewer** (pipelines,
 the process pool, zoom windows, display gain, overlays) and someone running **batch jobs**
-(brute stacks, first breaks, geometry QC, vibroseis correlation).
+(brute stacks, first breaks, geometry QC, vibroseis correlation, survey QC).
 
 [`../api.md`](../api.md) is the reference (every exported name, one line each, and the
 conventions every call follows); [`../integration.md`](../integration.md) is the contract
@@ -34,6 +34,10 @@ or a small SEG-Y written with parseSEG, so they need no files.
 | Correlate vibroseis records, or deconvolve the sweep | [vibroseis.md](vibroseis.md#correlation-and-sweep-deconvolution) |
 | Stack repeated sweeps (vertical, diversity) | [vibroseis.md](vibroseis.md#stacking-repeated-sweeps) |
 | Cut continuous node recordings into records at shot times | [vibroseis.md](vibroseis.md#continuous-recordings) |
+| Read SPS, join traces by station; describe patches, generate X records | [survey-qc.md](survey-qc.md#patches-describing-and-generating-x-records) |
+| Bin a survey automatically; pre-plot and actual fold maps, their difference | [survey-qc.md](survey-qc.md#binning-and-fold-maps) |
+| Check field records against the XPS (missing, unlisted, mismatched records) | [survey-qc.md](survey-qc.md#record-completeness) |
+| Flag dead, clipped, spiky, noisy traces by their amplitudes | [survey-qc.md](survey-qc.md#amplitude-qc) |
 
 ## Related documents
 

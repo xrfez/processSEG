@@ -281,6 +281,7 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `gridBinning(x0, y0, azimuthDeg, crosslineSpacing, inlineSpacing, inlines, crosslines, firstInline = 1, firstCrossline = 1, clockwise = true)`, `inlineCrosslineBinning(firstInline, inlines, firstCrossline, crosslines, inlineStep = 1, crosslineStep = 1)` | 3D: a rotated grid of midpoints; header inline and crossline numbers. |
 | `b.kind`, `b.len`, `b.inlines`, `b.crosslines`, `b.is3D` | Its size. |
 | `b.binOf(k: TraceKeys): int`, `binsInto(rows \| meta, b, bins)` | A trace's bin, −1 for none (NaN key, outside, off the line). |
+| `b.binAt(x, y): int` | The bin of a midpoint position (line and grid binnings; −1 for none, always −1 for header binnings); the maths `binOf` uses. |
 | `BinLocation` (`cdp`, `inline`, `crossline`, `x`, `y`); `b.location(bin)` | What a bin stands for (NaN where undefined). |
 
 ## stack/stack: `StackAccumulator`
@@ -346,6 +347,44 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `ShotFit` (`model`, `interceptMs`, `v1`, `v2`, `crossover`, `used`, `asymmetryMs`, `threshold`, `position`, `modelMs`, `residualMs`, `localMs`, `lagMs`, `coherence`, `suspect`) | One shot's fit; the per-row seqs are resized and reused. |
 | `fitShot(meta, picks, params, fit)`, `fitShot(b \| samples, meta, picks, params, fit)` | Fit one shot's rows; flag traces whose residual jumps against their neighbours, and (with samples) the odd ones out by cross-correlation. `asymmetryMs` hints at a misplaced source. |
 
+## qc/fold: fold maps of a survey
+
+Data in: a parseSEG `SurveyGeometry` (R and S records for the grid; X or O relations for the pre-plot fold); traces as `ChunkMeta` or `TraceRows` for the actual fold.
+
+| Proc | What |
+|---|---|
+| `surveyGrid(g, binInline = NaN, binCrossline = NaN, azimuthDeg = NaN, centre = true, trimStrays = true): Binning` | A `gridBinning` covering the midpoint of every source–receiver pair: inlines along `azimuthDeg` (default: the receiver-line azimuth, median bearing between consecutive stations), bins `binInline` along them (`gridBinning`'s `crosslineSpacing`; default half the median receiver interval) by `binCrossline` across (default half the median source interval: the natural bin of an orthogonal survey). Extent: half the sum of the source and receiver extents on each axis; numbers from 1. `centre`: bin centres at the midpoints' dominant phase per axis (trimmed circular mean of source and receiver phases, Rayleigh test; none significant: the minimum corner), within half a bin of the corner; `false`: the corner. `trimStrays`: stations outside quartile fences (±3·max(IQR, 10 bins) per axis) are left out of the extent, their pairs counted `outside`. `ValueError` for a bad given value, no stations with coordinates, or a default that cannot be measured. |
+| `FoldOptions` (`offsetBounds`, `azimuthSectors`, `sectorStartDeg`, `offsetRange`) | What is counted besides the fold: offset classes (ascending edges, n edges → n − 1 classes `[e_k, e_k+1)`), source → receiver bearing sectors (sector k from `sectorStartDeg + k·360°/n`), each bin's offset range. |
+| `FoldMap`; `initFoldMap(binning, opts = FoldOptions())` | Pairs per bin of a `Binning`, empty. `ValueError` for bad options. |
+| `m.binning`, `m.options`, `m.fold` (`[inlines, crosslines]` int32), `m.offsetFold` (`[classes, inlines, crosslines]`), `m.azimuthFold` (`[sectors, inlines, crosslines]`), `m.offsetMin`, `m.offsetMax` (float32, NaN: empty bin), `m.binned`, `m.outside`, `m.noCoordinates`, `m.notLive`; `clear(m)` | The counts (tensors not asked for are empty); `clear` zeroes them, keeping the storage. |
+| `preplotFold(g, binning, opts = FoldOptions(), domain = rdSource): FoldMap` | The fold of every X relation (O with `rdReceiver`): midpoint bin by `binAt`, station coordinates from per-line sorted arrays with a run cursor (no hash lookup per pair). `ValueError` for a header binning. |
+| `addFold(m, meta \| rows)` | Adds the live traces (D12: live or unknown status, not a failed row), in any order and chunking: midpoint `cmpX/cmpY`, else half-way between `srcX/srcY` and `rcvX/rcvY` (parseSEG `applySurvey` fills them); offset from the coordinates, else `\|offset\|`; bearing from the coordinates only. Header binnings use `binOf`. No allocation; the rows overload raises `ValueError` without keys. |
+| `foldDifference(preplot, actual): Tensor[int32]` | Pre-plot − actual per bin (`[inlines, crosslines]`): positive where traces are missing, negative where traces fall that the pre-plot has fewer of (geometry errors). `ValueError` for maps over different bins. |
+
+## qc/record: field records against the XPS
+
+Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (`ChunkMeta` or `TraceRows`).
+
+| Proc | What |
+|---|---|
+| `RecordMatch` (`rmAuto`, `rmSourceStation`, `rmFieldRecord`), `TraceMatch` (`tmAuto`, `tmStation`, `tmChannel`) | How the X record is found (header source station via `recordsAt`, the FFID choosing among repeats; or the FFID) and how traces match it (receiver station; or channel). Auto: by station when the headers have one. |
+| `StationRange` (`line`, `firstPoint`, `lastPoint`, `count`), `LineCompleteness` (`line`, `expected`, `live`, `missing`) | Consecutive missing X stations on a line; one receiver line's counts. |
+| `RecordCompleteness` (`fieldRecord`, `source`, `hasSource`, `recordMatch`, `traceMatch`, `xpsRecord`, `candidates`, `xpsSource`, `recordMismatch`, `sourceMismatch`, `traces`, `live`, `dead`, `aux`, `failed`, `expected`, `present`, `presentLive`, `unlisted`, `duplicates`, `channelMismatch`, `noStation`, `missing`, `lines`), `missingStations(c)`, `$` | One record: the X record (−1: none or ambiguous) with the other key checked (`recordMismatch`: X number ≠ FFID; `sourceMismatch`: X source ≠ header source), trace counts, station counts (multi-component channels count once), missing ranges, per-line counts; differing channel numbers are informational. |
+| `recordCompleteness(g, meta \| rows, recordMatch = rmAuto, traceMatch = tmAuto)` | Hashes the data's stations once, walks the X record's stations once. Failed rows (meta) are present, not live. The rows overload raises `ValueError` without keys. |
+| `CompletenessSummary` (`records`, `matched`, `unmatched`, `ambiguous`, `recordMismatches`, `sourceMismatches`, `xpsWithoutData`, `expected`, `present`, `presentLive`, `missing`, `unlisted`, `duplicates`), `summarize(g, records)` | Totals over many records, and the X records none matched. |
+| `$`(StationKey) | `line/point`, `.index` when above 1. |
+
+## qc/amplitude: amplitude QC of field records
+
+| Proc | What |
+|---|---|
+| `AmplitudeFlag` (`afNonFinite`, `afDead`, `afConstant`, `afClipped`, `afSpiky`, `afDcOffset`, `afWeak`, `afNoisy`) | Why a trace stands out: NaN/Inf samples; every finite sample 0, or one non-zero value; runs at the maximum magnitude; samples far above their neighbours; a large mean; RMS far below or above the record's. |
+| `AmplitudeParams` (`startMs`, `endMs`, `clipRun = 3`, `clipTolerance = 0`, `spikeFactor = 10`, `spikeWindowMs = 20`, `dcRatio = 0.2`, `outlierZ = 3.5`), `validate(params)` | The window on the trace axis (default: the whole trace) and the thresholds: a clip is `clipRun` samples at `≥ (1 − clipTolerance)·max`; a spike deviates from the mean by more than `spikeFactor` × its neighbours' RMS deviation within ±`spikeWindowMs` (itself left out); DC: `\|mean\| > dcRatio·σ`; outliers: `\|robustZ\| > outlierZ`. Inf turns `spikeFactor`, `dcRatio`, `outlierZ` off. `validate` raises `ValueError`. |
+| `TraceAmplitude` (`samples`, `rmsDb`, `maxDb`, `mean`, `nonFinite`, `clipped`, `spikes`, `robustZ`, `flags`) | One trace over its finite samples; `samples = 0` and NaN for a non-live row or an empty window (a finite window needs `t0Ms`). |
+| `traceAmplitude(x, dtMs, params = AmplitudeParams())` | One trace's samples (the window is not applied). |
+| `traceAmplitudeInto(b \| samples, meta, params, dst)`; `traceAmplitudeInto(pool, b \| samples, meta, params, dst)` | Every row into `dst[row]`, the live samples in the window; with a `ProcessPool`, rows split across its workers (identical results). No allocation. |
+| `RecordAmplitude` (`traces`, `medianRmsDb`, `madDb`, `counts`, `flagged`), `recordAmplitudeWorkspace(traces)`, `recordAmplitude(traces, params, ws)` | One record: median and MAD of `rmsDb` over the traces with samples, a finite RMS and neither dead nor constant; each one's `robustZ = (rmsDb − median) / (1.4826·MAD)` and `afWeak` / `afNoisy` (set or cleared), counts per flag. No allocation. |
+
 ## pipeline: `Op`, `Pipeline`, `PipelinePlan`
 
 | Proc | What |
@@ -368,6 +407,7 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `pool.apply(plan, b \| samples, meta)`, `pool.apply(plan, src, dst, meta)` (blocks or tensors) | `plan.apply` with the rows split across the workers; blocks until done, identical results. One job at a time; a second caller waits. |
 | `pool.ping` | An empty job: the per-job overhead. |
 | `correlateInto(pool, plan: CorrelationPlan[T], src, dst: RowBlock[T] \| Tensor[T], meta)` | Vibroseis correlation with the rows split across the workers; checks as `checkCorrelate` on the caller's thread. |
+| `traceAmplitudeInto(pool, b \| samples, meta, params, dst)` | Amplitude QC (`qc/amplitude`) with the rows split across the workers. |
 
 ## adapters: metas from parseSEG reads
 
@@ -459,3 +499,26 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `report.len`, `report.gapSamples(trace)`, `report.gapCount(trace)`, `gaps(report, trace)` (`SliceGap`: `first`, `count`) | Zero-filled column runs per trace, failed rows included. |
 | `OverlapStatus` (`osNotRead`, `osMatch`, `osMismatch`), `SliceOverlapCheck` (`status`, `differing`, `maxAbsDiff`), `report.overlapCheck(i)`, `report.mismatches` | Overlapping samples compared when both rows are read; a mismatch is a timing error. |
 | `driftCorrectTimes(times, t0, offset0, t1, offset1)`, `driftCorrectedTimes(...)` | Linear clock-drift correction of one receiver's times, in place or a copy, before `planSlices`. |
+
+## survey/patch: receiver patches of an X survey
+
+Data in: a parseSEG `SurveyGeometry` (R, S and X records). Distances are along the receiver
+lines (inline, the layout azimuth) and across them (crossline, 90° clockwise), relative to the
+record's source, in grid units.
+
+| Proc | What |
+|---|---|
+| `LineStation` (`point`, `index`, `inline`, `crossline`), `ReceiverLine` (`line`, `stations`, `pointStep`, `crossline`, `inlineMin`, `inlineMax`, `short`), `ReceiverLayout` (`azimuthDeg`, `interval`, `lineSpacing`, `minLineStations`, `lines`) | The receiver lines, sorted by crossline position; their stations by point. A `short` line (infill, relocated) is not a template line and not in the line spacing. |
+| `receiverLayout(g, azimuthDeg = NaN, interval = NaN, lineSpacing = NaN, minLineStations = 0)` | Azimuth: median bearing between consecutive stations of a line (point order); interval: median station distance; line spacing: median crossline gap between lines that are not short; each measured unless given. Short: fewer than `minLineStations` stations (0: half the median line's). `ValueError` for a bad given value, or one that cannot be measured. |
+| `layout.inlineOf(x, y)`, `layout.crosslineOf(x, y)` | Positions in the layout frame. |
+| `PatchSide` (`psInlineBack`, `psInlineForward`, `psCrosslineLeft`, `psCrosslineRight`), `PatchLine` (`line`, `stations`, `firstPoint`, `lastPoint`) | Sides of a patch; one receiver line of a record. |
+| `RecordPatch` (`record`, `source`, `sourceX`, `sourceY`, `channels`, `lines`, `noCoordinates`, `inlineMin`, `inlineMax`, `crosslineMin`, `crosslineMax`, `maxOffset`, `clipped`) | One X record: its lines and distinct stations per line, receiver extent relative to the source (NaN without coordinates), the sides where it stops short of the full patch. |
+| `Spread` (`min`, `q1`, `median`, `q3`, `max`), `spreadOf(values)`, `$` | Five-number summary (nearest rank, NaN skipped). |
+| `PatchDescription` (`layout`, `records`, `lines`, `channels`, `inlineHalfWidth`, `crosslineHalfWidth`, `maxOffset`, `boxInline`, `boxCrossline`, `clippedRecords`, `noSource`, `regular`, `templateLines`, `templateChannels`), `$` | The survey: spreads over records, the full patch (median half-widths: a record's farther side each way), and the lines × stations template of the unclipped records (exact when `regular`, else nominal). |
+| `describePatches(g, [layout \| azimuthDeg = NaN], clipTolerance = 0.75)` | Describes every X record. A side is clipped when the record's receivers stop short of the full patch by more than `clipTolerance` × interval (inline) or × line spacing (crossline). `ValueError` for a negative tolerance. |
+| `PatchEdge` (`peRoll`, `peShift`, `peStatic`), `PatchPlacement` (`ppCoordinates`, `ppNumbers`), `NumberMap` (`scale = 1`, `offset = 0`), `PatchBox` (`inlineMin`, `inlineMax`, `crosslineMin`, `crosslineMax`; infinite by default) | Edge modes (centred and clipped; shifted inside; one fixed spread), how the source is placed (by position, or receiver line/point = `scale` × source's + `offset`), a box in the layout frame. |
+| `PatchTemplate` (`lines`, `channels`, `lineOffset`, `stationOffset`, `edge = peRoll`, `staticBox`, `placement = ppCoordinates`, `lineMap`, `pointMap`; distance field: `inlineHalfWidth`, `crosslineHalfWidth`, `boxAzimuthDeg = NaN`, `inlineDistance`, `crosslineDistance`, `radius`, `maxOffset`, Inf: none), `initPatchTemplate(lines, channels, edge = peRoll)`, `initDistancePatch(inlineHalfWidth, crosslineHalfWidth, edge = peRoll, radius = Inf, maxOffset = Inf)`, `hasTemplate`, `hasDistance` | A lines × station-slots template centred on the source plus the offsets (in lines and stations), distance limits (a box along the receiver-line or a given azimuth, centred on the source plus distances; a radius about the box centre; a maximum offset), or both (their intersection). |
+| `PatchShot` (`record`, `source`), `patchShots(f: SpsFile \| g: SurveyGeometry, firstRecord = 1)` | The records to generate: S records in file order, or the geometry's sources in line/point order. |
+| `generateRelations(g, [layout,] shots, template): seq[SpsRelation]` | X records: per shot the template lines nearest the source (not short), on each the station slots around it (one slot per `pointStep`; a slot missing from R is a hole), plus short-line stations inside the patch; channels 1..n by ascending line and point, one record per run of consecutive stations. Distance limits alone take every R station inside (short lines too); with a template, its receivers inside. A shot whose source has no coordinates gets none (`ppCoordinates`, or distance limits). `peShift` moves a distance box inside the receivers' extent (bounding box in the box frame); it takes a template or distance limits, not both. `ValueError` for neither (roll, shift), an empty template, shift with both, a non-finite offset or map, a negative or NaN limit. Write with parseSEG `writeSps`; O records with `receiverRelations`. |
+| `RecordAgreement` (`record`, `listed`, `generated`, `common`, `missing`, `extra`), `jaccard(a)`, `listedFraction(a)` | One record in two relation sets, by distinct receiver stations; `missing`: listed, not generated; `extra`: generated, not listed (receivers dropped in the field). |
+| `compareRelations(listed, generated: SurveyGeometry): seq[RecordAgreement]` | Per X record of either, ascending (index 0 and 1 alike). |

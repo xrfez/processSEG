@@ -23,6 +23,11 @@ with no hidden allocation and no hidden threads.
   shapes), generated or recorded pilots (resampling, instrument filters, SEG-Y sweep
   headers), correlation and sweep deconvolution, vertical and diversity stacking of
   repeated sweeps, and continuous node recordings cut into records at shot times.
+- **Survey QC:** receiver patches of an X survey described as a template or a distance box,
+  X records generated from either (roll, shift, static edges), automatic bin grids,
+  pre-plot and actual fold maps (offset classes, azimuth sectors) and their difference,
+  field records checked against the XPS by station (missing, unlisted, mismatched records),
+  and amplitude QC per trace and record (dead, clipped, spiky, DC, weak, noisy traces).
 
 float32 and float64 throughout; units are ms, Hz, dB and distance units per second.
 
