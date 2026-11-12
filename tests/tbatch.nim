@@ -6,7 +6,7 @@
 ## cancel, errors, and parseSEG's demo files (post-stack SEG-Y reproduced
 ## exactly, SEG-D and SEG-2 runs). Memory bound arithmetic.
 
-import std/[assertions, math, options, os, random]
+import std/[assertions, math, options, os, random, strutils]
 import processSEG
 import parseSEG/io/diskio
 import parseSEG/segy/[samples as segysamples, textheader, binheader,
@@ -129,8 +129,7 @@ block same_bits_for_any_worker_count:
     if withFlow:
       opts.flow = initPipeline([bandPassOp(Corners(f1: 3, f2: 6, f3: 60,
           f4: 80)), agcOp(300)])
-      opts.useStatics = true
-      opts.statics = datumStatics(100, 2000)
+      opts.statics = some(datumStatics(100, 2000))
       opts.nmo = initNmoParams(siCubic, maxStretch = 0.5, taperMs = 20)
       opts.norm = fnSqrtFold
     let field = initVelocityField([1.0, float64(cdps) / 2, float64(cdps)], [vel,
@@ -188,8 +187,7 @@ block equals_the_stack_by_hand:
     for workers in [1, 3]:
       var opts = initBruteStackOptions(flow = flow, workers = workers)
       opts.chunkTraces = 16
-      opts.useStatics = true
-      opts.statics = datumStatics(100, 2000)
+      opts.statics = some(datumStatics(100, 2000))
       opts.samples = samples
       opts.startMs = startMs
       let res = bruteStack(f, float32, binning, vel, opts)
@@ -221,8 +219,7 @@ block statics_and_flow:
   var opts = initBruteStackOptions(flow = initPipeline([bandPassOp(Corners(
       f1: 3, f2: 6, f3: 60, f4: 80))]))
   let raw = bruteStack(f, float32, binning, vel, opts)
-  opts.useStatics = true
-  opts.statics = datumStatics(100, 2000)
+  opts.statics = some(datumStatics(100, 2000))
   opts.staticsInterp = siCubic
   let fixed = bruteStack(f, float32, binning, vel, opts)
   # With statics, every full-fold CDP's reflectors peak at t0; without,
@@ -268,8 +265,13 @@ block errors:
   var opts = initBruteStackOptions(workers = 0)
   doAssertRaises ValueError: discard bruteStack(f, float32, binning, vel, opts)
   opts = initBruteStackOptions()
-  opts.useStatics = true # without a datum
-  doAssertRaises ValueError: discard bruteStack(f, float32, binning, vel, opts)
+  doAssert opts.statics.isNone # no statics unless asked
+  opts.statics = some(DatumStatics()) # not from datumStatics
+  try:
+    discard bruteStack(f, float32, binning, vel, opts)
+    doAssert false, "a default DatumStatics must be refused"
+  except ValueError as e:
+    doAssert "opts.statics" in e.msg, e.msg
   opts = initBruteStackOptions()
   opts.nmo = NmoParams()
   doAssertRaises ValueError: discard bruteStack(f, float32, binning, vel, opts)
@@ -400,8 +402,7 @@ block skipped_traces:
   f.index.keys[7].rcvZ = NaN
   f.index.keys[8].intervalUs = NaN
   var opts = initBruteStackOptions()
-  opts.useStatics = true
-  opts.statics = datumStatics(100, 2000)
+  opts.statics = some(datumStatics(100, 2000))
   let res = bruteStack(f, float32, binning, vel, opts)
   doAssert res.skipped == 2 and res.stacked == flat.traces - 2
   opts = initBruteStackOptions(nmo = initNmoParams(maxStretch = 1e-6))

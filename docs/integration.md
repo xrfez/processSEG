@@ -433,8 +433,8 @@ processSEG's QC modules score this automatically (experimental for land data):
 
 `bruteStack(f, T, [traces,] binning, velocity, opts, progress)` (`processSEG/batch`) reads
 the file through parseSEG's prefetcher (`uniform = true`). On each chunk, in the
-prefetcher's `transform` hook on its decode worker, it runs datum statics (optional,
-`opts.useStatics` and `opts.statics = datumStatics(datumZ, vReplacement)`), the pre-stack
+prefetcher's `transform` hook on its decode worker, it runs datum statics (optional:
+`opts.statics = some(datumStatics(datumZ, vReplacement))`, an `Option`), the pre-stack
 flow (`opts.flow`, a `Pipeline`: mutes, filters, gain), NMO with a stretch mute
 (`opts.nmo = initNmoParams(interp, maxStretch, taperMs)`) onto the stack's time axis. The
 calling thread takes the corrected chunks in file order and adds each live trace to its

@@ -32,7 +32,7 @@
 ## **Traces.** Only live traces are stacked (`ChunkMeta.isLive`). A live
 ## trace is skipped, and counted in `StackResult.skipped`, when it falls
 ## outside every bin, has a NaN offset or `t0Ms`, a NaN static (with
-## `useStatics`), no sample interval in its headers, or a NaN or infinite
+## `statics`), no sample interval in its headers, or a NaN or infinite
 ## sample, or when the stretch mute leaves nothing of it. Traces that could
 ## not be decoded are counted in `failed` (their diagnostics are dropped:
 ## read them with parseSEG if needed). The live traces with an interval
@@ -65,13 +65,16 @@
 ## trace and the stack) and each worker's flow scratch (`bruteStackMemory`
 ## estimates the total).
 
-import std/[atomics, math]
+import std/[atomics, math, options]
 import parseSEG
 import core/[rows, types, workspace]
 import pipeline
 import stack/[binning, nmo, stack]
 import statics/elevation
 import velocity/model
+
+# For `BruteStackOptions.statics`: callers write `some(datumStatics(...))`.
+export options
 
 type
   BruteStackOptions* = object
@@ -81,8 +84,8 @@ type
                       ## `perPanel` normalization works per prefetch chunk
                       ## (`chunkTraces`, cut where the interval changes), so its
                       ## factors depend on the chunking: prefer `perTrace` here.
-    useStatics*: bool ## Apply `statics` first.
-    statics*: DatumStatics ## Datum statics, when `useStatics`.
+    statics*: Option[DatumStatics] ## Datum statics, applied first:
+                                     ## `some(datumStatics(...))`; `none`: no statics.
     staticsInterp*: ShiftInterp ## Interpolation of the statics shifts.
     nmo*: NmoParams ## NMO interpolation and stretch mute.
     norm*: FoldNorm ## Normalization of the stack.
@@ -280,8 +283,8 @@ proc checkOptions(o: BruteStackOptions) =
     raise newException(ValueError, "startMs must be finite, got " & $o.startMs)
   if o.nmo.maxStretch.isNaN or o.nmo.maxStretch <= 0:
     raise newException(ValueError, "opts.nmo must come from initNmoParams")
-  if o.useStatics and not (o.statics.vReplacement > 0):
-    raise newException(ValueError, "opts.statics must come from datumStatics")
+  if o.statics.isSome and not (o.statics.get.vReplacement > 0):
+    raise newException(ValueError, "opts.statics must hold a datumStatics(...)")
 
 proc runStack[T](f: SeismicFile, traces: Slice[int], binning: Binning,
     job: var Job[T], opts: BruteStackOptions, progress: Progress): StackResult[T] =
@@ -303,8 +306,8 @@ proc runStack[T](f: SeismicFile, traces: Slice[int], binning: Binning,
     s.lastBin = -1
   job.plan = addr plan
   job.binning = addr binning
-  job.useStatics = opts.useStatics
-  job.statics = opts.statics
+  job.useStatics = opts.statics.isSome
+  if job.useStatics: job.statics = opts.statics.get
   job.staticsInterp = opts.staticsInterp
   job.nmo = opts.nmo
   job.dtMs = dtMs
