@@ -489,6 +489,25 @@ block slice_keys_take_the_source_from_the_shot_alone:
   doAssert k.srcLine == 9 and k.srcPoint == 4 and k.srcIndex == 0, $k.srcIndex
   doAssert plan.sliceKeys(1).srcIndex == 2
 
+block slice_keys_keep_the_source_interval:
+  # A 31 Hz stream: 1e6 / 31 µs is not `(that / 1000) · 1000` in float64.
+  # The output keys hold the interval the segments' keys hold, bit for bit,
+  # so a writer and `uniformRuns` see one interval, not two.
+  let us = 1e6 / 31
+  doAssert us / 1000 * 1000 != us, "the case this test is about"
+  var keys = @[initTraceKeys(), initTraceKeys()]
+  for i, k in keys.mpairs:
+    k.status = tsLive
+    (k.time, k.t0Ms, k.intervalUs) = (1000.0, 0.0, us)
+    (k.rcvLine, k.rcvPoint) = (1.0, float64(i))
+  keys[1].intervalUs = NaN # unknown in the headers: from the meta
+  let counts = @[100, 100]
+  let meta = initChunkMeta(rowsOf(keys, counts), dtMs = us / 1000)
+  let plan = planSlices(meta, [initSliceShot(1000.0, id = 1)],
+    SliceWindow(startMs: 0, lengthMs: 10 * us / 1000))
+  doAssert plan.sliceKeys(0).intervalUs == us
+  doAssert plan.sliceKeys(1).intervalUs == meta.dtMs * 1000
+
 block a_sample_count_beyond_any_file:
   # No file holds a trace of 2⁶³ samples: it is the caller's array, so a bad
   # argument, and must not overflow the positions on the sample grid.

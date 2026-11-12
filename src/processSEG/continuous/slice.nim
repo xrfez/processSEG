@@ -571,7 +571,8 @@ func sliceKeys*(plan: SlicePlan, trace: int): TraceKeys =
   ## coordinates from the shot, whatever the segments' headers hold; offset
   ## and midpoint from the coordinates (NaN without them);
   ## `time` the shot time and `t0Ms` the window's `startMs`; `intervalUs`
-  ## from `dtMs`; ensemble, inline and crossline NaN; `status` dead when no
+  ## as the receiver's keys hold it (from `dtMs` when they hold none);
+  ## ensemble, inline and crossline NaN; `status` dead when no
   ## segment reaches the trace, else live (`traceCode` 0: the writer derives
   ## it from `status`).
   let shot = plan.shots[plan.shotOf(trace)]
@@ -591,7 +592,11 @@ func sliceKeys*(plan: SlicePlan, trace: int): TraceKeys =
   result.crossline = NaN
   result.time = shot.time
   result.t0Ms = plan.window.startMs
-  result.intervalUs = plan.dtMs * 1000
+  # The receiver's own interval when its keys hold one: `dtMs * 1000` can
+  # differ from it in the last bit (1e6 / 31 µs does), and parseSEG compares
+  # intervals exactly.
+  if not (result.intervalUs > 0 and result.intervalUs < Inf):
+    result.intervalUs = plan.dtMs * 1000
   result.traceCode = 0
   result.status = if plan.gapSamples[trace] >= plan.samples: tsDead else: tsLive
   result.deriveGeometry(overwrite = true)
