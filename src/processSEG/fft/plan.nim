@@ -42,6 +42,18 @@ const fftLanes* = 8
   ## Traces per batch in the batched path (`forwardLanes`, `inverseLanes`).
   ## Eight float32 lanes fill one AVX2 register.
 
+const staggerBytes = 17472
+  # The gap left between the four work arrays of a transform. Without it they
+  # lie a whole number of pages apart whenever `m·lanes·sizeof(T)` is a
+  # multiple of 4096 (every power-of-two length), and so do the `r` input
+  # streams of a radix-`r` pass inside each array: all the streams of a pass
+  # then compete for the same cache sets (L1: 8 ways of 4 KiB; L2: 8 ways of
+  # 64 KiB for long transforms) and evict each other on every butterfly. The
+  # gap is 17 cache lines more than 4 pages, so the four arrays sit about a
+  # quarter of a page apart in L1 and a quarter of 64 KiB apart in L2.
+  # Measured, 8 lanes of float32: n = 2048 1.7× faster, 65536 4.5×, 131072
+  # 15× (bench/README).
+
 type
   FftPlan*[T: SampleType] = object
     ## A real FFT of one length; see the module documentation.
@@ -124,8 +136,10 @@ func workspaceSize*[T](p: FftPlan[T], batched = true): WorkspaceSize {.raises: [
   ## The scratch one transform needs: two complex work buffers, of
   ## `fftLanes` lanes for the batched path (`forwardLanes`, `inverseLanes`;
   ## this also covers the one-trace path) or of one lane (`batched = false`,
-  ## enough for `forward` and `inverse` only).
-  let elems = 4 * p.m * (if batched: fftLanes else: 1)
+  ## enough for `forward` and `inverse` only), plus the gaps that keep their
+  ## four arrays out of each other's cache sets.
+  let elems = 4 * p.m * (if batched: fftLanes else: 1) +
+    3 * (staggerBytes div sizeof(T))
   when T is float32: WorkspaceSize(f32: elems)
   else: WorkspaceSize(f64: elems)
 
@@ -152,10 +166,27 @@ template mulTw(yr, yi, wr, wi: untyped) =
   yi = yr * wi + yi * wr
   yr = t
 
-proc bfly2[T](x0r {.noalias.}, x0i {.noalias.}, x1r {.noalias.},
+template lanesLoop(w: int, L: static int, i, body: untyped) =
+  ## Runs `body` for `i in 0 ..< w`, where `w` is a multiple of the lane
+  ## count `L`. For `L > 1` the loop is written as runs of exactly `L`
+  ## values (one SIMD register of float32 lanes for `fftLanes`), so the
+  ## compiler emits no remainder loop and no trip-count test per butterfly:
+  ## the first stages, whose `w` is `L` or `4·L`, are then straight-line
+  ## packed code (17 % of an n = 2048 transform, measured).
+  when L == 1:
+    for i in 0..<w: body
+  else:
+    var first = 0
+    while first < w:
+      for lane in 0..<L:
+        let i {.inject.} = first + lane
+        body
+      first += L
+
+proc bfly2[T; L: static int](x0r {.noalias.}, x0i {.noalias.}, x1r {.noalias.},
     x1i {.noalias.}, y0r {.noalias.}, y0i {.noalias.}, y1r {.noalias.},
     y1i {.noalias.}: Buf[T], wr, wi: T, w: int) {.inline, raises: [].} =
-  for i in 0..<w:
+  lanesLoop(w, L, i):
     let
       ur = x0r[i]
       ui = x0i[i]
@@ -169,7 +200,7 @@ proc bfly2[T](x0r {.noalias.}, x0i {.noalias.}, x1r {.noalias.},
     y1r[i] = dr
     y1i[i] = di
 
-proc bfly3[T](x0r {.noalias.}, x0i {.noalias.}, x1r {.noalias.},
+proc bfly3[T; L: static int](x0r {.noalias.}, x0i {.noalias.}, x1r {.noalias.},
     x1i {.noalias.}, x2r {.noalias.}, x2i {.noalias.}, y0r {.noalias.},
     y0i {.noalias.}, y1r {.noalias.}, y1i {.noalias.}, y2r {.noalias.},
     y2i {.noalias.}: Buf[T], w1r, w1i, w2r, w2i: T, w: int) {.inline,
@@ -177,7 +208,7 @@ proc bfly3[T](x0r {.noalias.}, x0i {.noalias.}, x1r {.noalias.},
   const
     c = T(-0.5)
     s = T(0.8660254037844386467637231707529362) # √3/2
-  for i in 0..<w:
+  lanesLoop(w, L, i):
     let
       ar = x0r[i]
       ai = x0i[i]
@@ -203,13 +234,13 @@ proc bfly3[T](x0r {.noalias.}, x0i {.noalias.}, x1r {.noalias.},
     y2r[i] = u2r
     y2i[i] = u2i
 
-proc bfly4[T](x0r {.noalias.}, x0i {.noalias.}, x1r {.noalias.},
+proc bfly4[T; L: static int](x0r {.noalias.}, x0i {.noalias.}, x1r {.noalias.},
     x1i {.noalias.}, x2r {.noalias.}, x2i {.noalias.}, x3r {.noalias.},
     x3i {.noalias.}, y0r {.noalias.}, y0i {.noalias.}, y1r {.noalias.},
     y1i {.noalias.}, y2r {.noalias.}, y2i {.noalias.}, y3r {.noalias.},
     y3i {.noalias.}: Buf[T], w1r, w1i, w2r, w2i, w3r, w3i: T,
     w: int) {.inline, raises: [].} =
-  for i in 0..<w:
+  lanesLoop(w, L, i):
     let
       t0r = x0r[i] + x2r[i]
       t0i = x0i[i] + x2i[i]
@@ -238,7 +269,7 @@ proc bfly4[T](x0r {.noalias.}, x0i {.noalias.}, x1r {.noalias.},
     y3r[i] = u3r
     y3i[i] = u3i
 
-proc bfly5[T](x0r {.noalias.}, x0i {.noalias.}, x1r {.noalias.},
+proc bfly5[T; L: static int](x0r {.noalias.}, x0i {.noalias.}, x1r {.noalias.},
     x1i {.noalias.}, x2r {.noalias.}, x2i {.noalias.}, x3r {.noalias.},
     x3i {.noalias.}, x4r {.noalias.}, x4i {.noalias.}, y0r {.noalias.},
     y0i {.noalias.}, y1r {.noalias.}, y1i {.noalias.}, y2r {.noalias.},
@@ -250,7 +281,7 @@ proc bfly5[T](x0r {.noalias.}, x0i {.noalias.}, x1r {.noalias.},
     c2 = T(-0.8090169943749474241022934171828191) # cos 4π/5
     s1 = T(0.9510565162951535721164393333793821)  # sin 2π/5
     s2 = T(0.5877852522924731291687059546390728)  # sin 4π/5
-  for i in 0..<w:
+  lanesLoop(w, L, i):
     let
       ar = x0r[i]
       ai = x0i[i]
@@ -295,45 +326,49 @@ proc bfly5[T](x0r {.noalias.}, x0i {.noalias.}, x1r {.noalias.},
     y4r[i] = u4r
     y4i[i] = u4i
 
-proc pass2[T](xr, xi, yr, yi, tr, ti: Buf[T], sub, w: int) {.raises: [].} =
+proc pass2[T; L: static int](xr, xi, yr, yi, tr, ti: Buf[T], sub,
+    w: int) {.raises: [].} =
   for p in 0..<sub:
     let a = p * w
     let b = 2 * p * w
     let o = sub * w
-    bfly2(xr +@ a, xi +@ a, xr +@ (a + o), xi +@ (a + o),
+    bfly2[T, L](xr +@ a, xi +@ a, xr +@ (a + o), xi +@ (a + o),
       yr +@ b, yi +@ b, yr +@ (b + w), yi +@ (b + w), tr[p], ti[p], w)
 
-proc pass3[T](xr, xi, yr, yi, tr, ti: Buf[T], sub, w: int) {.raises: [].} =
+proc pass3[T; L: static int](xr, xi, yr, yi, tr, ti: Buf[T], sub,
+    w: int) {.raises: [].} =
   for p in 0..<sub:
     let a = p * w
     let b = 3 * p * w
     let o = sub * w
     let t = 2 * p
-    bfly3(xr +@ a, xi +@ a, xr +@ (a + o), xi +@ (a + o),
+    bfly3[T, L](xr +@ a, xi +@ a, xr +@ (a + o), xi +@ (a + o),
       xr +@ (a + 2 * o), xi +@ (a + 2 * o),
       yr +@ b, yi +@ b, yr +@ (b + w), yi +@ (b + w),
       yr +@ (b + 2 * w), yi +@ (b + 2 * w),
       tr[t], ti[t], tr[t + 1], ti[t + 1], w)
 
-proc pass4[T](xr, xi, yr, yi, tr, ti: Buf[T], sub, w: int) {.raises: [].} =
+proc pass4[T; L: static int](xr, xi, yr, yi, tr, ti: Buf[T], sub,
+    w: int) {.raises: [].} =
   for p in 0..<sub:
     let a = p * w
     let b = 4 * p * w
     let o = sub * w
     let t = 3 * p
-    bfly4(xr +@ a, xi +@ a, xr +@ (a + o), xi +@ (a + o),
+    bfly4[T, L](xr +@ a, xi +@ a, xr +@ (a + o), xi +@ (a + o),
       xr +@ (a + 2 * o), xi +@ (a + 2 * o), xr +@ (a + 3 * o), xi +@ (a + 3 * o),
       yr +@ b, yi +@ b, yr +@ (b + w), yi +@ (b + w),
       yr +@ (b + 2 * w), yi +@ (b + 2 * w), yr +@ (b + 3 * w), yi +@ (b + 3 * w),
       tr[t], ti[t], tr[t + 1], ti[t + 1], tr[t + 2], ti[t + 2], w)
 
-proc pass5[T](xr, xi, yr, yi, tr, ti: Buf[T], sub, w: int) {.raises: [].} =
+proc pass5[T; L: static int](xr, xi, yr, yi, tr, ti: Buf[T], sub,
+    w: int) {.raises: [].} =
   for p in 0..<sub:
     let a = p * w
     let b = 5 * p * w
     let o = sub * w
     let t = 4 * p
-    bfly5(xr +@ a, xi +@ a, xr +@ (a + o), xi +@ (a + o),
+    bfly5[T, L](xr +@ a, xi +@ a, xr +@ (a + o), xi +@ (a + o),
       xr +@ (a + 2 * o), xi +@ (a + 2 * o), xr +@ (a + 3 * o), xi +@ (a + 3 * o),
       xr +@ (a + 4 * o), xi +@ (a + 4 * o),
       yr +@ b, yi +@ b, yr +@ (b + w), yi +@ (b + w),
@@ -344,8 +379,8 @@ proc pass5[T](xr, xi, yr, yi, tr, ti: Buf[T], sub, w: int) {.raises: [].} =
 
 {.pop.}
 
-proc complexForward[T](p: FftPlan[T], ar, ai, br, bi: Buf[T],
-    lanes: int): bool {.raises: [].} =
+proc complexForward[T; L: static int](p: FftPlan[T], ar, ai, br,
+    bi: Buf[T]): bool {.raises: [].} =
   ## The forward complex FFT of length `m` of (ar, ai), with (br, bi) as the
   ## second work buffer. Returns true when the result ended in (br, bi).
   var
@@ -360,14 +395,14 @@ proc complexForward[T](p: FftPlan[T], ar, ai, br, bi: Buf[T],
   let ti = cast[Buf[T]](if p.twIm.len > 0: addr p.twIm[0] else: nil)
   for r in p.radices:
     let sub = cur div r
-    let w = s * lanes
+    let w = s * L
     let twr = cast[Buf[T]](if tr == nil: nil else: addr tr[at])
     let twi = cast[Buf[T]](if ti == nil: nil else: addr ti[at])
     case r
-    of 4: pass4(xr, xi, yr, yi, twr, twi, sub, w)
-    of 2: pass2(xr, xi, yr, yi, twr, twi, sub, w)
-    of 3: pass3(xr, xi, yr, yi, twr, twi, sub, w)
-    else: pass5(xr, xi, yr, yi, twr, twi, sub, w)
+    of 4: pass4[T, L](xr, xi, yr, yi, twr, twi, sub, w)
+    of 2: pass2[T, L](xr, xi, yr, yi, twr, twi, sub, w)
+    of 3: pass3[T, L](xr, xi, yr, yi, twr, twi, sub, w)
+    else: pass5[T, L](xr, xi, yr, yi, twr, twi, sub, w)
     at += sub * (r - 1)
     cur = sub
     s *= r
@@ -428,12 +463,13 @@ proc forwardImpl[T; L: static int](p: FftPlan[T], x: Buf[T], re, im: Buf[T],
     ws: var Workspace) {.raises: [].} =
   ## Real forward transform of `L` interleaved sequences.
   let mL = p.m * L
-  let w = ws.scratch(T, 4 * mL)
+  let g = staggerBytes div sizeof(T) # the gap between the work arrays
+  let w = ws.scratch(T, 4 * mL + 3 * g)
   let
     ar = w
-    ai = w +@ mL
-    br = w +@ (2 * mL)
-    bi = w +@ (3 * mL)
+    ai = w +@ (mL + g)
+    br = w +@ (2 * mL + 2 * g)
+    bi = w +@ (3 * mL + 3 * g)
     m = p.m
   if p.n mod 2 == 1:
     for i in 0..<mL:
@@ -443,7 +479,7 @@ proc forwardImpl[T; L: static int](p: FftPlan[T], x: Buf[T], re, im: Buf[T],
     for k in 0..<m: # z[k] = x[2k] + i·x[2k+1]
       packLanes[T, L](ar +@ (k * L), ai +@ (k * L), x +@ (2 * k * L),
         x +@ ((2 * k + 1) * L))
-  let inB = p.complexForward(ar, ai, br, bi, L)
+  let inB = complexForward[T, L](p, ar, ai, br, bi)
   let zr = if inB: br else: ar
   let zi = if inB: bi else: ai
   if p.n mod 2 == 1:
@@ -472,12 +508,13 @@ proc inverseImpl[T; L: static int](p: FftPlan[T], re, im: Buf[T], x: Buf[T],
   ## inverse complex FFT is the forward one on swapped real and imaginary
   ## parts: ifft(Z) = swap(fft(swap(Z))).
   let mL = p.m * L
-  let w = ws.scratch(T, 4 * mL)
+  let g = staggerBytes div sizeof(T) # the gap between the work arrays
+  let w = ws.scratch(T, 4 * mL + 3 * g)
   let
     ar = w
-    ai = w +@ mL
-    br = w +@ (2 * mL)
-    bi = w +@ (3 * mL)
+    ai = w +@ (mL + g)
+    br = w +@ (2 * mL + 2 * g)
+    bi = w +@ (3 * mL + 3 * g)
     scale = T(1) / T(p.n)
     m = p.m
   # ai receives Re Z and ar Im Z, i.e. (ar, ai) is swap(Z).
@@ -506,7 +543,7 @@ proc inverseImpl[T; L: static int](p: FftPlan[T], re, im: Buf[T], x: Buf[T],
       splitInverse[T, L](re +@ (k * L), im +@ (k * L), re +@ ((m - k) * L),
         im +@ ((m - k) * L), ar +@ (k * L), ai +@ (k * L), sr[k], -si[k], scale)
   # (ar, ai) holds swap(Z) = Im Z + i·Re Z; z = swap(fft(swap(Z))).
-  let inB = p.complexForward(ar, ai, br, bi, L)
+  let inB = complexForward[T, L](p, ar, ai, br, bi)
   let zr = if inB: bi else: ai
   let zi = if inB: br else: ar
   if p.n mod 2 == 1:
