@@ -39,7 +39,9 @@
 ## - `processSEG/vibroseis/correlate`: correlation and sweep deconvolution (`CorrelationPlan`);
 ## - `processSEG/vibroseis/vstack`: `RecordStack`, vertical and diversity stacks of repeated records;
 ## - `processSEG/continuous/slice`: continuous recordings cut into records at shot times
-##   (`planSlices`, `extractInto`).
+##   (`planSlices`, `extractInto`);
+## - `processSEG/survey/patch`: receiver patches of an X survey, template and distance box
+##   (`describePatches`, `receiverLayout`).
 
 import processSEG/core/[types, rows, workspace, basic, mute, shift]
 import processSEG/fft/[plan, spectrum]
@@ -53,8 +55,9 @@ import processSEG/stack/[nmo, binning, stack]
 import processSEG/qc/[geometry, firstbreak, snr, shotfit]
 import processSEG/vibroseis/[taper, sweep, pilot, correlate, vstack]
 import processSEG/continuous/slice
+import processSEG/survey/patch
 export types, rows, workspace, basic, mute, plan, spectrum, design,
     apply, iir, gain, curves, stats, pipeline, adapters, pool, shift, model,
     formats, moveout, elevation, nmo, binning, stack, batch, geometry, firstbreak, snr,
     shotfit
-export taper, sweep, pilot, correlate, vstack, slice
+export taper, sweep, pilot, correlate, vstack, slice, patch

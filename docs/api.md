@@ -459,3 +459,20 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `report.len`, `report.gapSamples(trace)`, `report.gapCount(trace)`, `gaps(report, trace)` (`SliceGap`: `first`, `count`) | Zero-filled column runs per trace, failed rows included. |
 | `OverlapStatus` (`osNotRead`, `osMatch`, `osMismatch`), `SliceOverlapCheck` (`status`, `differing`, `maxAbsDiff`), `report.overlapCheck(i)`, `report.mismatches` | Overlapping samples compared when both rows are read; a mismatch is a timing error. |
 | `driftCorrectTimes(times, t0, offset0, t1, offset1)`, `driftCorrectedTimes(...)` | Linear clock-drift correction of one receiver's times, in place or a copy, before `planSlices`. |
+
+## survey/patch: receiver patches of an X survey
+
+Data in: a parseSEG `SurveyGeometry` (R, S and X records). Distances are along the receiver
+lines (inline, the layout azimuth) and across them (crossline, 90° clockwise), relative to the
+record's source, in grid units.
+
+| Proc | What |
+|---|---|
+| `ReceiverLine` (`line`, `stations`, `crossline`, `inlineMin`, `inlineMax`), `ReceiverLayout` (`azimuthDeg`, `interval`, `lineSpacing`, `lines`) | The receiver lines, sorted by crossline position. |
+| `receiverLayout(g, azimuthDeg = NaN)` | Azimuth: median bearing between consecutive stations of a line (point order), unless given; interval: median station distance; line spacing: median crossline gap. `ValueError` with no measurable line and no azimuth. |
+| `layout.inlineOf(x, y)`, `layout.crosslineOf(x, y)` | Positions in the layout frame. |
+| `PatchSide` (`psInlineBack`, `psInlineForward`, `psCrosslineLeft`, `psCrosslineRight`), `PatchLine` (`line`, `stations`, `firstPoint`, `lastPoint`) | Sides of a patch; one receiver line of a record. |
+| `RecordPatch` (`record`, `source`, `sourceX`, `sourceY`, `channels`, `lines`, `noCoordinates`, `inlineMin`, `inlineMax`, `crosslineMin`, `crosslineMax`, `maxOffset`, `clipped`) | One X record: its lines and distinct stations per line, receiver extent relative to the source (NaN without coordinates), the sides where it stops short of the full patch. |
+| `Spread` (`min`, `q1`, `median`, `q3`, `max`), `spreadOf(values)`, `$` | Five-number summary (nearest rank, NaN skipped). |
+| `PatchDescription` (`layout`, `records`, `lines`, `channels`, `inlineHalfWidth`, `crosslineHalfWidth`, `maxOffset`, `boxInline`, `boxCrossline`, `clippedRecords`, `noSource`, `regular`, `templateLines`, `templateChannels`), `$` | The survey: spreads over records, the full patch (median half-widths: a record's farther side each way), and the lines × stations template of the unclipped records (exact when `regular`, else nominal). |
+| `describePatches(g, [layout \| azimuthDeg = NaN], clipTolerance = 0.75)` | Describes every X record. A side is clipped when the record's receivers stop short of the full patch by more than `clipTolerance` × interval (inline) or × line spacing (crossline). `ValueError` for a negative tolerance. |
