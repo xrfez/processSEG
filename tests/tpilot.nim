@@ -4,6 +4,7 @@
 
 import std/[assertions, math, os]
 import parseSEG, processSEG
+import processSEG/vibroseis/kaiser
 
 block generated:
   let spec = linearSweep(8, 80, 8000, 2, initSweepTaper(250, 300, tpLinear))
@@ -217,6 +218,44 @@ block resampling_keeps_its_passband_flat:
   let ends = step.resamplePilot(2)
   doAssert abs(ends.samples[0] - 1) < 0.02, $ends.samples[0]
   doAssert abs(ends.samples[1] - step.samples[4]) < 0.02, $ends.samples[1]
+
+proc interpolated(p: Pilot[float64], dtMs: float64, halfWidth = 32): seq[float64] =
+  ## `resamplePilot`'s definition, tap by tap: the Kaiser-windowed sinc at
+  ## 0.9 of the lower Nyquist, each output divided by the sum of its taps.
+  let coarse = max(dtMs, p.dtMs)
+  let fc = 0.9 * 500 / coarse
+  let w = float64(halfWidth) * coarse
+  for j in 0 .. int(floor(p.lengthMs / dtMs * (1 + 1e-9))):
+    let t = float64(j) * dtMs
+    var acc, sum = 0.0
+    for i, v in p.samples:
+      let u = (float64(i) * p.dtMs - t) / w
+      if abs(u) < 1:
+        let x = 2 * fc / 1000 * (float64(i) * p.dtMs - t)
+        let h = (if x == 0: 1.0 else: sin(PI * x) / (PI * x)) *
+          besselI0(8 * sqrt(1 - u * u)) / besselI0(8.0)
+        acc += v * h
+        sum += h
+    result.add acc / sum
+
+block resampling_by_tabulated_kernels:
+  # Intervals in a ratio of small whole numbers share their kernels (one
+  # per phase); any other ratio computes one per output. Both are the
+  # definition, to rounding, ends included.
+  let p = generatePilot(linearSweep(5, 60, 1000, 2, startPhaseDeg = 40))
+  for dtMs in [8.0, 4.0, 3.0, 2.5, 1.0, 0.5, 0.75, 2.0 * sqrt(2.0), 0.3 * PI, 2.0]:
+    let got = p.resamplePilot(dtMs, bandLimit = true)
+    let want = interpolated(p, dtMs)
+    doAssert got.len == want.len, $dtMs
+    doAssert maxDiff(got.samples, want, 0) < 1e-12, $dtMs & ": " &
+      $maxDiff(got.samples, want, 0)
+  # float32 samples, a window longer than the pilot.
+  let short = generatePilot(linearSweep(5, 60, 100, 2, startPhaseDeg = 40), float32)
+  var wide = newSeq[float64](short.len)
+  for j, v in short.samples: wide[j] = float64(v)
+  let got = short.resamplePilot(4, bandLimit = true)
+  let want = interpolated(initPilot(wide, 2), 4)
+  for j in 0 ..< want.len: doAssert abs(float64(got.samples[j]) - want[j]) < 1e-6
 
 block instrument_filter_causality:
   var s = newSeq[float64](400)

@@ -247,6 +247,33 @@ const
     # 2.736: the half width of the Kaiser window's main lobe, in units of
     # 1 / (the window's length).
 
+const maxPhases = 64 # the most kernels tabulated; beyond, one per output sample
+
+func kernelTap(d, w, fc, i0b: float64): float64 {.inline.} =
+  # The Kaiser-windowed sinc of cutoff `fc` Hz at `d` ms from its centre, 0
+  # from the window's end `w` on.
+  let u = d / w
+  if abs(u) >= 1: 0.0
+  else:
+    let x = 2 * fc / 1000 * d
+    (if x == 0: 1.0 else: sin(PI * x) / (PI * x)) *
+      besselI0(kaiserBeta * sqrt(1 - u * u)) / i0b
+
+proc dot[T](h: ptr UncheckedArray[float64], x: ptr UncheckedArray[T],
+    n: int): float64 {.raises: [].} =
+  # Σ h[k]·x[k] over k < n, in four partial sums (the loop vectorizes).
+  {.push boundChecks: off, overflowChecks: off.}
+  var s: array[4, float64]
+  var k = 0
+  while k + 4 <= n:
+    for l in 0 ..< 4: s[l] += h[k + l] * float64(x[k + l])
+    k += 4
+  result = (s[0] + s[1]) + (s[2] + s[3])
+  while k < n:
+    result += h[k] * float64(x[k])
+    inc k
+  {.pop.}
+
 proc resamplePilot*[T: SampleType](p: Pilot[T], dtMs: float64, cutoffFraction = 0.9,
     halfWidth = 32, bandLimit = false): Pilot[T] =
   ## `p` at the interval `dtMs`, by band-limited interpolation: a sinc low-pass
@@ -314,24 +341,58 @@ proc resamplePilot*[T: SampleType](p: Pilot[T], dtMs: float64, cutoffFraction = 
   var outS = newSeq[T](n)
   let w = float64(halfWidth) * coarse # ms
   let i0b = besselI0(kaiserBeta)
-  let whole = 1000 / (2 * fc * p.dtMs) # the sum of a whole kernel's taps
+  # Half a kernel reaches `reach` input samples; a whole one has `taps`
+  # under it, from −reach.
+  let reach = int(floor(w / p.dtMs))
+  let taps = 2 * reach + 2
+  # Output j lies at input position j·ratio = whole + phase / phases, and
+  # its taps depend on the phase alone. With the two intervals in a ratio
+  # of small whole numbers (0.5 → 2 ms: one phase; 2 → 0.5 ms: four) the
+  # kernels are tabulated once, a Bessel function and a sine per tap, and
+  # every output is a dot product (30 s at 0.25 ms to 4 ms: 358 → 5.5 ms).
+  let ratio = dtMs / p.dtMs
+  var phases = 0
+  var num = 0
+  for q in 1 .. min(maxPhases, n - 1):
+    let a = round(ratio * float64(q))
+    if phases == 0 and a >= 1 and a < 1e15 and abs(ratio * float64(q) - a) <= 1e-9 * a:
+      phases = q
+      num = int(a)
+  var kernel = newSeq[float64](max(phases, 1) * taps)
+  var whole = newSeq[float64](max(phases, 1)) # each kernel's sum
+  let xs = cast[ptr UncheckedArray[T]](addr p.samples[0])
+  template fill(ph: int, frac: float64) =
+    # The taps of the kernel centred `frac` input samples after a sample,
+    # and their sum.
+    whole[ph] = 0
+    for k in 0 ..< taps:
+      let h = kernelTap((float64(k - reach) - frac) * p.dtMs, w, fc, i0b)
+      kernel[ph * taps + k] = h
+      whole[ph] += h
+  for ph in 0 ..< phases: fill(ph, float64(ph) / float64(phases))
   for j in 0 ..< n:
-    let t = float64(j) * dtMs # from t0
-    let lo = max(0, int(ceil((t - w) / p.dtMs)))
-    let hi = min(p.samples.len - 1, int(floor((t + w) / p.dtMs)))
-    var acc, sum = 0.0
-    for i in lo .. hi:
-      let d = float64(i) * p.dtMs - t # ms
-      let u = d / w
-      if abs(u) < 1:
-        let x = 2 * fc / 1000 * d
-        let sinc = if x == 0: 1.0 else: sin(PI * x) / (PI * x)
-        let h = sinc * besselI0(kaiserBeta * sqrt(1 - u * u)) / i0b
-        acc += float64(p.samples[i]) * h
-        sum += h
-    # The taps' own sum: the whole kernel's away from the ends (unit gain at
-    # 0 Hz), the part under the pilot at them. Half a kernel sums to half.
-    outS[j] = T(acc / (if sum > 0.25 * whole: sum else: whole))
+    var base, ph: int
+    if phases > 0:
+      # Exact in integers: j < 2³¹ and num < 2⁵³ / 64 would overflow only
+      # for a ratio beyond any pilot's.
+      base = (j * num) div phases
+      ph = (j * num) mod phases
+    else:
+      let pos = float64(j) * ratio
+      base = int(floor(pos))
+      fill(0, pos - float64(base))
+    # The taps with a sample under them: all, away from the pilot's ends.
+    let lo = max(0, reach - base)
+    let hi = min(taps, p.samples.len - base + reach)
+    let h = cast[ptr UncheckedArray[float64]](addr kernel[ph * taps + lo])
+    let acc = dot(h, cast[ptr UncheckedArray[T]](addr xs[base - reach + lo]), hi - lo)
+    var sum = whole[ph]
+    if hi - lo < taps:
+      sum = 0
+      for k in lo ..< hi: sum += kernel[ph * taps + k]
+    # The taps' own sum: unit gain at 0 Hz, also where the pilot's end cuts
+    # the kernel (half a kernel sums to half).
+    outS[j] = T(acc / (if sum > 0.25 * whole[ph]: sum else: whole[ph]))
   initPilot(outS, dtMs, p.t0Ms, sweep)
 
 # -------------------------------------------------------- instrument filter --
