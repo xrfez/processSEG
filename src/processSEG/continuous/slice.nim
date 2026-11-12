@@ -109,10 +109,11 @@ type
 
   SliceShot* = object
     ## A source event. Build it with `initSliceShot` (unknown fields NaN).
-    time*: float64 ## UTC POSIX seconds of the source's time zero.
-    id*: float64   ## Its record (FFID) number: the output `record`.
+    time*: float64   ## UTC POSIX seconds of the source's time zero.
+    id*: float64     ## Its record (FFID) number: the output `record`.
     srcLine*, srcPoint*: float64
     srcX*, srcY*, srcZ*: float64
+    srcIndex*: int16 ## The source point index; 0: unknown.
 
   SliceWindow* = object
     ## The window cut at each shot.
@@ -195,14 +196,19 @@ type
     resid: float64      ## The row's start off the grid, samples.
 
 func initSliceShot*(time, id: float64, srcLine = NaN, srcPoint = NaN, srcX = NaN,
-    srcY = NaN, srcZ = NaN): SliceShot =
+    srcY = NaN, srcZ = NaN, srcIndex = 0'i16): SliceShot =
   ## A shot at UTC POSIX seconds `time` with record number `id`, and its
-  ## source position when known.
+  ## source station and position when known.
   SliceShot(time: time, id: id, srcLine: srcLine, srcPoint: srcPoint, srcX: srcX,
-    srcY: srcY, srcZ: srcZ)
+    srcY: srcY, srcZ: srcZ, srcIndex: srcIndex)
 
 proc badSlice(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
+
+const MaxSegmentSamples = 1 shl 48
+  # The longest row placed on the sample grid: far beyond any file (SEG-D
+  # counts samples in 32 bits), and small enough that a position plus a
+  # length stays within an int for any time `planSlices` accepts.
 
 func toleranceSamples(dtMs: float64): float64 =
   # 1 µs in samples (a SEG-D timestamp's resolution, a few float64 ulps of a
@@ -268,6 +274,9 @@ proc planCore(meta: ChunkMeta, times: openArray[float64], recv: openArray[int],
   for row in 0 ..< meta.len:
     let n = meta.liveSamples(row, high(int))
     if meta.isLive(row) and n > 0:
+      if n > MaxSegmentSamples:
+        badSlice("row " & $row & " has " & $n & " samples, more than the " &
+          $MaxSegmentSamples & " a segment may have")
       let iu = meta.keys(row).intervalUs
       if iu.classify in {fcNormal, fcSubnormal} and
           abs(iu - dtMs * 1000) > 1e-6 * dtMs * 1000:
@@ -410,7 +419,8 @@ proc planSlices*(meta: ChunkMeta, times: openArray[float64], receivers: openArra
   ## Raises `ValueError` when `times` or `receivers` does not have one entry
   ## per row, a shot time or the window start is not finite, the window
   ## length is not a positive whole number of samples, `meta.dtMs` is under
-  ## 1e-4 ms, or a used row has
+  ## 1e-4 ms, a used row has more than 2⁴⁸ samples (no file holds such a
+  ## trace), or a used row has
   ## another sample interval than `meta.dtMs`. Data problems (gaps, overlaps,
   ## off-grid segments, rows without a time) are reported in the plan.
   if times.len != meta.len:
@@ -551,8 +561,9 @@ func untimed*(plan: SlicePlan): lent seq[int] {.inline, raises: [].} =
 
 func sliceKeys*(plan: SlicePlan, trace: int): TraceKeys =
   ## The keys of output trace `trace` (decision D14), for parseSEG's writer:
-  ## the receiver's keys; `record`, source line, point and coordinates from
-  ## the shot; offset and midpoint from the coordinates (NaN without them);
+  ## the receiver's keys; `record`, source line, point, point index and
+  ## coordinates from the shot, whatever the segments' headers hold; offset
+  ## and midpoint from the coordinates (NaN without them);
   ## `time` the shot time and `t0Ms` the window's `startMs`; `intervalUs`
   ## from `dtMs`; ensemble, inline and crossline NaN; `status` dead when no
   ## segment reaches the trace, else live (`traceCode` 0: the writer derives
@@ -562,6 +573,7 @@ func sliceKeys*(plan: SlicePlan, trace: int): TraceKeys =
   result.record = shot.id
   result.srcLine = shot.srcLine
   result.srcPoint = shot.srcPoint
+  result.srcIndex = shot.srcIndex
   result.srcX = shot.srcX
   result.srcY = shot.srcY
   result.srcZ = shot.srcZ

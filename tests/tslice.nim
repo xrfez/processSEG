@@ -463,6 +463,28 @@ block slice_keys:
   doAssert k.time == timeOf(10) and k.t0Ms == -4 and k.intervalUs == 2000
   doAssert k.status == tsLive and k.ensemble.isNaN
 
+block slice_keys_take_the_source_from_the_shot_alone:
+  # The segment's own source station (a node file's general header) must
+  # not leave its point index beside the shot's line and point.
+  var s = segmentsOf[float32]([(0, 100)])
+  (s.keys[0].srcLine, s.keys[0].srcPoint, s.keys[0].srcIndex) = (77.0, 88.0, 3'i16)
+  let meta = initChunkMeta(rowsOf(s.keys, s.counts), dtMs = Dt)
+  let unknown = initSliceShot(timeOf(10), id = 5, srcLine = 9, srcPoint = 4)
+  let second = initSliceShot(timeOf(20), id = 6, srcLine = 9, srcPoint = 4, srcIndex = 2)
+  let plan = planSlices(meta, [unknown, second], window(20))
+  let k = plan.sliceKeys(0)
+  doAssert k.srcLine == 9 and k.srcPoint == 4 and k.srcIndex == 0, $k.srcIndex
+  doAssert plan.sliceKeys(1).srcIndex == 2
+
+block a_sample_count_beyond_any_file:
+  # No file holds a trace of 2⁶³ samples: it is the caller's array, so a bad
+  # argument, and must not overflow the positions on the sample grid.
+  let s = segmentsOf[float32]([(0, 10), (10, 100)])
+  let counts = @[10, high(int)]
+  let meta = initChunkMeta(rowsOf(s.keys, counts), dtMs = Dt)
+  doAssertRaises ValueError:
+    discard planSlices(meta, [shotAt(0)], window(10))
+
 block drift_correction:
   # The clock is 1 ms ahead at t = 1000 s and 3 ms ahead at t = 3000 s.
   let times = [1000.0, 2000.0, 3000.0, 5000.0, NaN]
