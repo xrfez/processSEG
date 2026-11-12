@@ -92,15 +92,29 @@ func startMs*[T](acc: StackAccumulator[T]): float64 {.inline, raises: [].} =
   ## The time of sample 0, in ms.
   acc.startMs
 
+proc sampleOutside(bin, sample, bins, samples: int) {.noinline, noreturn.} =
+  raise newException(IndexDefect, "bin " & $bin & ", sample " & $sample &
+    " is outside the " & $bins & " × " & $samples & " stack")
+
+template checkAt(acc: StackAccumulator, bin, sample: int) =
+  # Each index on its own: a sample past a bin's end is inside the flat
+  # storage (it is a sample of the next bin).
+  when compileOption("boundChecks"):
+    if bin < 0 or bin >= acc.bins or sample < 0 or sample >= acc.samples:
+      sampleOutside(bin, sample, acc.bins, acc.samples)
+
 func foldAt*[T](acc: StackAccumulator[T], bin, sample: int): int {.inline,
     raises: [].} =
-  ## The fold of sample `sample` of bin `bin`. An `IndexDefect` outside
-  ## the stack, with bound checks on.
+  ## The fold of sample `sample` of bin `bin`. An `IndexDefect` for a bin
+  ## outside `0 ..< bins` or a sample outside `0 ..< samples`, with bound
+  ## checks on.
+  checkAt(acc, bin, sample)
   int(acc.fold[bin * acc.samples + sample])
 
 func sumAt*[T](acc: StackAccumulator[T], bin, sample: int): T {.inline,
     raises: [].} =
-  ## The sum at sample `sample` of bin `bin`.
+  ## The sum at sample `sample` of bin `bin`. An `IndexDefect` as `foldAt`.
+  checkAt(acc, bin, sample)
   acc.sum[bin * acc.samples + sample]
 
 proc accumulate[T](sum: ptr UncheckedArray[T], fold: ptr UncheckedArray[int32],

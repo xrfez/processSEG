@@ -154,6 +154,15 @@ block refused_traces:
     doAssertRaises AssertionDefect: discard acc.add(0, [1'f32, 1], 1, 3)
   doAssert acc.add(0, [5'f32, 5]) # shorter than the stack: from sample 0
   doAssert acc.sumAt(0, 0) == 5 and acc.foldAt(0, 3) == 1
+  # A sample past a bin's end is not the next bin's sample: bin and sample
+  # are checked each on its own (foldAt(0, 5) of 2 × 4 read bin 1's sample 1).
+  when compileOption("boundChecks") and not defined(addressSanitizer):
+    doAssert acc.add(1, [0'f32, 7, 0, 0], 1, 2) and acc.foldAt(1, 1) == 1
+    doAssertRaises IndexDefect: discard acc.foldAt(0, 5)
+    doAssertRaises IndexDefect: discard acc.sumAt(0, 5)
+    doAssertRaises IndexDefect: discard acc.foldAt(0, -1)
+    doAssertRaises IndexDefect: discard acc.foldAt(2, 0)
+    doAssertRaises IndexDefect: discard acc.sumAt(-1, 0)
 
 block validation_memory_allocation:
   doAssertRaises ValueError: discard initStackAccumulator[float32](-1, 10, dt)
