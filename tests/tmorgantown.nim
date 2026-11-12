@@ -41,7 +41,7 @@ block morgantown_example:
     let c = g.recordCompleteness(rows)
     echo "  completeness (", ms(t0), "): ", c
     doAssert c.xpsRecord == 77 and c.recordMismatch and not c.sourceMismatch
-    doAssert c.expected == 1127 and c.present == 1096 and c.missingStations == 31
+    doAssert c.expected == 1127 and c.present == 1096 and c.missing == 31
     doAssert c.unlisted == 2858 and c.aux == 3
 
     # 3. Fold of the file against the pre-plot fold of XPS 77 alone.

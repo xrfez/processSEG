@@ -44,7 +44,8 @@ block clean:
   doAssert c.xpsRecord == shot.record and c.candidates == @[shot.record]
   doAssert not c.recordMismatch and not c.sourceMismatch
   doAssert c.expected == 44 and c.present == 44 and c.presentLive == 44
-  doAssert c.missing.len == 0 and c.unlisted == 0 and c.duplicates == 0
+  doAssert c.missing == 0 and c.unlisted == 0 and c.duplicates == 0
+  doAssert c.missingStations.len == 0 and c.missingRanges.len == 0
   doAssert c.channelMismatch == 0 and c.noStation == 0
   doAssert c.traces == 44 and c.live == 44 and c.lines.len == 4
   for l in c.lines: doAssert l.expected == 11 and l.live == 11 and l.missing == 0
@@ -67,13 +68,14 @@ block station_indices:
   other.rcvIndex = 2
   keys.add other
   let c = g.recordCompleteness(rowsOf(keys, newSeq[int](keys.len)))
-  doAssert c.present == 44 and c.missing.len == 0, $c
+  doAssert c.present == 44 and c.missing == 0, $c
   doAssert c.duplicates == 0 and c.unlisted == 1, $c
   # Index 2 alone where X says 1: missing, and the trace unlisted.
   keys = recordKeys()
   keys[0].rcvIndex = 2
   let d = g.recordCompleteness(rowsOf(keys, newSeq[int](keys.len)))
-  doAssert d.present == 43 and d.missingStations == 1 and d.unlisted == 1, $d
+  doAssert d.present == 43 and d.missing == 1 and d.unlisted == 1, $d
+  doAssert d.missingStations == @[stationKey(keys[0].rcvLine, keys[0].rcvPoint, 1)]
 
 block faults:
   var keys = recordKeys()
@@ -121,11 +123,16 @@ block faults:
   doAssert c.expected == 44
   doAssert c.present == 44 - 3 - 1, $c.present # dropped, mis-stationed
   doAssert c.presentLive == c.present - 2 # dead, failed
-  doAssert c.missingStations == 4
-  doAssert c.missing.len == 3, $c.missing
-  doAssert c.missing[0] == StationRange(line: l0, firstPoint: p(3), lastPoint: p(4), count: 2)
-  doAssert c.missing[1] == StationRange(line: l2, firstPoint: p(6), lastPoint: p(6), count: 1)
-  doAssert c.missing[2] == StationRange(line: l2, firstPoint: p(9), lastPoint: p(9), count: 1)
+  # The same word, one meaning: `missing` is a count here, per line and in
+  # the summary; the stations and their ranges have names of their own.
+  doAssert c.missing == 4 and summarize(g, [c]).missing == 4
+  doAssert c.missingStations == @[stationKey(l0, p(3), 1), stationKey(l0, p(4), 1),
+    stationKey(l2, p(6), 1), stationKey(l2, p(9), 1)], $c.missingStations
+  let ranges = c.missingRanges
+  doAssert ranges.len == 3, $ranges
+  doAssert ranges[0] == StationRange(line: l0, firstPoint: p(3), lastPoint: p(4), count: 2)
+  doAssert ranges[1] == StationRange(line: l2, firstPoint: p(6), lastPoint: p(6), count: 1)
+  doAssert ranges[2] == StationRange(line: l2, firstPoint: p(9), lastPoint: p(9), count: 1)
   doAssert c.unlisted == 2, $c.unlisted # mis-stationed, extra
   doAssert c.duplicates == 1 and c.channelMismatch == 2 and c.noStation == 1
   doAssert c.traces == kept.len and c.aux == 1 and c.dead == 1 and c.failed == 1
@@ -226,7 +233,13 @@ block channel_match:
   keys.delete(5)
   let c = g.recordCompleteness(rowsOf(keys, newSeq[int](keys.len)))
   doAssert c.traceMatch == tmChannel and c.expected == 44 and c.present == 42
-  doAssert c.missing.len == 1 and c.missing[0].count == 2 and c.channelMismatch == 0
+  doAssert c.missingRanges.len == 1 and c.missingRanges[0].count == 2
+  doAssert c.missing == 2 and c.channelMismatch == 0
+  # By channel too, the missing ones are named by their X station.
+  var want: seq[StationKey]
+  for (channel, rel) in g.relations(shot.record):
+    if channel in [6'i64, 7]: want.add rel.receiver
+  doAssert c.missingStations == want and want.len == 2, $c.missingStations
   # by channel although stations are there: renumbered channels go missing
   var k2 = recordKeys()
   k2[0].channel = 1000
@@ -279,14 +292,14 @@ block morgantown:
     echo "  Morgantown: ", c, " (", formatFloat(ms, ffDecimal, 2), " ms)"
     doAssert c.recordMatch == rmSourceStation and c.xpsRecord == 77 and c.recordMismatch
     doAssert c.fieldRecord == 151 and not c.sourceMismatch
-    doAssert c.expected == 1127 and c.present == 1096 and c.missingStations == 31
+    doAssert c.expected == 1127 and c.present == 1096 and c.missing == 31
     doAssert c.unlisted == 2858 and c.aux == 3 and c.duplicates == 0
+    doAssert c.missingStations.len == 31 and c.missingRanges.len == 27
     var missing = initHashSet[(float64, float64)]()
-    for r in c.missing:
-      var p = r.firstPoint
-      while p <= r.lastPoint:
-        missing.incl (r.line, p)
-        p += 1
+    for st in c.missingStations: missing.incl (st.line, st.point)
+    var inRanges = 0
+    for r in c.missingRanges: inRanges += r.count
+    doAssert missing.len == 31 and inRanges == 31
     for st in [(100.0, 147.0), (104.0, 227.0), (108.0, 187.0), (108.0, 188.0),
         (124.0, 181.0), (124.0, 184.0)]:
       doAssert st in missing, $st

@@ -199,8 +199,9 @@ headers have no source station or one that no X record lists. The other key is a
 checked, and a mismatch is reported (`recordMismatch`, `sourceMismatch`: the Morgantown
 case). Traces match by **receiver station** (by channel only when the headers have no
 stations). A station whose line and point are both 0 is a header left empty, not a
-station. The result counts the expected, present and live stations, the **missing** ones
-as station ranges per line, the **unlisted** live stations, duplicates, renumbered
+station. The result counts the expected, present and live stations and the **missing**
+ones, which it also lists one by one (`missingStations`, for a map) and as station ranges
+per line (`missingRanges`); the **unlisted** live stations, duplicates, renumbered
 channels (informational), and per receiver line expected / live / missing.
 `summarize(g, records)` totals many records, and lists the XPS records no data matched.
 

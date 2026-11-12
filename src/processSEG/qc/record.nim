@@ -6,8 +6,9 @@
 ## for ext in [".sps", ".rps", ".xps"]: g.addSps(base & ext)
 ## var f = openSeismic(path, keys = true)
 ## let c = g.recordCompleteness(f.rowsOf(0 ..< f.len))
-## echo c                                          # "XPS 77 (by source 129/113): 1127 expected, ..."
-## for r in c.missing: echo r.line, ": ", r.firstPoint, "-", r.lastPoint
+## echo c                                    # "XPS 77 (by source 129/113): 1127 expected, ..."
+## for r in c.missingRanges: echo r.line, ": ", r.firstPoint, "-", r.lastPoint
+## for st in c.missingStations: discard            # one per station, for a map
 ## if c.recordMismatch: echo "FFID ", c.fieldRecord, " is XPS record ", c.xpsRecord
 ## ```
 ##
@@ -45,9 +46,12 @@
 ## failed row), `dead`, `aux`, `failed`. Stations (channels with
 ## `tmChannel`; multi-component channels of one station count once):
 ## `expected` in the X record, `present` in the data (any seismic trace),
-## `presentLive` (a live trace), `missing` as ranges of X stations that
-## follow each other in the X record on a line (a range may span a gap in
-## the numbering: `count` says how many), `unlisted` (live in the data, not in the X record),
+## `presentLive` (a live trace), `missing` (expected, not present: a count,
+## as per line and in the summary), listed one by one in `missingStations`
+## (the X stations, in X order: what a map plots) and as `missingRanges` of
+## X stations that follow each other in the X record on a line (a range may
+## span a gap in the numbering: `count` says how many), `unlisted` (live in
+## the data, not in the X record),
 ## `duplicates` (stations with two seismic traces of one component),
 ## `noStation` (seismic traces without the key matched on), and per receiver
 ## line `lines` (expected, live, missing). Auxiliary traces take no part in
@@ -86,34 +90,35 @@ type
 
   RecordCompleteness* = object
     ## One field record against its X record (see the module documentation).
-    fieldRecord*: float64         ## Header FFID (NaN: none).
-    source*: StationKey           ## Header source station (`hasSource`).
+    fieldRecord*: float64             ## Header FFID (NaN: none).
+    source*: StationKey               ## Header source station (`hasSource`).
     hasSource*: bool
-    recordMatch*: RecordMatch     ## How the X record was found (never `rmAuto`).
-    traceMatch*: TraceMatch       ## How traces were matched (never `tmAuto`).
-    xpsRecord*: int64             ## The X record; −1 for none (no match, or ambiguous).
-    candidates*: seq[int64]       ## The source station's X records (`rmSourceStation`).
-    xpsSource*: StationKey        ## The X record's source.
-    recordMismatch*: bool         ## The X record's number is not the header FFID.
-    sourceMismatch*: bool         ## The X record's source is not the header source.
+    recordMatch*: RecordMatch         ## How the X record was found (never `rmAuto`).
+    traceMatch*: TraceMatch           ## How traces were matched (never `tmAuto`).
+    xpsRecord*: int64                 ## The X record; −1 for none (no match, or ambiguous).
+    candidates*: seq[int64]           ## The source station's X records (`rmSourceStation`).
+    xpsSource*: StationKey            ## The X record's source.
+    recordMismatch*: bool             ## The X record's number is not the header FFID.
+    sourceMismatch*: bool             ## The X record's source is not the header source.
     traces*, live*, dead*, aux*, failed*: int
-    expected*, present*, presentLive*, unlisted*, duplicates*, channelMismatch*: int
-    noStation*: int
-    missing*: seq[StationRange]
+    expected*, present*, presentLive*, missing*, unlisted*, duplicates*: int
+      ## Stations (channels with `tmChannel`); `missing` is `expected − present`.
+    channelMismatch*, noStation*: int
+    missingStations*: seq[StationKey]
+      ## The expected stations not in the data, as the X record names them, in
+      ## X order: `missing` entries.
+    missingRanges*: seq[StationRange] ## The same stations as runs per line.
     lines*: seq[LineCompleteness] ## Ascending line.
 
   CompletenessSummary* = object
     ## Many records against the X records of a survey.
-    records*: int                                                                  ## Records checked.
-    matched*: int                                                                  ## With an X record.
+    records*: int               ## Records checked.
+    matched*: int               ## With an X record.
     unmatched*, ambiguous*: int ## No X record; several candidates, none chosen.
     recordMismatches*, sourceMismatches*: int
     xpsWithoutData*: seq[int64] ## X records no checked record matched, ascending.
-    expected*, present*, presentLive*, missing*, unlisted*, duplicates*: int       ## Totals.
-
-func missingStations*(c: RecordCompleteness): int {.inline.} =
-  ## Expected stations not in the data (`expected − present`).
-  c.expected - c.present
+    expected*, present*, presentLive*, missing*, unlisted*, duplicates*: int
+      ## Totals over the records.
 
 func fmt(x: float64): string =
   if x == floor(x) and abs(x) < 1e15: $int64(x) else: $x
@@ -131,7 +136,7 @@ func `$`*(c: RecordCompleteness): string =
   if c.recordMismatch: result.add "; FFID " & fmt(c.fieldRecord) & " differs"
   if c.sourceMismatch: result.add "; X source " & $c.xpsSource & " differs from header " & $c.source
   result.add ": " & $c.expected & " expected, " & $c.present & " present (" & $c.presentLive &
-    " live), " & $c.missingStations & " missing in " & $c.missing.len & " ranges, " &
+    " live), " & $c.missing & " missing in " & $c.missingRanges.len & " ranges, " &
     $c.unlisted & " unlisted, " & $c.duplicates & " duplicated; traces " & $c.traces & ": " &
     $c.live & " live, " & $c.dead & " dead, " & $c.aux & " aux, " & $c.failed & " failed"
   if c.channelMismatch > 0: result.add "; " & $c.channelMismatch & " channel numbers differ"
@@ -284,13 +289,15 @@ proc check[S: ChunkMeta | TraceRows](g: SurveyGeometry, src: S, recordMatch: Rec
     if found:
       lastMissing = false
     else:
+      inc result.missing
       inc result.lines[li].missing
-      if lastMissing and result.missing[^1].line == r.line:
-        result.missing[^1].lastPoint = r.point
-        inc result.missing[^1].count
+      result.missingStations.add r
+      if lastMissing and result.missingRanges[^1].line == r.line:
+        result.missingRanges[^1].lastPoint = r.point
+        inc result.missingRanges[^1].count
       else:
-        result.missing.add StationRange(line: r.line, firstPoint: r.point, lastPoint: r.point,
-          count: 1)
+        result.missingRanges.add StationRange(line: r.line, firstPoint: r.point,
+          lastPoint: r.point, count: 1)
       lastMissing = true
   for e in seen.values:
     if not e.listed and e.live > 0: inc result.unlisted
@@ -327,7 +334,7 @@ proc summarize*(g: SurveyGeometry, records: openArray[RecordCompleteness]): Comp
     result.expected += c.expected
     result.present += c.present
     result.presentLive += c.presentLive
-    result.missing += c.missingStations
+    result.missing += c.missing
     result.unlisted += c.unlisted
     result.duplicates += c.duplicates
   for r in g.records:
