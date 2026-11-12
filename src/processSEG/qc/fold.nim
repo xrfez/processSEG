@@ -19,10 +19,19 @@
 ## inlines run along the receiver lines: crossline numbers increase along
 ## the azimuth, inline numbers 90° clockwise of it, both from 1. Its bins
 ## cover the midpoint of every source–receiver pair of the geometry (so
-## every pre-plot midpoint, whatever the X records say): along each grid
+## every pre-plot midpoint, whatever the X records say, but for strays): along each grid
 ## axis a midpoint `(s + r) / 2` lies between half the sum of the source and
 ## receiver minima and half the sum of their maxima, which is the grid's
 ## extent. Only stations with coordinates count.
+##
+## **Strays.** A station far outside the survey (an SPS placeholder at
+## (0, 0), a typo in a coordinate) would stretch the grid to millions of
+## empty bins. With `trimStrays` (the default) the extent is taken over the
+## stations of each set (sources, receivers) inside its fences on both
+## axes: the quartiles `q1`, `q3` of the positions widened by `3·max(q3 −
+## q1, 10 bins)` each way, which keeps any compact survey whole. The pairs
+## of a station left out fall outside the grid and are counted as such
+## (`FoldMap.outside`). `trimStrays = false` covers every station.
 ##
 ## **Centring.** The grid is one fixed lattice over the whole survey, and
 ## by default (`centre = true`) its bins are centred where the midpoints
@@ -31,7 +40,7 @@
 ## half a source's angle `π·s / b` plus half a receiver's. Each station
 ## set's dominant angle is its circular mean (the mean of the unit vectors
 ## `exp(iπ·p / b)`), taken again without the stations more than π/4 from
-## it, so a few stray stations do not pull it; the bin centres go at the
+## it, so a few stray stations pull it little; the bin centres go at the
 ## sum of the two. That is O(stations), not O(pairs), and on a regular
 ## survey it puts every midpoint at a bin centre. A station set whose
 ## angles show no preference (the Rayleigh test: `n·R² ≤ ln 1000`, for `n`
@@ -72,7 +81,11 @@
 ## coordinates come from per-line arrays sorted by point, with a cursor that
 ## follows each run of consecutive stations, so a pair costs no hash
 ## lookup. Pairs whose stations have no coordinates are counted
-## (`noCoordinates`), as are pairs outside the bins (`outside`).
+## (`noCoordinates`), as are pairs outside the bins (`outside`). Every
+## channel is a pair: a multi-component survey counts each component (a 3C
+## survey shows three times the conventional fold), as `addFold` counts
+## each trace, so the two maps still align; `qc/record` and `survey/patch`
+## count stations instead.
 ##
 ## **Actual.** `addFold` adds a block of traces (a `ChunkMeta` or a
 ## `TraceRows` view) to a map, chunk by chunk and in any order (counts
@@ -123,54 +136,55 @@ func medianBearing(bearings: var seq[float64]): float64 =
   for b in bearings.mitems: b = reference + floorMod(b - reference + 180.0, 360.0) - 180.0
   floorMod(median(bearings), 360.0)
 
-proc extent(t: Table[StationKey, Coordinates], azimuthDeg: float64,
-    lo, hi: var array[2, float64]) =
-  ## Min and max of the stations along (0) and across (1) the azimuth.
+proc stationFrame(t: Table[StationKey, Coordinates], azimuthDeg: float64,
+    bins: array[2, float64], trim: bool): array[2, seq[float64]] =
+  ## The positions of the stations along (0) and across (1) the azimuth;
+  ## with `trim`, of those within the fences on both axes (module
+  ## documentation).
   let (s, c) = (sin(degToRad(azimuthDeg)), cos(degToRad(azimuthDeg)))
-  lo = [Inf, Inf]
-  hi = [-Inf, -Inf]
+  var pos: array[2, seq[float64]]
   for p in t.values:
     if finite(p.x) and finite(p.y):
-      let a = p.x * s + p.y * c
-      let x = p.x * c - p.y * s
-      lo = [min(lo[0], a), min(lo[1], x)]
-      hi = [max(hi[0], a), max(hi[1], x)]
+      pos[0].add p.x * s + p.y * c
+      pos[1].add p.x * c - p.y * s
+  if not trim or pos[0].len == 0: return pos
+  var fenceLo, fenceHi: array[2, float64]
+  for a in 0 .. 1:
+    var v = pos[a]
+    v.sort
+    let (q1, q3) = (v[(v.len - 1) div 4], v[(3 * (v.len - 1)) div 4])
+    let w = 3 * max(q3 - q1, 10 * bins[a])
+    (fenceLo[a], fenceHi[a]) = (q1 - w, q3 + w)
+  for k in 0 ..< pos[0].len:
+    let (a, x) = (pos[0][k], pos[1][k])
+    if a >= fenceLo[0] and a <= fenceHi[0] and x >= fenceLo[1] and x <= fenceHi[1]:
+      result[0].add a
+      result[1].add x
 
-proc halfPhase(t: Table[StationKey, Coordinates], azimuthDeg: float64, axis: int,
-    bin: float64, angle: var float64): bool =
-  ## The dominant `π·p / bin` of the stations (module documentation), `p`
-  ## the position along (axis 0) or across (1) the azimuth: half a
-  ## midpoint's bin phase. False when the stations show none.
-  let (s, c) = (sin(degToRad(azimuthDeg)), cos(degToRad(azimuthDeg)))
-  template eachAngle(body: untyped) =
-    for q {.inject.} in t.values:
-      if finite(q.x) and finite(q.y):
-        let p = (if axis == 0: q.x * s + q.y * c else: q.x * c - q.y * s)
-        let a {.inject.} = PI * p / bin
-        body
-  var (re, im, n) = (0.0, 0.0, 0)
-  eachAngle:
-    re += cos(a)
-    im += sin(a)
-    inc n
+func halfPhase(pos: seq[float64], bin: float64, angle: var float64): bool =
+  ## The dominant `π·p / bin` of the station positions `pos` (module
+  ## documentation): half a midpoint's bin phase. False when they show none.
+  var (re, im) = (0.0, 0.0)
+  for p in pos:
+    re += cos(PI * p / bin)
+    im += sin(PI * p / bin)
   # Rayleigh test: uniform phases give n·R² > ln 1000 one time in 1000.
-  if n == 0 or (re * re + im * im) / float64(n) <= ln(1000.0): return false
+  if pos.len == 0 or (re * re + im * im) / float64(pos.len) <= ln(1000.0): return false
   let mean = arctan2(im, re)
   (re, im) = (0.0, 0.0)
-  eachAngle: # again, without the stations more than π/4 from the mean
+  for p in pos: # again, without the stations more than π/4 from the mean
+    let a = PI * p / bin
     if abs(floorMod(a - mean + PI, 2 * PI) - PI) <= PI / 4:
       re += cos(a)
       im += sin(a)
   angle = arctan2(im, re)
   true
 
-proc centred(g: SurveyGeometry, azimuthDeg: float64, axis: int, bin, lo: float64): float64 =
+func centred(rcv, src: seq[float64], bin, lo: float64): float64 =
   ## The bin centre within half a bin of `lo` at the midpoints' dominant
   ## phase (module documentation); `lo` itself when there is none.
   var ar, br: float64
-  if not halfPhase(g.table.receivers, azimuthDeg, axis, bin, ar) or
-      not halfPhase(g.table.sources, azimuthDeg, axis, bin, br):
-    return lo
+  if not halfPhase(rcv, bin, ar) or not halfPhase(src, bin, br): return lo
   let phase = (ar + br) / (2 * PI) * bin # a centre, modulo bin
   result = phase + bin * round((lo - phase) / bin)
   if result - lo > 0.5 * bin * (1 - 1e-9): result -= bin # lo must round into bin 0
@@ -179,7 +193,7 @@ proc badGrid(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, "surveyGrid: " & msg)
 
 proc surveyGrid*(g: SurveyGeometry, binInline = NaN, binCrossline = NaN,
-    azimuthDeg = NaN, centre = true): Binning =
+    azimuthDeg = NaN, centre = true, trimStrays = true): Binning =
   ## The bin grid covering every source–receiver midpoint of `g` (see the
   ## module documentation): inlines along `azimuthDeg`, bins `binInline`
   ## along them (`gridBinning`'s `crosslineSpacing`) by `binCrossline`
@@ -187,7 +201,9 @@ proc surveyGrid*(g: SurveyGeometry, binInline = NaN, binCrossline = NaN,
   ## receiver-line azimuth, half the receiver interval, half the source
   ## interval. `centre` places the bin centres on the midpoints' dominant
   ## positions (module documentation); `false` starts the grid at the
-  ## minimum corner. Raises `ValueError` for a given value that is not finite (or
+  ## minimum corner. `trimStrays` leaves stations far outside the survey out
+  ## of the extent (module documentation). Raises `ValueError` for a given
+  ## value that is not finite (or
   ## not positive, for the bins), when there are no receivers or no sources
   ## with coordinates, or when a default cannot be measured (no line with
   ## two stations at distinct positions).
@@ -213,18 +229,20 @@ proc surveyGrid*(g: SurveyGeometry, binInline = NaN, binCrossline = NaN,
     if steps.len == 0:
       badGrid("no source line has two points with coordinates; give binCrossline")
     binC = median(steps) / 2
-  var rLo, rHi, sLo, sHi: array[2, float64]
-  extent(g.table.receivers, azimuth, rLo, rHi)
-  extent(g.table.sources, azimuth, sLo, sHi)
-  if rLo[0] == Inf: badGrid("no receiver has coordinates")
-  if sLo[0] == Inf: badGrid("no source has coordinates")
-  var lo = [(rLo[0] + sLo[0]) / 2, (rLo[1] + sLo[1]) / 2]
-  let hi = [(rHi[0] + sHi[0]) / 2, (rHi[1] + sHi[1]) / 2]
+  let rcv = stationFrame(g.table.receivers, azimuth, [binI, binC], trimStrays)
+  let src = stationFrame(g.table.sources, azimuth, [binI, binC], trimStrays)
+  if rcv[0].len == 0: badGrid("no receiver has coordinates")
+  if src[0].len == 0: badGrid("no source has coordinates")
+  var lo, hi: array[2, float64]
+  for a in 0 .. 1:
+    lo[a] = (min(rcv[a]) + min(src[a])) / 2
+    hi[a] = (max(rcv[a]) + max(src[a])) / 2
   if centre:
-    lo = [centred(g, azimuth, 0, binI, lo[0]), centred(g, azimuth, 1, binC, lo[1])]
-  # Nearest-bin assignment: position u (in bins) needs u < n − 0.5.
-  let crosslines = int(floor((hi[0] - lo[0]) / binI + 0.5)) + 1
-  let inlines = int(floor((hi[1] - lo[1]) / binC + 0.5)) + 1
+    lo = [centred(rcv[0], src[0], binI, lo[0]), centred(rcv[1], src[1], binC, lo[1])]
+  # Nearest-bin assignment: position u (in bins) needs u < n − 0.5 (with
+  # the low side's slack, so rounding in binAt cannot drop the last one).
+  let crosslines = int(floor((hi[0] - lo[0]) / binI + 0.5 + 1e-9)) + 1
+  let inlines = int(floor((hi[1] - lo[1]) / binC + 0.5 + 1e-9)) + 1
   let (s, c) = (sin(degToRad(azimuth)), cos(degToRad(azimuth)))
   let x0 = lo[0] * s + lo[1] * c
   let y0 = lo[0] * c - lo[1] * s

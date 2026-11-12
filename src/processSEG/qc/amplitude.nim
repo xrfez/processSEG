@@ -33,7 +33,9 @@
 ##   consecutive samples at the trace's maximum magnitude (`|x| ≥ (1 −
 ##   clipTolerance)·max |x|`), positive or negative: a recorder or a
 ##   conversion that saturated. Asymmetric clipping is seen at the larger
-##   level only;
+##   level only; Inf samples are not clips. Integer-valued data of low
+##   amplitude (a weak trace recorded as integers, a quiet window) sits at
+##   its maximum for runs too and reads as clipped;
 ## - `afSpiky`: `spikes` counts the samples whose deviation from the mean is
 ##   more than `spikeFactor` times the RMS deviation of their neighbours
 ##   within `±spikeWindowMs` (the sample itself left out, so a spike does not
@@ -79,7 +81,7 @@ type
     ## suit field records.
     startMs*: float64 = -Inf   ## Window start on the trace axis, ms.
     endMs*: float64 = Inf      ## Window end, ms (both ends included).
-    clipRun*: int = 3          ## Shortest run at the maximum that is a clip (≥ 1).
+    clipRun*: int = 3          ## Shortest run at the maximum that is a clip (≥ 2).
     clipTolerance*: float64 = 0 ## Relative: `|x| ≥ (1 − tol)·max` is at the maximum.
     spikeFactor*: float64 = 10 ## A spike: deviation > factor × the neighbours' RMS.
     spikeWindowMs*: float64 = 20 ## Half-width of the neighbourhood, ms.
@@ -117,7 +119,7 @@ proc validate*(p: AmplitudeParams) =
   if p.startMs.isNaN or p.endMs.isNaN or not (p.startMs <= p.endMs):
     badAmplitude("the window must have startMs ≤ endMs, got " & $p.startMs &
       " .. " & $p.endMs)
-  if p.clipRun < 1: badAmplitude("clipRun must be ≥ 1, got " & $p.clipRun)
+  if p.clipRun < 2: badAmplitude("clipRun must be ≥ 2, got " & $p.clipRun)
   if not (p.clipTolerance >= 0 and p.clipTolerance < 1):
     badAmplitude("clipTolerance must be in 0 ..< 1, got " & $p.clipTolerance)
   if not (p.spikeFactor > 0): # Inf: no spikes
@@ -174,7 +176,8 @@ func traceAmplitudeImpl[T](x: openArray[T], half: int,
   let level = (1 - p.clipTolerance) * mx
   var run = 0
   for i in 0 .. x.len:
-    let at = i < x.len and abs(float64(x[i])) >= level
+    let v = (if i < x.len: float64(x[i]) else: 0.0)
+    let at = i < x.len and v - v == 0 and abs(v) >= level # Inf is not a clip
     if at: inc run
     else:
       if run >= p.clipRun: result.clipped += run
@@ -190,7 +193,15 @@ func traceAmplitudeImpl[T](x: openArray[T], half: int,
     for i in 0 ..< x.len:
       if i > 0:
         if i + half < x.len: win += dev(i + half)
-        if i - half - 1 >= 0: win -= dev(i - half - 1)
+        if i - half - 1 >= 0:
+          let leaving = dev(i - half - 1)
+          if leaving > 0.25 * win:
+            # A dominant term leaves: subtracting it would cancel the rest
+            # (1e-16 of a spike's square can exceed its neighbours' energy).
+            win = 0
+            for j in max(i - half, 0) .. min(i + half, x.len - 1): win += dev(j)
+          else:
+            win -= leaving
       let d = dev(i)
       let count = min(i + half, x.len - 1) - max(i - half, 0) # neighbours
       let others = max(win - d, 0.0)
@@ -265,8 +276,11 @@ proc recordAmplitude*(traces: var openArray[TraceAmplitude], params = AmplitudeP
   ## median and MAD of `rmsDb`, each trace's `robustZ`, `afWeak` and
   ## `afNoisy` (set or cleared), and the flag counts. `ws` must hold
   ## `recordAmplitudeWorkspace(traces.len)`. Raises `ValueError` for invalid
-  ## `params`. Allocates nothing.
+  ## `params` or a workspace too small. Allocates nothing.
   validate(params)
+  if not ws.fits(recordAmplitudeWorkspace(traces.len)):
+    badAmplitude("the workspace holds " & $ws.capacity & "; reserve " &
+      "recordAmplitudeWorkspace(" & $traces.len & ")")
   result = RecordAmplitude(medianRmsDb: NaN, madDb: NaN)
   let n = traces.len
   let v = ws.scratch(float64, n, at = n) # percentileAbs uses 0 ..< n

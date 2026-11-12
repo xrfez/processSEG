@@ -49,6 +49,32 @@ block clean:
   doAssert c.traces == 44 and c.live == 44 and c.lines.len == 4
   for l in c.lines: doAssert l.expected == 11 and l.live == 11 and l.missing == 0
 
+block no_ffid:
+  # No FFID in the headers: matched by source station, no mismatch.
+  var keys = recordKeys()
+  for k in keys.mitems: k.record = NaN
+  let c = g.recordCompleteness(rowsOf(keys, newSeq[int](keys.len)))
+  doAssert c.xpsRecord == shot.record and not c.recordMismatch
+  doAssert summarize(g, [c]).recordMismatches == 0
+
+block station_indices:
+  # Headers with indices: index 1 matches X (index 1); a second trace at
+  # the same line and point with index 2 is another station, not a
+  # duplicate, and unlisted.
+  var keys = recordKeys()
+  for k in keys.mitems: k.rcvIndex = 1
+  var other = keys[0]
+  other.rcvIndex = 2
+  keys.add other
+  let c = g.recordCompleteness(rowsOf(keys, newSeq[int](keys.len)))
+  doAssert c.present == 44 and c.missing.len == 0, $c
+  doAssert c.duplicates == 0 and c.unlisted == 1, $c
+  # Index 2 alone where X says 1: missing, and the trace unlisted.
+  keys = recordKeys()
+  keys[0].rcvIndex = 2
+  let d = g.recordCompleteness(rowsOf(keys, newSeq[int](keys.len)))
+  doAssert d.present == 43 and d.missingStations == 1 and d.unlisted == 1, $d
+
 block faults:
   var keys = recordKeys()
   let l0 = s.lineNumber(shot.lines[0])

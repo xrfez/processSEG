@@ -163,6 +163,13 @@ block round_trip:
 
 block arguments:
   let g = initSyntheticSurvey().geometry
+  doAssertRaises(ValueError): discard g.generateRelations(g.patchShots, initPatchTemplate(4, 2_000_000))
+  var bad = g.receiverLayout
+  bad.interval = NaN
+  doAssertRaises(ValueError): discard g.generateRelations(bad, g.patchShots, initPatchTemplate(4, 11))
+  bad = g.receiverLayout
+  bad.lineSpacing = 0
+  doAssertRaises(ValueError): discard g.generateRelations(bad, g.patchShots, initPatchTemplate(4, 11))
   let shots = [PatchShot(record: 1, source: stationKey(1001, 100, 1))]
   doAssertRaises(ValueError): discard g.generateRelations(shots, initPatchTemplate(0, 11))
   doAssertRaises(ValueError): discard g.generateRelations(shots, initPatchTemplate(4, 0, peShift))

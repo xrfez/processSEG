@@ -18,7 +18,8 @@
 ## equal to the header FFID, else none (`candidates` lists them). Or by the
 ## **FFID** (`rmFieldRecord`, the default without a source station). Either
 ## way the other key is checked, never ignored: `recordMismatch` when the X
-## record's number is not the header FFID, `sourceMismatch` when its source
+## record's number is not the header FFID (a header without one, NaN, is no
+## mismatch), `sourceMismatch` when its source
 ## is not the header's (index 0 matches any). The header source station and
 ## FFID are those of the first seismic trace that has them.
 ##
@@ -28,14 +29,18 @@
 ## (O(expected)). By **channel** (`tmChannel`, the default without receiver
 ## stations): the header channel against the X channel. Recorders often
 ## number channels their own way, so a matched station whose header channel
-## differs from the X channel only counts in `channelMismatch`.
+## differs from the X channel only counts in `channelMismatch`. Stations
+## match with their index: a header index 0 (unknown, as SEG-D writes it)
+## matches any X index, and an X index 0 matches index 1; two traces at one
+## line and point with different indices are two stations.
 ##
 ## **Counts.** Traces: `traces`, `live` (D12: live or unknown status, not a
 ## failed row), `dead`, `aux`, `failed`. Stations (channels with
 ## `tmChannel`; multi-component channels of one station count once):
 ## `expected` in the X record, `present` in the data (any seismic trace),
-## `presentLive` (a live trace), `missing` as ranges of consecutive X
-## stations on a line, `unlisted` (live in the data, not in the X record),
+## `presentLive` (a live trace), `missing` as ranges of X stations that
+## follow each other in the X record on a line (a range may span a gap in
+## the numbering: `count` says how many), `unlisted` (live in the data, not in the X record),
 ## `duplicates` (stations with two seismic traces of one component),
 ## `noStation` (seismic traces without the key matched on), and per receiver
 ## line `lines` (expected, live, missing). Auxiliary traces take no part in
@@ -125,7 +130,6 @@ func `$`*(c: RecordCompleteness): string =
 
 type
   Seen = object
-    index: int16
     seismic, live: int32
     channel: float64      ## Header channel of the first seismic trace.
     components: set[uint8]
@@ -135,7 +139,6 @@ type
 
 func finite(x: float64): bool {.inline.} = x.classify notin {fcNan, fcInf, fcNegInf}
 
-func anyKey(line, point: float64): StationKey {.inline.} = stationKey(line, point, 0)
 
 func channelKey(channel: float64): StationKey {.inline.} =
   # Channel matching reuses the station table: the channel as the line.
@@ -190,7 +193,8 @@ proc check[S: ChunkMeta | TraceRows](g: SurveyGeometry, src: S, recordMatch: Rec
     if result.hasSource:
       result.candidates = g.recordsAt(result.source)
       if result.candidates.len == 1: result.xpsRecord = result.candidates[0]
-      elif finite(result.fieldRecord) and int64(result.fieldRecord).float64 == result.fieldRecord and
+      elif finite(result.fieldRecord) and abs(result.fieldRecord) < 9e18 and
+          int64(result.fieldRecord).float64 == result.fieldRecord and
           int64(result.fieldRecord) in result.candidates:
         result.xpsRecord = int64(result.fieldRecord)
   of rmFieldRecord, rmAuto:
@@ -212,7 +216,7 @@ proc check[S: ChunkMeta | TraceRows](g: SurveyGeometry, src: S, recordMatch: Rec
         if not (finite(k.rcvLine) and finite(k.rcvPoint)):
           inc result.noStation
           continue
-        anyKey(k.rcvLine, k.rcvPoint)
+        stationKey(k.rcvLine, k.rcvPoint, max(k.rcvIndex, 0'i16)) # 0: unknown index
       else:
         if not finite(k.channel):
           inc result.noStation
@@ -224,8 +228,8 @@ proc check[S: ChunkMeta | TraceRows](g: SurveyGeometry, src: S, recordMatch: Rec
       inc e.seismic
       if st == stLive: inc e.live
     do:
-      seen[key] = Seen(index: (if byStation: k.rcvIndex else: 0), seismic: 1,
-        live: int32(st == stLive), channel: k.channel, components: {k.component})
+      seen[key] = Seen(seismic: 1, live: int32(st == stLive), channel: k.channel,
+        components: {k.component})
   # walk the X record
   var listed: HashSet[StationKey]
   var lineAt: Table[float64, int]
@@ -236,9 +240,10 @@ proc check[S: ChunkMeta | TraceRows](g: SurveyGeometry, src: S, recordMatch: Rec
       first = false
       result.xpsSource = rel.source
       result.sourceMismatch = result.hasSource and not sameStation(rel.source, result.source)
-      result.recordMismatch = result.fieldRecord != float64(result.xpsRecord)
+      result.recordMismatch = not result.fieldRecord.isNaN and
+        result.fieldRecord != float64(result.xpsRecord)
     let r = rel.receiver
-    let key = if byStation: anyKey(r.line, r.point) else: channelKey(float64(channel))
+    var key = if byStation: r else: channelKey(float64(channel))
     if listed.containsOrIncl(if byStation: stationKey(r.line, r.point, r.index) else: key):
       continue # another component of a station already counted
     inc result.expected
@@ -248,16 +253,20 @@ proc check[S: ChunkMeta | TraceRows](g: SurveyGeometry, src: S, recordMatch: Rec
       lineAt[r.line] = li
       result.lines.add LineCompleteness(line: r.line)
     inc result.lines[li].expected
+    # The header's station with the X index, else one with no index (0);
+    # an X station without one (0) takes the usual index 1.
+    if byStation and key notin seen:
+      let alt = stationKey(r.line, r.point, (if r.index == 0: 1'i16 else: 0'i16))
+      if alt in seen: key = alt
     var found = false
     seen.withValue(key, e):
-      if not byStation or e.index == 0 or r.index == 0 or e.index == r.index:
-        found = true
-        e.listed = true
-        inc result.present
-        if e.live > 0:
-          inc result.presentLive
-          inc result.lines[li].live
-        if byStation and e.channel != float64(channel): inc result.channelMismatch
+      found = true
+      e.listed = true
+      inc result.present
+      if e.live > 0:
+        inc result.presentLive
+        inc result.lines[li].live
+      if byStation and e.channel != float64(channel): inc result.channelMismatch
     if found:
       lastMissing = false
     else:

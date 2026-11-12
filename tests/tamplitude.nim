@@ -191,10 +191,32 @@ block single_trace:
   let e = traceAmplitude(newSeq[float32](0), 1)
   doAssert e.samples == 0 and e.flags == {} and e.rmsDb.isNaN
 
+block huge_spikes:
+  # Two opposite spikes of 1e12 on noise: each found once, the sliding sum
+  # recovers after each one leaves the window.
+  var x = newSeq[float32](2000)
+  x.addNoise(1, 5)
+  x[100] += 1e12
+  x[1000] -= 1e12
+  let a = traceAmplitude(x, 1)
+  doAssert a.spikes == 2 and afSpiky in a.flags, $a.spikes
+  # Two spikes in one window: both seen once the factor allows.
+  var y = newSeq[float64](400)
+  y.addNoise(1, 6)
+  y[200] += 1000
+  y[205] += 1000
+  doAssert traceAmplitude(y, 1, AmplitudeParams(spikeFactor: 4)).spikes == 2
+
+block inf_is_not_clipped:
+  var x = newSeq[float64](100)
+  x.addSinusoid(1, 37)
+  for j in 50 ..< 55: x[j] = Inf
+  doAssert traceAmplitude(x, 1, AmplitudeParams(spikeFactor: Inf)).flags == {afNonFinite}
+
 block errors:
   var x = newSeq[float32](10)
   for p in [AmplitudeParams(startMs: 10, endMs: 0), AmplitudeParams(startMs: NaN),
-      AmplitudeParams(clipRun: 0), AmplitudeParams(clipTolerance: 1),
+      AmplitudeParams(clipRun: 1), AmplitudeParams(clipTolerance: 1),
       AmplitudeParams(spikeFactor: 0), AmplitudeParams(spikeWindowMs: Inf),
       AmplitudeParams(dcRatio: NaN), AmplitudeParams(outlierZ: 0)]:
     doAssertRaises(ValueError): discard traceAmplitude(x, 1, p)
@@ -203,6 +225,9 @@ block errors:
   let meta = initChunkMeta(g.rows, dtMs)
   var short = newSeq[TraceAmplitude](traces - 1)
   doAssertRaises(ValueError): traceAmplitudeInto(g.data, meta, AmplitudeParams(), short)
+  var amps = newSeq[TraceAmplitude](4)
+  var small = initWorkspace()
+  doAssertRaises(ValueError): discard recordAmplitude(amps, AmplitudeParams(), small)
   var pool = newProcessPool(2)
   doAssertRaises(ValueError):
     pool.traceAmplitudeInto(g.data, meta, AmplitudeParams(), short)

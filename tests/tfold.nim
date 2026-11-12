@@ -130,6 +130,26 @@ block centring:
   doAssert close(c0.location(0).x, k0.location(0).x, 1e-6), $c0.location(0) & " " & $k0.location(0)
   doAssert close(c0.location(0).y, k0.location(0).y, 1e-6)
 
+block strays:
+  # A placeholder source at (0, 0) and a receiver 1e6 away: left out of the
+  # extent by default (their pairs fall outside), covered when asked.
+  let o = initOrtho(30)
+  var g = o.geometry
+  let plain = surveyGrid(g)
+  g.addSource(9999, 1, 1, 0, 0, 0)
+  let (fx, fy) = o.at(1e6, 0)
+  g.addReceiver(9999, 1, 1, fx, fy, 0)
+  let trimmed = surveyGrid(g)
+  doAssert trimmed.len == plain.len, $trimmed.len & " " & $plain.len
+  doAssert close(trimmed.location(0).x, plain.location(0).x) and
+    close(trimmed.location(0).y, plain.location(0).y), $trimmed.location(0) & $plain.location(0)
+  let full = surveyGrid(g, trimStrays = false)
+  doAssert full.len > 100 * plain.len
+  # a compact survey loses no station: the extreme midpoints stay inside
+  let (rx, ry) = o.receiverAt(o.receiverLines - 1, o.stations - 1)
+  let (sx, sy) = o.sourceAt(o.sourceLines - 1, o.sourcePoints - 1)
+  doAssert trimmed.binOf(midKeys((rx + sx) / 2, (ry + sy) / 2)) == trimmed.len - 1
+
 block overrides:
   let o = initOrtho(30)
   let g = o.geometry
@@ -461,6 +481,10 @@ block morgantown:
       b.inlines, " inlines × ", b.crosslines, " crosslines"
     doAssert abs(az - 91) < 1, $az
     doAssert abs(binI - 111.3) < 0.5, $binI
+    # irregular sources: no significant phase, so centring keeps the corner
+    let corner = surveyGrid(g, centre = false)
+    doAssert corner.len == b.len and corner.location(0).x == b.location(0).x and
+      corner.location(0).y == b.location(0).y
     if fileExists(base & ".xps"):
       g.addSps(base & ".xps")
       when defined(release) or defined(danger): (let t0 = cpuTime())

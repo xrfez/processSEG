@@ -50,6 +50,8 @@
 import std/[algorithm, math, sets, strutils, tables]
 import parseSEG
 
+func finite(x: float64): bool {.inline.} = x.classify notin {fcNan, fcInf, fcNegInf}
+
 type
   LineStation* = object
     ## One receiver station of a line in the layout frame.
@@ -178,7 +180,7 @@ proc receiverLayout*(g: SurveyGeometry, azimuthDeg = NaN, interval = NaN, lineSp
     raise newException(ValueError, "receiverLayout: minLineStations must be ≥ 0")
   var byLine: Table[float64, seq[(LineStation, Coordinates)]]
   for k, c in g.table.receivers:
-    if not (c.x.isNaN or c.y.isNaN):
+    if finite(c.x) and finite(c.y):
       byLine.mgetOrPut(k.line, @[]).add (LineStation(point: k.point, index: k.index), c)
   var lineNumbers: seq[float64]
   for l in byLine.keys: lineNumbers.add l
@@ -257,7 +259,7 @@ proc describeRecord(g: SurveyGeometry, layout: ReceiverLayout, record: int64): R
       first = false
       result.source = rel.source
       var c: Coordinates
-      if g.table.sources.lookup(rel.source, c) and not (c.x.isNaN or c.y.isNaN):
+      if g.table.sources.lookup(rel.source, c) and finite(c.x) and finite(c.y):
         (result.sourceX, result.sourceY) = (c.x, c.y)
         sa = layout.inlineOf(c.x, c.y)
         sc = layout.crosslineOf(c.x, c.y)
@@ -274,7 +276,7 @@ proc describeRecord(g: SurveyGeometry, layout: ReceiverLayout, record: int64): R
     result.lines[j].firstPoint = min(result.lines[j].firstPoint, r.point)
     result.lines[j].lastPoint = max(result.lines[j].lastPoint, r.point)
     var c: Coordinates
-    if not g.table.receivers.lookup(r, c) or c.x.isNaN or c.y.isNaN:
+    if not g.table.receivers.lookup(r, c) or not (finite(c.x) and finite(c.y)):
       inc result.noCoordinates
     elif not sa.isNaN:
       let a = layout.inlineOf(c.x, c.y) - sa
@@ -500,8 +502,10 @@ proc validate(t: PatchTemplate) =
   if t.edge != peStatic:
     if not (t.hasTemplate or t.hasDistance):
       raise newException(ValueError, "generateRelations: no template and no distance limit")
-    if t.hasTemplate and (t.lines < 1 or t.channels < 1):
-      raise newException(ValueError, "generateRelations: template lines and channels must be ≥ 1")
+    if t.hasTemplate and (t.lines < 1 or t.channels < 1 or t.lines > 1_000_000 or
+        t.channels > 1_000_000):
+      raise newException(ValueError, "generateRelations: template lines and channels must be " &
+        "in 1 .. 1 000 000")
     if t.edge == peShift and t.hasTemplate and t.hasDistance:
       raise newException(ValueError, "generateRelations: peShift takes a template or " &
         "distance limits, not both")
@@ -682,8 +686,14 @@ proc generateRelations*(g: SurveyGeometry, layout: ReceiverLayout,
   ## (`SpsFile.relations`, `writeSps`); `receiverRelations` gives the O
   ## records. Raises `ValueError` for roll or shift with neither a template
   ## nor a distance limit, a template without lines or channels, shift with
-  ## both, a non-finite offset or map, or a negative or NaN limit.
+  ## both, a non-finite offset or map, or a negative or NaN limit, and for
+  ## a `layout` whose azimuth, interval or line spacing is not finite (or
+  ## not positive).
   t.validate
+  if not (abs(layout.azimuthDeg) < Inf and layout.interval > 0 and layout.interval < Inf and
+      layout.lineSpacing > 0 and layout.lineSpacing < Inf):
+    raise newException(ValueError, "generateRelations: the layout needs a finite azimuth " &
+      "and a positive, finite interval and line spacing (build it with receiverLayout)")
   var main: seq[int]
   for i, line in layout.lines:
     if not line.short: main.add i
@@ -714,7 +724,7 @@ proc generateRelations*(g: SurveyGeometry, layout: ReceiverLayout,
       picked.add staticPicks
     else:
       var c: Coordinates
-      let located = g.table.sources.lookup(shot.source, c) and not (c.x.isNaN or c.y.isNaN)
+      let located = g.table.sources.lookup(shot.source, c) and finite(c.x) and finite(c.y)
       if (t.placement == ppCoordinates or t.hasDistance) and not located: continue
       if t.hasTemplate and main.len > 0:
         var cl, sa = NaN
