@@ -39,9 +39,13 @@
 ##   knot where the slope turns by 20 dB/s, at 2 ms. Knots on the dt grid
 ##   of rows that start on it have none.
 ##
-## It is 0 on the grid. Times outside the table use the curve itself
-## (exact, but scalar and slower): widen `tMinMs .. tMaxMs` for rows that
-## start before 0 or for windows past the record length.
+## It is 0 on the grid. Times outside the table use the curve itself, a
+## `pow` per sample (exact, but 65 times the table's cost, measured): widen
+## `tMinMs .. tMaxMs` for rows that start before 0 or run past the record
+## length. A plan made for a zoom window's width needs the record's extent
+## (`tMaxMs`; `Pipeline.compile` takes `recordSamples` for it). The block
+## form that takes a `Workspace` softens the fall: it computes the factors
+## off the table once per run of rows with one time axis.
 ##
 ## **Rows.** As everywhere: live rows, each to its live length; dead,
 ## auxiliary and failed rows and the padding are left untouched. Nothing
@@ -50,7 +54,7 @@
 
 import std/math
 import parseSEG
-import ../core/[rows, types]
+import ../core/[rows, types, workspace]
 
 type
   GainKnot* = object
@@ -210,6 +214,12 @@ func tableMs*[T](p: GainCurvePlan[T]): Slice[float64] {.raises: [].} =
   ## The times the table covers.
   p.tMinMs .. p.tMinMs + float64(p.table.len - 1) * p.dtMs
 
+func workspaceSize*[T](p: GainCurvePlan[T]): WorkspaceSize {.raises: [].} =
+  ## The scratch of the block form that takes a workspace: one row of
+  ## factors.
+  when T is float32: WorkspaceSize(f32: p.samples)
+  else: WorkspaceSize(f64: p.samples)
+
 # ------------------------------------------------------------------ kernels --
 
 type Buf[T] = ptr UncheckedArray[T]
@@ -234,6 +244,46 @@ proc mulTableLerp[T](x {.noalias.}, tab {.noalias.}: Buf[T], n: int,
     x[j] = x[j] * (a + f * (tab[j + 1] - a))
   {.pop.}
 
+proc mulOffTable[T](x {.noalias.}, fac {.noalias.}: Buf[T], n: int) {.noinline,
+    raises: [].} =
+  ## `x[j] *= fac[j]`, a zero staying zero whatever the factor (no 0 · Inf).
+  {.push boundChecks: off, overflowChecks: off.}
+  for j in 0..<n:
+    let v = x[j]
+    x[j] = (if v == 0: v else: v * fac[j])
+  {.pop.}
+
+type TableSpan = object
+  ## Where a row lies on a plan's table: `x[j0 ..< j1]` multiplies by the
+  ## table from entry `s + j0` on (interpolated by `f` unless `onGrid`), the
+  ## rest of the row is off the table.
+  s, j0, j1: int
+  f: float64
+  onGrid: bool
+
+func spanOf[T](plan: GainCurvePlan[T], n: int, startMs: float64): TableSpan {.
+    raises: [].} =
+  ## The table span of a row of `n` samples whose sample 0 is at `startMs`.
+  let u = (startMs - plan.tMinMs) / plan.dtMs # table position of x[0]
+  if not u.finite or abs(u) > 1e15: # beyond any table
+    return TableSpan(j0: n, j1: n)
+  let r = round(u)
+  result.onGrid = abs(u - r) <= 1e-9 * max(1.0, abs(u))
+  result.s = int(if result.onGrid: r else: floor(u))
+  result.f = u - float64(result.s)
+  # The last j with s + j in the table.
+  let last = plan.table.len - (if result.onGrid: 1 else: 2)
+  result.j0 = clamp(-result.s, 0, n)
+  result.j1 = clamp(last - result.s + 1, result.j0, n)
+
+proc mulOnTable[T](plan: GainCurvePlan[T], x: ptr UncheckedArray[T],
+    sp: TableSpan) {.inline, raises: [].} =
+  if sp.j1 > sp.j0:
+    let tab = cast[ptr UncheckedArray[T]](addr plan.table[sp.s + sp.j0])
+    let xs = cast[ptr UncheckedArray[T]](addr x[sp.j0])
+    if sp.onGrid: mulTable(xs, tab, sp.j1 - sp.j0)
+    else: mulTableLerp(xs, tab, sp.j1 - sp.j0, T(sp.f))
+
 proc applyAt[T](plan: GainCurvePlan[T], x: ptr UncheckedArray[T], n: int,
     startMs: float64) {.raises: [].} =
   ## The curve on `x[0 ..< n]`, whose sample 0 is at `startMs`. Off the
@@ -242,25 +292,10 @@ proc applyAt[T](plan: GainCurvePlan[T], x: ptr UncheckedArray[T], n: int,
     if x[j] != 0:
       x[j] = T(float64(x[j]) * plan.curve.factorAt(startMs + float64(j) * plan.dtMs))
   if n == 0 or startMs.isNaN: return
-  let u = (startMs - plan.tMinMs) / plan.dtMs # table position of x[0]
-  if not u.finite or abs(u) > 1e15: # beyond any table: all direct
-    for j in 0..<n:
-      direct(j)
-    return
-  let r = round(u)
-  let onGrid = abs(u - r) <= 1e-9 * max(1.0, abs(u))
-  let s = int(if onGrid: r else: floor(u))
-  let f = u - float64(s)
-  let last = plan.table.len - (if onGrid: 1 else: 2) # the last j with s + j in the table
-  let j0 = clamp(-s, 0, n)
-  let j1 = clamp(last - s + 1, j0, n)
-  for j in 0..<j0: direct(j)
-  if j1 > j0:
-    let tab = cast[ptr UncheckedArray[T]](addr plan.table[s + j0])
-    let xs = cast[ptr UncheckedArray[T]](addr x[j0])
-    if onGrid: mulTable(xs, tab, j1 - j0)
-    else: mulTableLerp(xs, tab, j1 - j0, T(f))
-  for j in j1..<n: direct(j)
+  let sp = plan.spanOf(n, startMs)
+  for j in 0..<sp.j0: direct(j)
+  plan.mulOnTable(x, sp)
+  for j in sp.j1..<n: direct(j)
 
 proc checkPlan[T](plan: GainCurvePlan[T]) {.inline.} =
   doAssert plan.table.len > 0, "a GainCurvePlan must come from initGainCurvePlan"
@@ -293,9 +328,52 @@ proc applyGainCurve*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
       plan.applyAt(b.rowPtr(r), meta.liveSamples(r, b.cols), meta.sampleTimeMs(
           r, 0))
 
+proc applyGainCurve*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
+    plan: GainCurvePlan[T], ws: var Workspace) =
+  ## As the form without a workspace, for blocks that may lie off the
+  ## plan's table (a zoom window under a plan made for its width, traces
+  ## with a recording delay): the factors off the table are computed once
+  ## per run of rows that share a time axis, into `ws`
+  ## (`plan.workspaceSize`), and multiplied in, instead of once per sample
+  ## of every row. On the table it is the same code; off it, the factor is
+  ## rounded to the sample type before the multiply, so results differ from
+  ## the other form by a rounding. Raises as that form.
+  meta.checkShape(b)
+  plan.checkPlan
+  if abs(meta.dtMs - plan.dtMs) > 1e-9 * plan.dtMs:
+    badCurve("the plan is for dtMs = " & $plan.dtMs & ", the rows have " & $meta.dtMs)
+  if b.cols > plan.samples:
+    badCurve("the block has " & $b.cols & " columns, the plan takes " &
+      $plan.samples & " samples")
+  let fac = ws.scratch(T, b.cols)
+  var facStart = NaN # the start time `fac` holds the factors of
+  for r in 0..<b.len:
+    let n = (if meta.isLive(r): meta.liveSamples(r, b.cols) else: 0)
+    let startMs = meta.sampleTimeMs(r, 0)
+    if n > 0 and not startMs.isNaN:
+      let x = b.rowPtr(r)
+      let sp = plan.spanOf(n, startMs)
+      if sp.j0 > 0 or sp.j1 < n:
+        if facStart != startMs: # every column off the table of a full row
+          let full = plan.spanOf(b.cols, startMs)
+          for j in 0..<full.j0:
+            fac[j] = T(plan.curve.factorAt(startMs + float64(j) * plan.dtMs))
+          for j in full.j1..<b.cols:
+            fac[j] = T(plan.curve.factorAt(startMs + float64(j) * plan.dtMs))
+          facStart = startMs
+        mulOffTable(x, fac, sp.j0)
+        mulOffTable(cast[Buf[T]](addr x[sp.j1]), cast[Buf[T]](addr fac[sp.j1]), n - sp.j1)
+      plan.mulOnTable(x, sp)
+
 proc applyGainCurve*[T: SampleType](samples: var Tensor[T], meta: ChunkMeta,
     plan: GainCurvePlan[T]) =
   ## `applyGainCurve` on a `[rows, cols]` tensor (C-contiguous; raises
   ## `ValueError` otherwise).
   meta.checkShape(samples)
   rowBlock(samples).applyGainCurve(meta, plan)
+
+proc applyGainCurve*[T: SampleType](samples: var Tensor[T], meta: ChunkMeta,
+    plan: GainCurvePlan[T], ws: var Workspace) =
+  ## The workspace form on a `[rows, cols]` tensor.
+  meta.checkShape(samples)
+  rowBlock(samples).applyGainCurve(meta, plan, ws)

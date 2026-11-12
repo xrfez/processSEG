@@ -34,6 +34,7 @@ type
   PlanKey = object
     dtMs: float64
     cols: int
+    record: int ## the trace length the chunk's rows are windows of
 
   ViewerSim* = object
     pool*: ProcessPool
@@ -49,12 +50,15 @@ proc initViewerSim*(flow: sink Pipeline, workers = 4): ViewerSim =
   ## A viewer with a pool of `workers` and the flow `flow`.
   ViewerSim(pool: newProcessPool(workers), flow: flow)
 
-proc planFor(v: var ViewerSim, dtMs: float64, cols: int): int =
-  ## The plan for `dtMs` and `cols`, compiled on first use.
+proc planFor(v: var ViewerSim, dtMs: float64, cols, record: int): int =
+  ## The plan for blocks `cols` wide of traces `record` samples long at
+  ## `dtMs`, compiled on first use. The record length makes time-axis tables
+  ## (gain curves) cover a zoom window wherever it lies.
+  let record = max(record, cols)
   for i, k in v.keys:
-    if k.dtMs == dtMs and k.cols == cols: return i
-  v.keys.add PlanKey(dtMs: dtMs, cols: cols)
-  v.plans.add v.flow.compile(float32, dtMs, max(1, cols))
+    if k.dtMs == dtMs and k.cols == cols and k.record == record: return i
+  v.keys.add PlanKey(dtMs: dtMs, cols: cols, record: record)
+  v.plans.add v.flow.compile(float32, dtMs, max(1, cols), recordSamples = max(1, record))
   v.plans.len - 1
 
 proc plan*(v: ViewerSim, e: Entry): lent PipelinePlan[float32] =
@@ -63,7 +67,9 @@ proc plan*(v: ViewerSim, e: Entry): lent PipelinePlan[float32] =
 
 proc addEntry(v: var ViewerSim, c: sink PrefetchChunk[float32]) =
   let meta = chunkMeta(c)
-  let p = v.planFor(meta.dtMs, c.samples.shape[1])
+  var record = c.samples.shape[1]
+  for r in 0..<meta.len: record = max(record, meta.rows.numSamples(r))
+  let p = v.planFor(meta.dtMs, c.samples.shape[1], record)
   var e = Entry(processed: zeros[float32](c.samples.shape[0],
     c.samples.shape[1]), plan: p, ticksRevision: -1)
   e.ticks = newSeq[float64](c.count)
@@ -107,7 +113,8 @@ proc recompile*(v: var ViewerSim) =
   ## Recompiles every plan from `flow` (after a slider change). Every
   ## processed buffer becomes stale: its generation is older.
   for i, k in v.keys:
-    v.plans[i] = v.flow.compile(float32, k.dtMs, max(1, k.cols))
+    v.plans[i] = v.flow.compile(float32, k.dtMs, max(1, k.cols),
+      recordSamples = max(1, k.record))
 
 template edit*(v: var ViewerSim, body: untyped) =
   ## A slider change: `body` edits `v.flow`, then the plans are recompiled.
@@ -178,7 +185,7 @@ proc zoomWindow*(v: var ViewerSim, f: SeismicFile, traces: Slice[int],
   doAssert p.next(c)
   let meta = chunkMeta(c)
   doAssert meta.firstSample == first
-  let pi = v.planFor(dtMs, cols)
+  let pi = v.planFor(dtMs, cols, f.rowsOf(traces).numSamples(0))
   var processed = zeros[float32](c.count, cols)
   v.pool.apply(v.plans[pi], c.samples, processed, meta)
   result = processed[_, (shown.a - first) .. (shown.b - first)].clone()

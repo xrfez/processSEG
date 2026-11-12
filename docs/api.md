@@ -203,6 +203,7 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `c.gainDbAt(tMs)`, `c.factorAt(tMs)` | The gain at a time, in dB and as a factor. |
 | `GainCurvePlan[T]`; `initGainCurvePlan(T, curve, dtMs, samples, tMinMs = 0, tMaxMs = NaN)` | The curve tabulated over `tMinMs .. tMaxMs` (NaN: the record length); times outside the table are exact but slower. `p.samples`, `p.dtMs`, `p.curve`, `p.tableLen`, `p.tableMs`. |
 | `applyGainCurve(x, plan, startMs)`, `applyGainCurve(b \| samples, meta, plan)` | Multiply each live row by the curve at its own times (`t0Ms`, `firstSample`). |
+| `applyGainCurve(b \| samples, meta, plan, ws)`, `p.workspaceSize` | The same for blocks that may lie off the table (a zoom window, a recording delay): the factors off it are computed once per run of rows with one time axis, not per sample (the pipeline uses this form). Results off the table differ from the other form by a rounding. |
 
 ## gain/stats: statistics for display gain
 
@@ -395,7 +396,7 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 | `ClipParams`, `MuteParams`, `FilterParams`, `IirParams`, `AgcParams`, `NormalizeParams`, `GainCurveParams` | The parameter groups, edited in place (`flow[2].agc.windowMs = 300`). |
 | `demeanOp()`, `detrendOp()`, `scaleOp(factor)`, `gainDbOp(dB)`, `clipOp(lo, hi)`, `polarityOp()`, `muteTopOp(curve, taperMs = 0)`, `muteBottomOp(curve, taperMs = 0)`, `filterOp(spec, trend = trLinear)`, `bandPassOp(corners, trend)`, `iirOp(spec, phase = ipZero, trend)`, `agcOp(windowMs, mode, target, epsilon)`, `normalizeOp(stat, scope, target, percentile)`, `gainCurveOp(curve, tMinMs = 0, tMaxMs = NaN)` | The builders; nothing is checked until `compile` (`bandPassOp` checks its corners). |
 | `Pipeline`; `initPipeline(ops = [])`, `p.len`, `p[i]` (`[]`, also `var`), `p[i] = op` (`[]=`), `p.add(op)`, `p.insert(op, i)`, `p.delete(i)`, `p.clear`, `items`, `pairs` | An ordered, editable list of ops. |
-| `PipelinePlan[T]`; `p.compile(T, dtMs, samples)` | Validate and precompute every op; `ValueError` names the op (`op 1 (opFilter): ...`). |
+| `PipelinePlan[T]`; `p.compile(T, dtMs, samples, recordSamples = 0)` | Validate and precompute every op for blocks up to `samples` wide; `ValueError` names the op (`op 1 (opFilter): ...`). `recordSamples`: the trace length when `samples` is a zoom window's width, so that gain-curve tables cover the whole record (`plan.recordSamples`). |
 | `plan.generation`, `plan.dtMs`, `plan.samples`, `plan.len`, `plan.requiredMargin`, `plan.workspaceSize`, `ws.reserve(plan)` | A plan's id (never 0, increasing), size, zoom margin (sum of the ops'), scratch. Any block up to `samples` wide works. |
 | `p.requiredMargin(dtMs)`, `decodeWindow(shown, margin, traceLen)` | The margin without compiling; the samples to decode for a zoom (shown ± margin, clamped). |
 | `plan.apply(b \| samples, meta, ws)`, `plan.apply(src, dst, meta, ws)` (blocks or tensors) | Run in place, or `src → dst` with the copy fused into the first op; tiles of about 256 KB. Never grows `ws`; `dst` is not resized. |

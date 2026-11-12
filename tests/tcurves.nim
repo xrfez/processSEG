@@ -149,6 +149,58 @@ block block_form_follows_each_rows_time:
   var wide = zeros[float32](6, 301)
   doAssertRaises ValueError: wide.applyGainCurve(meta, plan)
 
+proc workspaceFormMatches(T: typedesc) =
+  block:
+    var g = cmpGather[T](0, newSeq[float64](12), 400, dtMs = 2)
+    for r in 0..<12:
+      for j in 0..<400: g.data[r, j] = T(1 + (r + j) mod 5)
+    for r in 0..<12: g.keys[r].t0Ms = 0
+    g.keys[4].t0Ms = 300 # another time axis among the others
+    g.keys[5].t0Ms = 301 # and off the grid
+    g.keys[6].t0Ms = -90 # starts before the table
+    g.keys[7].t0Ms = NaN
+    g.keys[8].status = tsDead
+    g.setLive(9, 120)
+    var w = g.window(firstSample = 150, cols = 250)
+    let meta = initChunkMeta(w.rows, dtMs = 2, firstSample = 150)
+    for c in [exponentialGain(10), powerGain(2), knotGain(knots)]:
+      # A table of 100 samples: most of each row is off it.
+      let plan = initGainCurvePlan(T, c, dtMs = 2, samples = 250, tMaxMs = 198)
+      var ws = initWorkspace()
+      ws.reserve(plan.workspaceSize)
+      var a = w.data.clone()
+      var b = w.data.clone()
+      a.applyGainCurve(meta, plan)
+      let n = allocsIn:
+        b.applyGainCurve(meta, plan, ws)
+      doAssert n == 0, $n & " allocations"
+      for r in 0..<12:
+        for j in 0..<250:
+          doAssert near(float64(b[r, j]), float64(a[r, j]), 1e-6), $T & " " & $c.kind &
+            " row " & $r & " col " & $j
+      for j in 0..<250:
+        doAssert b[7, j] == w.data[7, j] and b[8, j] == w.data[8, j], "untouched rows"
+
+block workspace_form_off_the_table:
+  # The form that takes a workspace computes the factors off the table once
+  # per run of rows with one time axis: the same values as the form without
+  # one to a rounding, for rows on, off and across the table, on and off the
+  # grid; untouched rows stay untouched, a zero stays zero under an infinite
+  # factor, and nothing allocates.
+  workspaceFormMatches(float32)
+  workspaceFormMatches(float64)
+  # 0 · Inf: an exponential gain past float32 off the table, on muted zeros.
+  var z = cmpGather[float32](0, [0.0, 0], 300, dtMs = 2)
+  for j in 0..<300: z.data[1, j] = 1
+  let meta = initChunkMeta(z.rows, dtMs = 2)
+  let plan = initGainCurvePlan(float32, exponentialGain(2000), dtMs = 2, samples = 300,
+    tMaxMs = 100)
+  var ws = initWorkspace()
+  ws.reserve(plan.workspaceSize)
+  z.data.applyGainCurve(meta, plan, ws)
+  for j in 0..<300: doAssert z.data[0, j] == 0, "a zero stays zero at column " & $j
+  doAssert z.data[1, 299] == Inf
+
 block unbuilt_curves_and_dt:
   var c: GainCurve # default: no knots
   doAssert c.gainDbAt(10).isNaN and c.factorAt(10).isNaN

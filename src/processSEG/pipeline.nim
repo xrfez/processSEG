@@ -53,6 +53,12 @@
 ## impulse lengths, half AGC windows): each op widens the context the next
 ## one sees.
 ##
+## **Windows.** A plan for a zoom window is compiled for the window's width
+## (smaller FFTs) with the record's length beside it,
+## `flow.compile(float32, dtMs, samples = cols, recordSamples = traceLen)`,
+## so that gain curves are tabulated over the whole record and not over the
+## first `cols` samples of it.
+##
 ## **Generations.** Every compiled plan gets a new `generation`, increasing
 ## across all plans of the process (an atomic counter, the one global here;
 ## it only numbers plans). A viewer tags each processed buffer with the
@@ -173,6 +179,7 @@ type
     parts: seq[Slice[int]] # step ranges; a stNormPanel only ever starts one
     dtMs: float64
     samples: int
+    recordSamples: int
     margin: int
     ws: WorkspaceSize
     generation: uint64
@@ -303,7 +310,7 @@ proc badApply(msg: string) {.noinline, noreturn.} =
 
 func finite(x: float64): bool {.inline.} = x.classify notin {fcNan, fcInf, fcNegInf}
 
-proc compileOp[T](op: Op, dtMs: float64, samples: int): Step[T] =
+proc compileOp[T](op: Op, dtMs: float64, samples, recordSamples: int): Step[T] =
   case op.kind
   of opDemean: Step[T](kind: stDemean)
   of opDetrend: Step[T](kind: stDetrend)
@@ -352,9 +359,9 @@ proc compileOp[T](op: Op, dtMs: float64, samples: int): Step[T] =
     if n.scope == perPanel: Step[T](kind: stNormPanel, norm: plan)
     else: Step[T](kind: stNormTrace, norm: plan)
   of opGainCurve:
-    let g = op.gainCurve
+    let g = op.gainCurve # tabulated to the end of the record, not of a window
     Step[T](kind: stGainCurve, curve: initGainCurvePlan(T, g.curve, dtMs,
-      samples, g.tMinMs, g.tMaxMs))
+      recordSamples, g.tMinMs, g.tMaxMs))
 
 func margin[T](s: Step[T]): int =
   case s.kind
@@ -370,26 +377,42 @@ func workspaceSize[T](s: Step[T]): WorkspaceSize =
   of stAgc: s.agc.workspaceSize
   of stNormTrace: s.norm.workspaceSize
   of stNormPanel: s.norm.workspaceSize # panelStatsWorkspace for a percentile
+  of stGainCurve: s.curve.workspaceSize
   else: WorkspaceSize()
 
 proc compile*(p: Pipeline, T: typedesc[SampleType], dtMs: float64,
-    samples: int): PipelinePlan[T] =
-  ## Validates every op of `p` for traces of up to `samples` samples at
+    samples: int, recordSamples = 0): PipelinePlan[T] =
+  ## Validates every op of `p` for blocks of up to `samples` samples at
   ## `dtMs` and precomputes them, giving a plan with a new `generation`.
+  ##
+  ## `recordSamples` is the length of the traces when `samples` is the width
+  ## of a window of them (a zoom; 0: the blocks are whole traces). Tables on
+  ## the trace's time axis (the gain curves) then reach the end of the
+  ## record: a window lies at `t0Ms + firstSample·dtMs`, far past a table
+  ## made for its width alone, and off its table a gain curve costs a `pow`
+  ## per sample (45 times the table's cost, measured).
+  ##
   ## Raises `ValueError` for `dtMs` not finite and positive, `samples < 1`,
-  ## or any invalid op; the message starts with the op's index and kind
+  ## a `recordSamples` that is negative or (when given) below `samples`, or
+  ## any invalid op; the message starts with the op's index and kind
   ## (`op 1 (opFilter): ...`). An empty pipeline compiles: it copies
   ## (`src → dst`) or does nothing (in place).
   if not dtMs.finite or dtMs <= 0:
     raise newException(ValueError, "dtMs must be finite and positive, got " & $dtMs)
   if samples < 1:
     raise newException(ValueError, "a pipeline needs samples ≥ 1, got " & $samples)
+  if recordSamples != 0 and recordSamples < samples:
+    raise newException(ValueError, "recordSamples (" & $recordSamples &
+      ") must be 0 or ≥ samples (" & $samples & "): it is the length of the traces " &
+      "a window of `samples` is cut from")
+  let record = max(samples, recordSamples)
   result.dtMs = dtMs
   result.samples = samples
+  result.recordSamples = record
   result.steps = newSeqOfCap[Step[T]](p.ops.len)
   for i, op in p.ops:
     try:
-      result.steps.add compileOp[T](op, dtMs, samples)
+      result.steps.add compileOp[T](op, dtMs, samples, record)
     except ValueError as e:
       badOp(i, op.kind, e.msg)
   var start = 0
@@ -453,6 +476,11 @@ func samples*[T](plan: PipelinePlan[T]): int {.inline, raises: [].} =
   ## window with its margin): there is no need to recompile for it, only
   ## the cost of FFTs sized for `samples`.
   plan.samples
+
+func recordSamples*[T](plan: PipelinePlan[T]): int {.inline, raises: [].} =
+  ## The trace length the plan's time-axis tables cover: `compile`'s
+  ## `recordSamples`, or `samples` when it was not given.
+  plan.recordSamples
 
 func len*[T](plan: PipelinePlan[T]): int {.inline, raises: [].} =
   ## The number of compiled ops.
@@ -555,7 +583,7 @@ proc runStep[T](s: Step[T], b: RowBlock[T], meta: ChunkMeta,
   of stAgc: agc(b, meta, s.agc, ws)
   of stNormTrace: normalize(b, meta, s.norm, ws)
   of stNormPanel: discard # its factor is applied by runPart
-  of stGainCurve: applyGainCurve(b, meta, s.curve)
+  of stGainCurve: applyGainCurve(b, meta, s.curve, ws)
 
 proc runPart*[T](plan: PipelinePlan[T], part: int, src, dst: RowBlock[T],
     meta: ChunkMeta, factor: float64, ws: var Workspace) {.raises: [].} =

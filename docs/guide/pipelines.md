@@ -110,13 +110,15 @@ var zoom = newTraceTensor[float32](f.len, win.len)
 discard f.readTracesInto(0 ..< f.len, win, zoom, failed) # only the window is decoded
 let meta = chunkMeta(f, 0 ..< f.len, win, failed)        # firstSample = win.a
 doAssert meta.firstSample == win.a
-let plan = flow.compile(float32, meta.dtMs, samples = win.len)
+# The window's width, and the record's length for tables on the time axis.
+let plan = flow.compile(float32, meta.dtMs, samples = win.len, recordSamples = ns)
 var ws = initWorkspace()
 ws.reserve(plan)
 plan.apply(zoom, meta, ws)
 # Draw columns shown.a - win.a .. shown.b - win.a: they match the whole trace
 # filtered, here to within 2.5 % of the traces' peak (1.2) next to the margin
-# and far closer inside.
+# and far closer inside. (Steady sinusoids are the worst case; broadband data
+# is within about 0.5 %.)
 var whole = f.readTraces(0 ..< f.len)
 let all = chunkMeta(f, 0 ..< f.len)
 let full = flow.compile(float32, all.dtMs, samples = ns)

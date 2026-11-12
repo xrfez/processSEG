@@ -316,6 +316,36 @@ block margins_and_zoom_windows:
   ws.reserve(plan)
   plan.apply(g.data, meta, ws)
 
+block gain_curves_in_a_zoom_window:
+  # A plan compiled for a window's width with the record's length beside it
+  # tabulates its gain curves over the record: on a window far down the
+  # trace it gives the bits of a plan compiled for the whole record (both
+  # multiply by the table; off the table the curve is evaluated per sample,
+  # 45 times slower, and rounds differently).
+  const (ns, first, cols) = (6001, 3700, 1101)
+  var g = noisyGather[float32](12, ns, seed = 5)
+  var w = g.window(first, cols)
+  let meta = initChunkMeta(w.rows, dtMs = 2, firstSample = first)
+  for curve in [powerGain(2), exponentialGain(3), knotGain([GainKnot(tMs: 0, dB: 0),
+      GainKnot(tMs: 9000, dB: 20)])]:
+    let flow = initPipeline([gainCurveOp(curve)])
+    let whole = flow.compile(float32, 2, ns)
+    let window = flow.compile(float32, 2, cols, recordSamples = ns)
+    doAssert window.samples == cols and window.recordSamples == ns
+    doAssert whole.recordSamples == ns
+    var ws = initWorkspace()
+    ws.reserve(whole)
+    ws.reserve(window)
+    var a = zeros[float32](12, cols)
+    var b = zeros[float32](12, cols)
+    whole.apply(w.data, a, meta, ws)
+    window.apply(w.data, b, meta, ws)
+    for r in 0..<12:
+      for j in 0..<cols:
+        doAssert cast[uint32](a[r, j]) == cast[uint32](b[r, j]), $curve.kind & " row " & $r
+  doAssertRaises ValueError: discard initPipeline().compile(float32, 2, 100, recordSamples = 99)
+  doAssertRaises ValueError: discard initPipeline().compile(float32, 2, 100, recordSamples = -1)
+
 block overlapping_blocks_and_part_preconditions:
   var buf = newSeq[float32](12 * 50)
   let whole = rowBlock(buf, 12, 50)

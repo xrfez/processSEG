@@ -195,9 +195,13 @@ flow[2].agc.windowMs = 300                # a slider moved: edit the op, recompi
   is not resized: allocate it once per cached chunk. A batch job with no raw cache works in place.
 - **Recompiling is cheap** (microseconds to a few ms), so the viewer can recompile on every
   slider event. A plan takes any block up to `plan.samples` wide, so a zoom window needs
-  no recompile (one compiled for the window's width runs smaller FFTs). Keep one plan per
-  sample interval: a uniform prefetch of a mixed SEG-D file gives chunks at several
-  intervals. `ws.reserve(plan)` is a no-op when the workspace is already big enough;
+  no recompile; one compiled for the window's width runs smaller FFTs. Compile that one
+  with the record's length beside it, `flow.compile(float32, dtMs, samples = cols,
+  recordSamples = traceLen)`: a gain curve is tabulated on the trace's time axis, and a
+  table made for the first `cols` samples does not reach a window further down (off its
+  table the curve is still right, but 4 times slower for a block of rows with one time
+  axis and 65 times for single rows). Keep one plan per sample interval: a uniform
+  prefetch of a mixed SEG-D file gives chunks at several intervals. `ws.reserve(plan)` is a no-op when the workspace is already big enough;
   `apply` never grows it (an `AssertionDefect` if it is too small).
 - **Stale buffers.** Tag each processed buffer with the plan's `generation` **and** the
   file's `keysRevision`, and reprocess it when either differs: mutes read offsets, gain
