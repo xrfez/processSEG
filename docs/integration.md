@@ -455,7 +455,22 @@ trace's first and last non-zero samples, so muted zeros do not count.
   order. Everything is allocated on the calling thread before the workers start.
 - **Progress and cancel:** `progress(done, total)` (parseSEG's `Progress`) after every
   chunk, on the calling thread; returning false stops the workers and raises
-  `SegCancelledError`. A viewer runs `bruteStack` on a background thread of its own.
+  `SegCancelledError`.
+- **Thread contract:** `bruteStack` blocks its caller, so a viewer runs it on a background
+  thread of its own (`progress` is called on that thread, and the result belongs to it
+  until it hands it over). The job only reads the file: its map, its index and its keys.
+  While it runs,
+  - other threads may read the same `SeismicFile`: `readTracesInto`, `traceKeys`,
+    `rowsOf` and metas, and the prefetchers they already have;
+  - other threads may also create and close prefetchers on that file, with parseSEG
+    0.10.0 or later. (A prefetcher pins the file's map, and the job creates and closes
+    one of its own. Before 0.10.0 the pin count is not thread-safe: creating or closing
+    a prefetcher on one thread while another does the same on that file is a data race.
+    With an older parseSEG, create the viewer's prefetchers before the job starts and
+    close them after it has returned.)
+  - no thread may change or close the file until `bruteStack` has returned or raised:
+    no `applySurvey` or `applyGeometry`, no header edit, no assignment to `f.index`, no
+    `close`. To do any of these, cancel the job through `progress` and wait for it.
 - **Result:** a `StackResult`: `data` (`[bins, samples]`, normalized by fold, √fold or
   not), `fold` (`[bins, samples]`, int32), `binning`, `dtMs` (and `intervalUs`, the
   input's own microseconds, which is what `stackKeys` writes), `startMs`, `stacked`,
@@ -533,7 +548,8 @@ pass it through `user`, with the workspaces.
    it, rebuild views and metas, and recompute anything tagged with an older revision:
    ticks, bins and processed buffers (the raw samples stay valid).
 9. For a brute stack, run `bruteStack` on a background thread, with a `progress` hook
-   that returns false to cancel.
+   that returns false to cancel. Other threads may keep reading the file meanwhile, but
+   none may edit or close it ("Batch results", thread contract).
 
 ## Open questions
 

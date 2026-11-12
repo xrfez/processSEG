@@ -284,10 +284,17 @@ s.close()
 f.close()
 ```
 
-- Run `bruteStack` on a background thread of your own; it blocks until done. The traces
-  are summed in file order whatever `opts.workers` is, so the stack is the same bit for
-  bit for any number of workers (only a `perPanel` normalization in the flow depends on
-  `opts.chunkTraces`).
+- Run `bruteStack` on a background thread of your own; it blocks until done, and calls
+  `progress` on that thread. The job only reads the file. While it runs, other threads
+  may read the same `SeismicFile` (`readTracesInto`, `traceKeys`, views, the prefetchers
+  they have) and, with parseSEG 0.10.0 or later, create and close prefetchers on it
+  (before 0.10.0 the map's pin count is not thread-safe: create them before the job
+  starts and close them after it has returned). No thread may `applySurvey`, edit
+  headers or `close` the file until `bruteStack` has returned or raised: cancel through
+  `progress` and wait for it first.
+- The traces are summed in file order whatever `opts.workers` is, so the stack is the
+  same bit for bit for any number of workers (only a `perPanel` normalization in the
+  flow depends on `opts.chunkTraces`).
 - `res.skipped` counts live traces outside every bin or with a NaN offset, `t0Ms` or
   static, no interval, non-finite samples, or fully stretch-muted.
 - Memory: one stack of bins × samples × (sizeof(T) + 4) bytes, whatever the number of

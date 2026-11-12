@@ -56,6 +56,18 @@
 ## it once per CDP and shot-sorted input about once per trace
 ## (`samples` interpolations each).
 ##
+## **Threads.** `bruteStack` blocks its caller: run it on a background
+## thread of your own. The job only reads the file (its map, index and
+## keys). While it runs, other threads may read the same `SeismicFile`
+## (`readTracesInto`, `traceKeys`, views, the prefetchers they have) and,
+## with parseSEG 0.10.0 or later, create and close prefetchers on it. (A
+## prefetcher pins the file's map, and the job has one of its own; before
+## 0.10.0 the pin count is not thread-safe, so two threads must not create
+## or close prefetchers on one file at the same time.) No thread may
+## change or close the file until `bruteStack` has returned or raised: no
+## `applySurvey` or `applyGeometry`, no header edit, no `close`. Cancel
+## through `progress` and wait for the call to end first.
+##
 ## **Progress and cancel.** `progress(done, total)` is called on the
 ## calling thread after every chunk with the **traces** done and the total
 ## (parseSEG's `Progress` type, which elsewhere counts bytes), and
