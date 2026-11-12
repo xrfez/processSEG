@@ -217,7 +217,7 @@ proc applyBlocks[T](p: ProcessPool, plan: PipelinePlan[T], src,
     dst: RowBlock[T], meta: ChunkMeta) =
   doAssert p.state != nil, "a ProcessPool must come from newProcessPool"
   plan.checkApply(src, dst, meta)
-  var ctx = ApplyCtx[T](plan: unsafeAddr plan, src: src, dst: dst, meta: meta,
+  var ctx = ApplyCtx[T](plan: addr plan, src: src, dst: dst, meta: meta,
     workers: p.state.workers)
   acquire p.state.call
   for part in 0 ..< plan.partCount:
@@ -288,7 +288,7 @@ proc correlateInto*[T: SampleType](p: ProcessPool, plan: CorrelationPlan[T],
   ## `CorrelationPlan.correlateInto` does, before any sample changes.
   doAssert p.state != nil, "a ProcessPool must come from newProcessPool"
   plan.checkCorrelate(src, dst, meta) # on the caller's thread
-  var ctx = CorrCtx[T](plan: unsafeAddr plan, src: src, dst: dst, meta: meta,
+  var ctx = CorrCtx[T](plan: addr plan, src: src, dst: dst, meta: meta,
     workers: p.state.workers)
   acquire p.state.call
   run(p.state, corrJob[T], addr ctx)

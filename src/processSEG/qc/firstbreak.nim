@@ -356,7 +356,7 @@ proc pick*[T: SampleType](plan: FirstBreakPlan[T], x: openArray[T],
   ## `plan.workspaceSize`. `x` is not changed.
   doAssert x.len <= plan.samples, "a trace longer than the plan's samples"
   if x.len == 0: return noPick()
-  plan.pickRow(cast[ptr UncheckedArray[T]](unsafeAddr x[0]), x.len, offset, t0Ms, 0,
+  plan.pickRow(cast[ptr UncheckedArray[T]](addr x[0]), x.len, offset, t0Ms, 0,
     ws, filtered = false)
 
 proc pickInto*[T: SampleType](plan: FirstBreakPlan[T], b: RowBlock[T], meta: ChunkMeta,

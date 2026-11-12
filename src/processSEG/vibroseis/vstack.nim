@@ -329,7 +329,7 @@ proc add*[T](acc: var RecordStack[T], outRow: int, x: openArray[T],
   if n == 0: return true
   if acc.params.mode == rsDiversity:
     doAssert ws.fits(acc.workspaceSize), "reserve the stack's workspaceSize first"
-  let xp = cast[ptr UncheckedArray[T]](unsafeAddr x[0])
+  let xp = cast[ptr UncheckedArray[T]](addr x[0])
   if not allFinite(xp, n): return false
   let at = outRow * acc.samples
   case acc.params.mode
@@ -467,5 +467,5 @@ proc foldInto*[T](acc: RecordStack[T], dst: var Tensor[int32]) =
   ## as `stackInto`.
   acc.checkDst(dst)
   if acc.count.len > 0:
-    copyMem(cast[pointer](dst.unsafe_raw_offset(aligned = false)), unsafeAddr acc.count[0],
+    copyMem(cast[pointer](dst.unsafe_raw_offset(aligned = false)), addr acc.count[0],
       acc.count.len * sizeof(int32))

@@ -256,7 +256,7 @@ proc applyAt[T](plan: GainCurvePlan[T], x: ptr UncheckedArray[T], n: int,
   let j1 = clamp(last - s + 1, j0, n)
   for j in 0..<j0: direct(j)
   if j1 > j0:
-    let tab = cast[ptr UncheckedArray[T]](unsafeAddr plan.table[s + j0])
+    let tab = cast[ptr UncheckedArray[T]](addr plan.table[s + j0])
     let xs = cast[ptr UncheckedArray[T]](addr x[j0])
     if onGrid: mulTable(xs, tab, j1 - j0)
     else: mulTableLerp(xs, tab, j1 - j0, T(f))

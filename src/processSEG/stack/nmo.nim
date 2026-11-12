@@ -167,7 +167,7 @@ proc nmoInto*[T: SampleType](src: openArray[T], srcStartMs: float64,
   while j0 < m:
     let len = min(blockLen, m - j0)
     moveoutCols(cols, len, j0, dstStartMs, dtMs, srcStartMs, x,
-      cast[ptr UncheckedArray[float64]](unsafeAddr vrms[j0]))
+      cast[ptr UncheckedArray[float64]](addr vrms[j0]))
     for i in 0 ..< len:
       let j = j0 + i
       let c = cols[i]

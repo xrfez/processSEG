@@ -64,7 +64,7 @@ proc rowBlock*[T: SampleType](data: openArray[T], rows, cols: int): RowBlock[T] 
   result.rows = rows
   result.cols = cols
   if data.len > 0:
-    result.data = cast[ptr UncheckedArray[T]](unsafeAddr data[0])
+    result.data = cast[ptr UncheckedArray[T]](addr data[0])
 
 func len*[T](b: RowBlock[T]): int {.inline, raises: [].} =
   ## The number of rows.

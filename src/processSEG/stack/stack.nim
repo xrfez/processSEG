@@ -141,7 +141,7 @@ proc add*[T](acc: var StackAccumulator[T], bin: int, x: openArray[T],
     let at = bin * acc.samples + first
     accumulate(cast[ptr UncheckedArray[T]](addr acc.sum[at]),
       cast[ptr UncheckedArray[int32]](addr acc.fold[at]),
-      cast[ptr UncheckedArray[T]](unsafeAddr x[first]), last - first)
+      cast[ptr UncheckedArray[T]](addr x[first]), last - first)
   true
 
 func liveSpan*[T](x: openArray[T]): Slice[int] {.raises: [].} =
@@ -215,5 +215,5 @@ proc foldInto*[T](acc: StackAccumulator[T], dst: var Tensor[int32]) =
   checkDst(acc, dst)
   if acc.fold.len > 0:
     copyMem(cast[pointer](dst.unsafe_raw_offset(aligned = false)),
-        unsafeAddr acc.fold[0],
+        addr acc.fold[0],
       acc.fold.len * sizeof(int32))

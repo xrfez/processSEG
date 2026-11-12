@@ -424,8 +424,8 @@ proc agcImpl[T](x: ptr UncheckedArray[T], n: int, plan: AgcPlan,
   let lastBlock = (n - 1) div w * w
   let tailCut = clamp(lastBlock + h, last, n)
   let pn = p[n]
-  let inv = cast[Buf](unsafeAddr plan.inv[0])
-  let rev = cast[Buf](unsafeAddr plan.rev[0])
+  let inv = cast[Buf](addr plan.inv[0])
+  let rev = cast[Buf](addr plan.rev[0])
   let unitW = unit / float64(w)
   # The whole trace, when it is under 2h + 1 samples (then n ≤ 2h).
   let headWhole = (if headCut < first: pn * unit * inv[n] else: 0.0)

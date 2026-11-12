@@ -258,8 +258,8 @@ proc runStack[T](f: SeismicFile, traces: Slice[int], binning: Binning,
     s.vel = newSeq[float64](samples)
     s.row = newSeq[T](samples)
     s.lastBin = -1
-  job.plan = unsafeAddr plan
-  job.binning = unsafeAddr binning
+  job.plan = addr plan
+  job.binning = addr binning
   job.useStatics = opts.useStatics
   job.statics = opts.statics
   job.staticsInterp = opts.staticsInterp
@@ -330,7 +330,7 @@ proc bruteStack*(f: SeismicFile, T: typedesc[SampleType], traces: Slice[int],
   ## invalid or the flow does not compile, and `SegCancelledError` when
   ## `progress` cancels.
   checkField(binning, velocity)
-  var job = Job[T](velKind: velField, field: unsafeAddr velocity)
+  var job = Job[T](velKind: velField, field: addr velocity)
   runStack[T](f, traces, binning, job, opts, progress)
 
 proc bruteStack*(f: SeismicFile, T: typedesc[SampleType], traces: Slice[int],
@@ -339,7 +339,7 @@ proc bruteStack*(f: SeismicFile, T: typedesc[SampleType], traces: Slice[int],
   ## A brute stack with one velocity function for every bin; see the field
   ## form.
   checkFunction(velocity)
-  var job = Job[T](velKind: velFunction, fun: unsafeAddr velocity)
+  var job = Job[T](velKind: velFunction, fun: addr velocity)
   runStack[T](f, traces, binning, job, opts, progress)
 
 proc bruteStack*(f: SeismicFile, T: typedesc[SampleType], binning: Binning,

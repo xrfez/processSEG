@@ -94,7 +94,7 @@ proc initChunkMeta*(rows: TraceRows, dtMs: float64, firstSample = 0,
   result = ChunkMeta(rows: rows, dtMs: dtMs, firstSample: firstSample,
     failedLen: failed.len)
   if failed.len > 0:
-    result.failed = cast[ptr UncheckedArray[int]](unsafeAddr failed[0])
+    result.failed = cast[ptr UncheckedArray[int]](addr failed[0])
 
 func rows*(m: ChunkMeta): TraceRows {.inline, raises: [].} =
   ## The view of the rows.

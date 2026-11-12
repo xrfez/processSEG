@@ -56,7 +56,7 @@ proc threaded[P](name: string, plan: P) =
     var th: array[workers, Thread[Job[P]]]
     let start = getMonoTime()
     for w in 0..<workers:
-      createThread(th[w], worker[P], Job[P](plan: unsafeAddr plan,
+      createThread(th[w], worker[P], Job[P](plan: addr plan,
         data: addr parts[w].data, meta: addr metas[w], rounds: rounds))
     joinThreads(th)
     samples.add float64(inNanoseconds(getMonoTime() - start)) / rounds
