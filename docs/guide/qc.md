@@ -105,6 +105,11 @@ The overlay is `picks[row].timeMs` (or `.col` over the block). For one trace,
 threads, one `Workspace` each. The module documentation compares the pickers and their
 biases (energy arrival vs onset).
 
+Zeros before a row's first and after its last non-zero sample (a recording delay,
+padding, a mute) are not data: the row is picked over its `liveSpan`, so the step from
+zeros to data is never the break. A pick with no energy at all in its noise window (the
+end of a dropout) has a NaN `snrDb` and confidence 0.
+
 ## A refraction fit per shot
 
 `fitShot` fits the confident picks of one shot (a `meta.sub` of its rows) against the

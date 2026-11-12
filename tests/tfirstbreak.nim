@@ -348,3 +348,38 @@ block coppens_on_the_example_record:
     echo "  example record: ", picked, " Coppens picks, ", early, " in the first window (",
       w, " samples)"
     doAssert picked > 3900 and early == 0 # 3210 of 3954 picked the warm-up
+
+block zeros_before_the_data_are_not_noise:
+  # 100 zero samples (a recording delay, a padded start), then noise and
+  # an onset at 400 ms: the step from zeros to noise is no first break, and
+  # zeros are no noise to measure a confidence against.
+  const rows = 100
+  const edge = 100
+  var g = shotGather[float32](0, endOn(rows, 25, 25), cols, dt)
+  for r in 0 ..< rows:
+    var row = newSeq[float32](cols)
+    row.addOnset(dt, 400, 30)
+    row.addNoise(0.02, 900 + r)
+    for j in edge ..< cols: g.data[r, j] = row[j]
+  for m in PickMethod:
+    for hc in [Inf, 60.0]:
+      let ps = picks(g, FirstBreakParams(pickMethod: m, highCutHz: hc))
+      var atOnset = 0
+      for r, q in ps:
+        doAssert q.col.isNaN or abs(q.col - edge) > 4 or q.confidence == 0,
+          $m & " row " & $r & ": " & $q
+        if abs(q.timeMs - 400) <= 8 * dt: inc atOnset
+      doAssert atOnset >= rows * 95 div 100, $m & " " & $hc & ": " & $atOnset
+    # A search window on the edge alone finds nothing to pick.
+    for q in picks(g, FirstBreakParams(pickMethod: m, searchStartMs: 196, searchEndMs: 204)):
+      doAssert q.col.isNaN and q.confidence == 0, $m & ": " & $q
+  # Zeros inside the trace (a dropout): the pick on their end has no noise
+  # power before it, so no SNR and no confidence.
+  var d = shotGather[float32](0, endOn(4, 25, 25), cols, dt)
+  for r in 0 ..< d.len:
+    var row = newSeq[float32](cols)
+    row.addNoise(0.02, 950 + r)
+    for j in 0 ..< cols:
+      if j notin 60 ..< 200: d.data[r, j] = row[j]
+  for q in picks(d, FirstBreakParams(searchStartMs: 380, searchEndMs: 420)):
+    doAssert q.col == 200 and q.snrDb.isNaN and q.confidence == 0, $q

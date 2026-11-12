@@ -61,10 +61,17 @@
 ## ending `windowMs / 2` before it (a guard gap, so a pick a little late
 ## does not count the break as noise; each window cut by the trace's ends,
 ## each mean energy plus `1e-6` of the trace's; a pick with nothing before
-## the gap has a NaN `snrDb` and confidence 0), and `confidence` maps it
-## linearly from `lowDb` (0) to `highDb` (1), clamped. The same measure serves every picker, so
+## the gap, or with no energy at all there, as after a dropout, has a NaN
+## `snrDb` and confidence 0), and `confidence` maps it linearly from `lowDb`
+## (0) to `highDb` (1), clamped. The same measure serves every picker, so
 ## confidences compare across methods. Noise alone gives about 0 dB, a
 ## clear break well above `highDb`.
+##
+## **Zeros.** The zeros before a row's first and after its last non-zero
+## sample (a recording delay, padding, a mute) are not data: a row is
+## picked over its `liveSpan` (`stack/stack`), so the step from zeros to
+## data is not a break, the zeros are not its noise, and the data a pick
+## needs before it count from the first non-zero sample.
 ##
 ## **No pick** (`timeMs`, `col`, `snrDb` NaN, `confidence` 0): a non-live
 ## row, an empty search window or a trace without energy there. A trace
@@ -86,6 +93,7 @@ import parseSEG
 import ../core/[rows, types, workspace]
 import ../filter/[design, iir]
 import ../fft/plan as fftplan
+import ../stack/stack
 import snr
 
 type
@@ -297,12 +305,11 @@ proc argmaxAttribute(m: PickMethod, p, a: ptr UncheckedArray[float64], n, lo, hi
 
 {.pop.}
 
-proc pickRow[T](plan: FirstBreakPlan[T], src: ptr UncheckedArray[T], n: int,
-    offset, t0Ms, startCol: float64, ws: var Workspace,
-    filtered: bool): FirstBreakPick {.raises: [].} =
-  # One trace of n live samples whose column 0 is at `t0Ms + startCol·dt`;
-  # `filtered`: `src` already went through the plan's band-pass (else it is
-  # filtered here, into a copy, when the plan has one).
+proc pickRow[T](plan: FirstBreakPlan[T], src, done: ptr UncheckedArray[T], n: int,
+    offset, t0Ms, startCol: float64, ws: var Workspace): FirstBreakPick {.raises: [].} =
+  # One trace `src` of n live samples whose column 0 is at `t0Ms +
+  # startCol·dt`; `done`: the same trace after the plan's band-pass (nil:
+  # it is filtered here, into a copy, when the plan has one).
   result = noPick()
   if n < 2: return
   let pr = plan.params
@@ -322,35 +329,48 @@ proc pickRow[T](plan: FirstBreakPlan[T], src: ptr UncheckedArray[T], n: int,
   if origin.isNaN and (tLo > -Inf or tHi < Inf): return
   let cLo = if origin.isNaN: -Inf else: (tLo - origin) / dt
   let cHi = if origin.isNaN: Inf else: (tHi - origin) / dt
-  let lo = if cLo <= 0: 0 elif cLo >= float64(n): n else: int(ceil(cLo))
-  let hi = if cHi < 0: 0 elif cHi >= float64(n - 1): n else: int(floor(cHi)) + 1
+  # The zeros before the first and after the last non-zero sample (a
+  # recording delay, padding, a mute) are not data: picked as it is, such a
+  # row gives the step from zeros to data, with the zeros as its noise.
+  let live = liveSpan(src.toOpenArray(0, n - 1))
+  let first = live.a
+  let m = live.len
+  if m < 2: return
+  let lo = max(0, (if cLo <= 0: 0 elif cLo >= float64(n): n else: int(ceil(cLo))) - first)
+  let hi = min(m, (if cHi < 0: 0 elif cHi >= float64(n - 1): n
+    else: int(floor(cHi)) + 1) - first)
   if lo >= hi: return
   # The trace, filtered in the workspace (when not done by the caller).
-  var x = src
-  if plan.filtered and not filtered:
+  var x = (if done != nil: done else: src)
+  if plan.filtered and done == nil:
     x = ws.scratch(T, n, plan.copyBase)
     copyMem(x, src, n * sizeof(T))
     applyFilter(x.toOpenArray(0, n - 1), plan.filter, ws)
+  x = cast[ptr UncheckedArray[T]](addr x[first])
   let base = plan.energyBase
-  let p = ws.scratch(float64, n + 1, base)
-  let a = ws.scratch(float64, n + 1, base + plan.samples + 1)
-  prefixEnergy(x, n, p)
-  let total = p[n]
+  let p = ws.scratch(float64, m + 1, base)
+  let a = ws.scratch(float64, m + 1, base + plan.samples + 1)
+  prefixEnergy(x, m, p)
+  let total = p[m]
   if not (total > 0) or total == Inf: return
-  let mean = total / float64(n)
+  let mean = total / float64(m)
   let eps = 1e-6 * mean
   let beta = pr.stabilization * mean * float64(plan.w)
-  let col = argmaxAttribute(pr.pickMethod, p, a, n, lo, hi, plan.w, plan.lta, beta, eps)
+  let col = argmaxAttribute(pr.pickMethod, p, a, m, lo, hi, plan.w, plan.lta, beta, eps)
   if col < 0: return
   let gapEnd = max(0, col - plan.w div 2) # guard gap: a pick a little late
-  result.col = float64(col)
-  result.timeMs = origin + float64(col) * dt
-  # Nothing before the gap (an empty noise window): NaN, confidence 0.
-  let snr = windowSnrDb(x.toOpenArray(0, n - 1), col ..< min(n, col + plan.snr),
-    max(0, gapEnd - plan.snr) ..< gapEnd, seRatio, floorDb = -Inf, stabilization = eps)
-  if not snr.isNaN:
-    result.snrDb = snr
-    result.confidence = clamp((snr - pr.lowDb) / (pr.highDb - pr.lowDb), 0.0, 1.0)
+  result.col = float64(first + col)
+  result.timeMs = origin + float64(first + col) * dt
+  # Nothing before the gap (an empty noise window), or no energy at all
+  # there (a dropout: zeros are no noise level, and with the stabilization
+  # alone they would read +60 dB): NaN, confidence 0.
+  let noise = meanPower(x.toOpenArray(0, m - 1), max(0, gapEnd - plan.snr) ..< gapEnd)
+  if noise > 0:
+    let snr = powerSnrDb(meanPower(x.toOpenArray(0, m - 1), col ..< min(m, col + plan.snr)),
+      noise, seRatio, floorDb = -Inf, stabilization = eps)
+    if not snr.isNaN:
+      result.snrDb = snr
+      result.confidence = clamp((snr - pr.lowDb) / (pr.highDb - pr.lowDb), 0.0, 1.0)
 
 proc pick*[T: SampleType](plan: FirstBreakPlan[T], x: openArray[T],
     ws: var Workspace, offset = NaN, t0Ms = 0.0): FirstBreakPick {.raises: [].} =
@@ -360,8 +380,7 @@ proc pick*[T: SampleType](plan: FirstBreakPlan[T], x: openArray[T],
   ## `plan.workspaceSize`. `x` is not changed.
   doAssert x.len <= plan.samples, "a trace longer than the plan's samples"
   if x.len == 0: return noPick()
-  plan.pickRow(cast[ptr UncheckedArray[T]](addr x[0]), x.len, offset, t0Ms, 0,
-    ws, filtered = false)
+  plan.pickRow(cast[ptr UncheckedArray[T]](addr x[0]), nil, x.len, offset, t0Ms, 0, ws)
 
 proc pickInto*[T: SampleType](plan: FirstBreakPlan[T], b: RowBlock[T], meta: ChunkMeta,
     ws: var Workspace, dst: var openArray[FirstBreakPick]) =
@@ -380,14 +399,14 @@ proc pickInto*[T: SampleType](plan: FirstBreakPlan[T], b: RowBlock[T], meta: Chu
   if dst.len != meta.len:
     raise newException(ValueError, "dst holds " & $dst.len & " picks, the meta " &
       $meta.len & " rows")
-  template pickOne(row: int, src: ptr UncheckedArray[T], filtered: bool) =
+  template pickOne(row: int, done: ptr UncheckedArray[T]) =
     dst[row] = noPick()
     if meta.isLive(row):
       let k = meta.keys(row)
-      dst[row] = plan.pickRow(src, meta.liveSamples(row, b.cols), k.offset,
-        k.t0Ms, float64(meta.firstSample), ws, filtered)
+      dst[row] = plan.pickRow(b.rowPtr(row), done, meta.liveSamples(row, b.cols), k.offset,
+        k.t0Ms, float64(meta.firstSample), ws)
   if not plan.filtered or b.cols == 0:
-    for row in 0 ..< meta.len: pickOne(row, b.rowPtr(row), false)
+    for row in 0 ..< meta.len: pickOne(row, nil)
     return
   # Band-pass `fftLanes` rows at a time, as one batch of the IIR filter's
   # lanes, into copies, then pick each copy.
@@ -399,7 +418,7 @@ proc pickInto*[T: SampleType](plan: FirstBreakPlan[T], b: RowBlock[T], meta: Chu
       copyMem(addr c[(i - g) * b.cols], b.rowPtr(i), b.cols * sizeof(T))
     let cb = rowBlock(c.toOpenArray(0, rows.len * b.cols - 1), rows.len, b.cols)
     applyFilter(cb, meta.sub(rows), plan.filter, ws)
-    for i in rows: pickOne(i, cb.rowPtr(i - g), true)
+    for i in rows: pickOne(i, cb.rowPtr(i - g))
     g += fftLanes
 
 proc pickInto*[T: SampleType](plan: FirstBreakPlan[T], samples: Tensor[T],
