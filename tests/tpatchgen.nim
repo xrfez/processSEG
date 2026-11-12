@@ -181,6 +181,19 @@ block arguments:
   let none = [PatchShot(record: 1, source: stationKey(1, 1, 1))]
   doAssert g.generateRelations(none, initPatchTemplate(4, 11)).len == 0
 
+block point_index_out_of_range:
+  # An SPS record holds a one-digit point index, but a point built in code
+  # may hold anything: the station key takes it clamped, as parseSEG's
+  # survey join does, instead of a RangeDefect (or a wrapped index).
+  var f: SpsFile
+  for index in [100_000, -100_000, 3]:
+    var p = initSpsPoint(pkSource)
+    (p.line, p.point, p.index) = (1.0, 2.0, index)
+    f.points.add p
+  let shots = f.patchShots
+  doAssert shots.len == 3 and shots[2].source.index == 3
+  doAssert shots[0].source.index == high(int16) and shots[1].source.index == low(int16)
+
 block shots_without_a_station_number:
   # A shot whose source line or point is unknown gets no records, like one
   # without coordinates, whatever the placement and the edge mode.

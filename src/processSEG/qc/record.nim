@@ -123,7 +123,9 @@ type
 func fmt(x: float64): string =
   if x == floor(x) and abs(x) < 1e15: $int64(x) else: $x
 
-func `$`*(s: StationKey): string =
+func stationText(s: StationKey): string =
+  # "line/point", with ".index" above 1. Private: a `$` for parseSEG's
+  # `StationKey` belongs to parseSEG, which has none yet.
   fmt(s.line) & "/" & fmt(s.point) & (if s.index > 1: "." & $s.index else: "")
 
 func `$`*(c: RecordCompleteness): string =
@@ -131,10 +133,13 @@ func `$`*(c: RecordCompleteness): string =
              (if c.candidates.len > 1: "ambiguous: X records " & c.candidates.join(", ")
               else: "no X record")
            else: "XPS " & $c.xpsRecord
-  result.add " (by " & (if c.recordMatch == rmSourceStation: "source " & $c.source
-    else: "FFID " & fmt(c.fieldRecord)) & ", traces by " & $c.traceMatch & ")"
+  let by = if c.recordMatch == rmSourceStation: "source " & stationText(c.source)
+           else: "FFID " & fmt(c.fieldRecord)
+  result.add " (by " & by & ", traces by " & $c.traceMatch & ")"
   if c.recordMismatch: result.add "; FFID " & fmt(c.fieldRecord) & " differs"
-  if c.sourceMismatch: result.add "; X source " & $c.xpsSource & " differs from header " & $c.source
+  if c.sourceMismatch:
+    result.add "; X source " & stationText(c.xpsSource) & " differs from header " &
+      stationText(c.source)
   result.add ": " & $c.expected & " expected, " & $c.present & " present (" & $c.presentLive &
     " live), " & $c.missing & " missing in " & $c.missingRanges.len & " ranges, " &
     $c.unlisted & " unlisted, " & $c.duplicates & " duplicated; traces " & $c.traces & ": " &

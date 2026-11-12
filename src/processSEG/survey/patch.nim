@@ -440,13 +440,22 @@ func hasDistance*(t: PatchTemplate): bool {.inline.} =
   ## A distance limit is set.
   t.inlineHalfWidth < Inf or t.crosslineHalfWidth < Inf or t.radius < Inf or t.maxOffset < Inf
 
+func stationIndex(i: int): int16 {.inline.} =
+  # A point index as the part of a station key. Survey records hold one
+  # digit, but a point built in code may hold any int: out of range it
+  # clamps, as parseSEG's survey join clamps it (its `idx`, which is not
+  # exported), so both make the same key of the same point.
+  int16(clamp(i, int(low(int16)), int(high(int16))))
+
 proc patchShots*(f: SpsFile, firstRecord = 1'i64): seq[PatchShot] =
   ## One shot per S record with a numeric line and point, in file order,
-  ## numbered from `firstRecord`.
+  ## numbered from `firstRecord`. A point index beyond an `int16` is
+  ## clamped, as parseSEG clamps it when it adds the file to a geometry.
   var record = firstRecord
   for p in f.points:
     if p.kind == pkSource and not (p.line.isNaN or p.point.isNaN):
-      result.add PatchShot(record: record, source: stationKey(p.line, p.point, int16(p.index)))
+      result.add PatchShot(record: record,
+        source: stationKey(p.line, p.point, stationIndex(p.index)))
       inc record
 
 proc patchShots*(g: SurveyGeometry, firstRecord = 1'i64): seq[PatchShot] =
