@@ -404,6 +404,15 @@ type
     lineMap*, pointMap*: NumberMap
       ## `ppNumbers`: the (fractional) receiver line and point at the source,
       ## from its line and point numbers.
+    # Distance field (11.9): limits around the source; Inf: none.
+    inlineHalfWidth* = Inf    ## Box half-width along `boxAzimuthDeg`.
+    crosslineHalfWidth* = Inf ## Box half-width across it (90° clockwise).
+    boxAzimuthDeg* = NaN      ## The box's inline direction; NaN: the receiver-line azimuth.
+    inlineDistance*, crosslineDistance*: float64
+      ## Box (and radius) centre relative to the source, in distance along and
+      ## across `boxAzimuthDeg`.
+    radius* = Inf    ## Distance from the box centre.
+    maxOffset* = Inf ## Distance from the source.
 
   PatchShot* = object
     ## A field record to generate: its number and source station.
@@ -413,6 +422,21 @@ type
 func initPatchTemplate*(lines, channels: int, edge = peRoll): PatchTemplate =
   ## A centred `lines × channels` template.
   PatchTemplate(lines: lines, channels: channels, edge: edge)
+
+func initDistancePatch*(inlineHalfWidth, crosslineHalfWidth: float64, edge = peRoll,
+    radius = Inf, maxOffset = Inf): PatchTemplate =
+  ## A distance field alone: every receiver inside the box (and the radius
+  ## and maximum offset), centred on the source.
+  PatchTemplate(edge: edge, inlineHalfWidth: inlineHalfWidth,
+    crosslineHalfWidth: crosslineHalfWidth, radius: radius, maxOffset: maxOffset)
+
+func hasTemplate*(t: PatchTemplate): bool {.inline.} =
+  ## The template part is set (lines or channels).
+  t.lines != 0 or t.channels != 0
+
+func hasDistance*(t: PatchTemplate): bool {.inline.} =
+  ## A distance limit is set.
+  t.inlineHalfWidth < Inf or t.crosslineHalfWidth < Inf or t.radius < Inf or t.maxOffset < Inf
 
 proc patchShots*(f: SpsFile, firstRecord = 1'i64): seq[PatchShot] =
   ## One shot per S record with a numeric line and point, in file order,
@@ -473,12 +497,80 @@ type Picked = object
   st: LineStation
 
 proc validate(t: PatchTemplate) =
-  if t.edge != peStatic and (t.lines < 1 or t.channels < 1):
-    raise newException(ValueError, "generateRelations: template lines and channels must be ≥ 1")
+  if t.edge != peStatic:
+    if not (t.hasTemplate or t.hasDistance):
+      raise newException(ValueError, "generateRelations: no template and no distance limit")
+    if t.hasTemplate and (t.lines < 1 or t.channels < 1):
+      raise newException(ValueError, "generateRelations: template lines and channels must be ≥ 1")
+    if t.edge == peShift and t.hasTemplate and t.hasDistance:
+      raise newException(ValueError, "generateRelations: peShift takes a template or " &
+        "distance limits, not both")
   for v in [t.lineOffset, t.stationOffset, t.lineMap.scale, t.lineMap.offset,
-      t.pointMap.scale, t.pointMap.offset]:
+      t.pointMap.scale, t.pointMap.offset, t.inlineDistance, t.crosslineDistance]:
     if v.isNaN or abs(v) == Inf:
       raise newException(ValueError, "generateRelations: offsets and number maps must be finite")
+  for v in [t.inlineHalfWidth, t.crosslineHalfWidth, t.radius, t.maxOffset]:
+    if v.isNaN or v < 0:
+      raise newException(ValueError, "generateRelations: distance limits must be ≥ 0 (Inf: none)")
+  if not t.boxAzimuthDeg.isNaN and abs(t.boxAzimuthDeg) == Inf:
+    raise newException(ValueError, "generateRelations: boxAzimuthDeg must be finite or NaN")
+
+type
+  Placed = object
+    pick: Picked
+    x, y: float64
+    a, c: float64 # in the box frame
+
+  DistanceField = object
+    az: float64                  # box azimuth
+    stations: seq[Placed]        # every layout station, with its grid position
+    aMin, aMax, cMin, cMax: float64 # their extent in the box frame
+
+func xyOf(layout: ReceiverLayout, st: LineStation): (float64, float64) {.inline.} =
+  let a = degToRad(layout.azimuthDeg)
+  (st.inline * sin(a) + st.crossline * cos(a), st.inline * cos(a) - st.crossline * sin(a))
+
+proc initDistanceField(layout: ReceiverLayout, t: PatchTemplate): DistanceField =
+  result.az = if t.boxAzimuthDeg.isNaN: layout.azimuthDeg else: t.boxAzimuthDeg
+  (result.aMin, result.aMax, result.cMin, result.cMax) = (Inf, -Inf, Inf, -Inf)
+  for line in layout.lines:
+    for st in line.stations:
+      let (x, y) = layout.xyOf(st)
+      let (a, c) = (inlineOf(result.az, x, y), crosslineOf(result.az, x, y))
+      result.stations.add Placed(pick: Picked(line: line.line, step: line.pointStep, st: st),
+        x: x, y: y, a: a, c: c)
+      result.aMin = min(result.aMin, a)
+      result.aMax = max(result.aMax, a)
+      result.cMin = min(result.cMin, c)
+      result.cMax = max(result.cMax, c)
+
+func inside(t: PatchTemplate, x, y, a, c, sx, sy, ca, cc, cx, cy: float64): bool {.inline.} =
+  ## (x, y) — (a, c) in the box frame — within the limits: box centred at
+  ## (ca, cc) in the box frame, radius around (cx, cy), offset from the
+  ## source (sx, sy).
+  const eps = 1e-9
+  abs(a - ca) <= t.inlineHalfWidth * (1 + eps) + eps and
+    abs(c - cc) <= t.crosslineHalfWidth * (1 + eps) + eps and
+    hypot(x - cx, y - cy) <= t.radius * (1 + eps) + eps and
+    hypot(x - sx, y - sy) <= t.maxOffset * (1 + eps) + eps
+
+func centreOf(f: DistanceField, t: PatchTemplate, sx, sy: float64): (float64, float64) =
+  ## The box centre in the box frame: the source plus the distances, shifted
+  ## inside the receivers' extent for `peShift` (centred on it when the box
+  ## is wider).
+  var ca = inlineOf(f.az, sx, sy) + t.inlineDistance
+  var cc = crosslineOf(f.az, sx, sy) + t.crosslineDistance
+  if t.edge == peShift:
+    template fit(c: var float64, lo, hi, hw: float64) =
+      if hw < Inf:
+        c = if hi - lo >= 2 * hw: clamp(c, lo + hw, hi - hw) else: (lo + hi) / 2
+    fit(ca, f.aMin, f.aMax, t.inlineHalfWidth)
+    fit(cc, f.cMin, f.cMax, t.crosslineHalfWidth)
+  (ca, cc)
+
+func xyOfBox(az, a, c: float64): (float64, float64) {.inline.} =
+  let r = degToRad(az)
+  (a * sin(r) + c * cos(r), a * cos(r) - c * sin(r))
 
 proc pickTemplate(layout: ReceiverLayout, main: seq[int], t: PatchTemplate,
     cl, sa, srcPoint: float64, picked: var seq[Picked]) =
@@ -573,12 +665,24 @@ proc generateRelations*(g: SurveyGeometry, layout: ReceiverLayout,
   ## `peShift` keeps the line range and each line's slots inside the survey;
   ## `peStatic` lists, for every shot, the stations inside `staticBox`.
   ##
+  ## **Distance field.** The distance limits (`inlineHalfWidth`,
+  ## `crosslineHalfWidth` along `boxAzimuthDeg`, `radius` around the box
+  ## centre, `maxOffset` from the source) keep the receivers inside them:
+  ## every R station (short lines too) when there is no template
+  ## (`lines = channels = 0`, see `initDistancePatch`), else the template's
+  ## receivers (the intersection). They need the source's coordinates (else
+  ## no records). The box is centred on the source plus `inlineDistance`,
+  ## `crosslineDistance`; `peShift` moves it inside the receivers' extent in
+  ## the box frame (an irregular outline counts by its bounding box), and
+  ## takes either a template or distance limits, not both.
+  ##
   ## Channels run 1..n in ascending line and point order; each run of
   ## consecutive stations (step `pointStep`, one point index) is one X
   ## record. Point index 0 is written as 1. Write the result with parseSEG
   ## (`SpsFile.relations`, `writeSps`); `receiverRelations` gives the O
-  ## records. Raises `ValueError` for a template without lines or channels
-  ## (roll, shift) or with a non-finite offset or map.
+  ## records. Raises `ValueError` for roll or shift with neither a template
+  ## nor a distance limit, a template without lines or channels, shift with
+  ## both, a non-finite offset or map, or a negative or NaN limit.
   t.validate
   var main: seq[int]
   for i, line in layout.lines:
@@ -601,28 +705,100 @@ proc generateRelations*(g: SurveyGeometry, layout: ReceiverLayout,
         if st.inline >= b.inlineMin and st.inline <= b.inlineMax and
             st.crossline >= b.crosslineMin and st.crossline <= b.crosslineMax:
           staticPicks.add Picked(line: line.line, step: line.pointStep, st: st)
+  let field = if t.edge != peStatic and t.hasDistance: initDistanceField(layout, t)
+              else: DistanceField()
   var picked: seq[Picked]
   for shot in shots:
     picked.setLen 0
     if t.edge == peStatic:
       picked.add staticPicks
-    elif main.len > 0:
-      var cl, sa = NaN
-      if t.placement == ppNumbers:
-        cl = fractionalIndex(mainPos, t.lineMap.scale * shot.source.line + t.lineMap.offset,
-          posStep)
-      else:
-        var c: Coordinates
-        if not g.table.sources.lookup(shot.source, c) or c.x.isNaN or c.y.isNaN: continue
-        sa = layout.inlineOf(c.x, c.y)
-        cl = fractionalIndex(mainPos, layout.crosslineOf(c.x, c.y), posStep)
-      pickTemplate(layout, main, t, cl, sa, shot.source.point, picked)
+    else:
+      var c: Coordinates
+      let located = g.table.sources.lookup(shot.source, c) and not (c.x.isNaN or c.y.isNaN)
+      if (t.placement == ppCoordinates or t.hasDistance) and not located: continue
+      if t.hasTemplate and main.len > 0:
+        var cl, sa = NaN
+        if t.placement == ppNumbers:
+          cl = fractionalIndex(mainPos, t.lineMap.scale * shot.source.line + t.lineMap.offset,
+            posStep)
+        else:
+          sa = layout.inlineOf(c.x, c.y)
+          cl = fractionalIndex(mainPos, layout.crosslineOf(c.x, c.y), posStep)
+        pickTemplate(layout, main, t, cl, sa, shot.source.point, picked)
+      if t.hasDistance:
+        let (ca, cc) = field.centreOf(t, c.x, c.y)
+        let (cx, cy) = xyOfBox(field.az, ca, cc)
+        if t.hasTemplate:
+          var kept = 0
+          for i in 0 ..< picked.len:
+            let (x, y) = layout.xyOf(picked[i].st)
+            if t.inside(x, y, inlineOf(field.az, x, y), crosslineOf(field.az, x, y),
+                c.x, c.y, ca, cc, cx, cy):
+              picked[kept] = picked[i]
+              inc kept
+          picked.setLen kept
+        else:
+          for p in field.stations:
+            if t.inside(p.x, p.y, p.a, p.c, c.x, c.y, ca, cc, cx, cy): picked.add p.pick
     emitRuns(picked, shot, result)
 
 proc generateRelations*(g: SurveyGeometry, shots: openArray[PatchShot],
     t: PatchTemplate): seq[SpsRelation] =
   ## `generateRelations` over the measured receiver layout of `g`.
   g.generateRelations(g.receiverLayout, shots, t)
+
+
+# ------------------------------------------------------------- comparison --
+
+type
+  RecordAgreement* = object
+    ## One field record in two relation sets (e.g. the supplied XPS and a
+    ## generated one), by distinct receiver stations.
+    record*: int64
+    listed*, generated*, common*: int
+    missing*: seq[StationKey] ## Listed, not generated (line, point order).
+    extra*: seq[StationKey]   ## Generated, not listed: e.g. receivers dropped in the field.
+
+func jaccard*(a: RecordAgreement): float64 =
+  ## common / (listed ∪ generated); 1 when both are empty.
+  let u = a.listed + a.generated - a.common
+  if u == 0: 1.0 else: float64(a.common) / float64(u)
+
+func listedFraction*(a: RecordAgreement): float64 =
+  ## The share of listed stations that were generated; 1 when none are listed.
+  if a.listed == 0: 1.0 else: float64(a.common) / float64(a.listed)
+
+func stationCmp(a, b: StationKey): int =
+  result = cmp(a.line, b.line)
+  if result == 0: result = cmp(a.point, b.point)
+  if result == 0: result = cmp(a.index, b.index)
+
+proc compareRelations*(listed, generated: SurveyGeometry): seq[RecordAgreement] =
+  ## Per field record (X) of either geometry, ascending: its receiver
+  ## stations in `listed` against those in `generated`. Index 0 and 1 count
+  ## as the same station.
+  var records: seq[int64]
+  for r in listed.records: records.add r
+  for r in generated.records: records.add r
+  records.sort
+  var last = 0'i64
+  for i, r in records:
+    if i > 0 and r == last: continue
+    last = r
+    var a, b: HashSet[StationKey]
+    for (_, rel) in listed.relations(r):
+      a.incl stationKey(rel.receiver.line, rel.receiver.point, max(1'i16, rel.receiver.index))
+    for (_, rel) in generated.relations(r):
+      b.incl stationKey(rel.receiver.line, rel.receiver.point, max(1'i16, rel.receiver.index))
+    var e = RecordAgreement(record: r, listed: a.len, generated: b.len)
+    for k in a:
+      if k in b: inc e.common
+      else: e.missing.add k
+    for k in b:
+      if k notin a: e.extra.add k
+    e.missing.sort(stationCmp)
+    e.extra.sort(stationCmp)
+    result.add e
 
 
 func `$`*(s: Spread): string =
