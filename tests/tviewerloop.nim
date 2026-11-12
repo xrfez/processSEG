@@ -98,10 +98,10 @@ block survey_sgy_loop_and_zoom:
   # Zoom windows, decoded with the margin, against the whole traces processed
   # and cut to the same columns. The margin bounds the error relative to the
   # strongest signal near the window (99.9 % of each impulse's energy), so:
-  # - samples 300 .. 1000 hold two events: band-pass + AGC within 1 % of the
-  #   window's peak;
+  # - samples 300 .. 1000 hold two events: band-pass + AGC within 0.5 % of the
+  #   window's peak (0.16 % measured; 1 % with the reflected pads of old);
   # - samples 800 .. 1200 hold only noise, 46 dB below an event just past the
-  #   margin: the band-pass is within 1 % of the traces' peak, but not of the
+  #   margin: the band-pass is within 0.5 % of the traces' peak, but not of the
   #   quiet window's own peak, and an AGC after it lifts that leak to the
   #   window's level (integration doc, "Sample windows").
   let traces = 20 ..< 60
@@ -118,11 +118,11 @@ block survey_sgy_loop_and_zoom:
     let want = full[_, shown.a .. shown.b].clone()
     maxDiff(zoom, want) / peakAbs(if ofTraces: full else: want)
   let e1 = v.zoomError(300 .. 1000, ofTraces = false)
-  doAssert e1 <= 0.01, "zoom with events off by " & $e1 & " of its peak"
+  doAssert e1 <= 0.005, "zoom with events off by " & $e1 & " of its peak"
   var bp = initViewerSim(initPipeline([v.flow[0]]), workers = 2)
   doAssert bp.flow[0].kind == opFilter
   let e2 = bp.zoomError(800 .. 1200, ofTraces = true)
-  doAssert e2 <= 0.01, "quiet zoom off by " & $e2 & " of the traces' peak"
+  doAssert e2 <= 0.005, "quiet zoom off by " & $e2 & " of the traces' peak"
 
 block ticks_and_apply_survey:
   let path = getTempDir() / "processseg_viewer_record.sgd"

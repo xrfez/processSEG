@@ -259,15 +259,21 @@ only samples `a..b` would show edge artefacts at both ends of the window.
 At the true ends of a trace, processSEG does the edge handling itself:
 
 1. remove the mean or a linear trend;
-2. pad by odd reflection, which keeps the value and the slope continuous, for as long as
-   the filter's impulse response;
-3. taper the pad only;
-4. choose an FFT size at which the response does not wrap (`samples + 4L`: below −60 dB
-   even for a spike on the last sample);
-5. after filtering, add the trend back, scaled by the filter's gain at 0 Hz (a high-cut
+2. pad each end for as long as the filter's impulse response: with zeros under a low-cut
+   or a band-pass (the trend is gone, and nothing is known beyond the trace), by a tapered
+   odd reflection under a high-cut or a notch, which pass the level and slope it keeps
+   continuous, and whenever the line was not removed (`trMean`, `trNone`);
+3. choose an FFT size at which the response does not wrap (below −60 dB even for a spike
+   on the last sample);
+4. after filtering, add the trend back, scaled by the filter's gain at 0 Hz (a high-cut
    keeps a drift, a low-cut removes it).
 
-So the first samples of a trace do not swing after a low-cut such as 1 Hz.
+So the first samples of a trace do not swing after a low-cut such as 1 Hz, and they are
+what the same samples would be inside a longer trace, as far as the missing samples
+allow: on white noise the first half impulse length is within 4 % (low-cut 2–4 Hz) to
+15 % (4-8-60-80 Hz) of that. (A reflection under a low-cut would pin the end samples to 0
+whatever the data; the IIR filters follow the same rule, starting from rest instead of
+from a steady state.)
 
 In a pipeline a filter is `filterOp(lowCut(0.5, 1))` (or `iirOp(butterLowCut(1))`), and
 `plan.requiredMargin` sums the margins of all its ops. A filter also runs on its own:
@@ -288,27 +294,28 @@ without it.
 The impulse length `L` holds 99.9 % of the energy of the response or of its complement
 (a narrow low-cut ramp is long: 0.5–1 Hz at 2 ms is 881 samples, 1.8 s), each edge and
 notch measured on its own, so the narrowest one sets it. A window decoded with `m`
-samples each side matches the whole trace filtered to within about 1 % of the traces'
-peak on seismic data, not the window's own (see below), and 2.5 % in the worst case: a
-steady in-band sinusoid, whose tail beyond `L` adds up coherently (measured 1.6–2.4 % for
-4-8-60-80, 5-10-40-60 and 0.5–1 Hz low-cut band-passes at 2 ms; 1.5× the margin gives
-under 0.5 %). Tested
-for FFT and IIR filters, zero and minimum phase; a minimum-phase margin holds 99.99 % of
-its causal impulse, since its whole error comes from the history before the window.
+samples each side matches the whole trace filtered to within about 0.5 % of the traces'
+peak on broadband data, not the window's own (see below): 0.3 % measured on white noise
+for a 4-8-60-80 Hz band-pass, 0.06 % for a 0.5–1 Hz low-cut, 0.4 % for a zero-phase IIR
+4–60 Hz. The worst case is a steady sinusoid inside the narrowest ramp, whose tail beyond
+`L` adds up coherently: about 2.5 % (1.5× the margin gives under 0.7 %). A high-cut alone
+has a short `L` and more of the signal inside its ramp: 2.8 % on noise for 60–80 Hz at
+2 ms, 0.3 % at 1.5× the margin. Tested for FFT and IIR filters, zero and minimum phase; a
+minimum-phase margin holds 99.99 % of its causal impulse, since its whole error comes from
+the history before the window.
 
 What the margin does and does not promise:
 
 - the error is relative to the **strongest signal near the window**, not to the window's
   own peak. A quiet window next to a strong event just outside the margin (noise 46 dB
-  below it, in parseSEG's `survey.sgy`) is within 1 % of the traces' peak but not of its
-  own;
+  below it, in parseSEG's `survey.sgy`) is within 0.3 % of the traces' peak, but that is
+  half of its own (0.008 % of the traces' peak at 1.5× the margin);
 - a gain that equalizes (AGC, per-trace normalization) **after** a filter lifts that
-  leak to the level of the quiet window: there, a zoomed AGC picture can differ by a few
-  percent from the whole trace's (1.6 % of the window's peak in that file). More margin
-  shrinks the filter's own leak fast (60× less at 1.5× the margin), but after AGC the
-  error depends on where in the quiet zone the leak lands, and it is not monotonic in
-  the margin (0.3 % at 1.5×, 8 % at 2×, 0.02 % at 3×, measured). Treat zooms of AGC data
-  next to much stronger events as approximate;
+  leak towards the level of the quiet window: there, a zoomed AGC picture differs from
+  the whole trace's by 0.4 % of the window's peak in that file. More margin shrinks the
+  filter's own leak fast, but after AGC the error depends on where in the quiet zone the
+  leak lands, and it is not monotonic in the margin (0.3 % at 1.5×, 0.8 % at 2×, 0.03 % at
+  3×, measured). Treat zooms of AGC data next to much stronger events as approximate;
 - whole-trace ops (`demean`, `detrend`, per-trace normalization, the RMS that sets AGC's
   ε) use the statistics of the decoded window, so they cannot match the whole trace
   whatever the margin. Use the filters' trend removal instead of `demean` before a
@@ -543,10 +550,10 @@ pass it through `user`, with the workspaces.
 - Does the viewer want an asynchronous `submit` / `wait` pair on the pool, so a frame can
   be abandoned before it finishes? It is added only if the viewer asks for it.
 - Is the zoom margin's worst case good enough on screen? A window decoded with
-  `requiredMargin` is within about 1 % of the whole trace's filtered result on seismic
-  data, but up to 2.5 % for a steady in-band sinusoid ("Sample windows"); 1.5× the
-  margin gives under 0.5 %, at 50 % more decoded samples per zoom edge. A viewer that
-  sees the difference can decode `ceil(1.5 · requiredMargin)` without any library
-  change; if it always does, the library's margin should grow instead.
+  `requiredMargin` is within about 0.5 % of the whole trace's filtered result on broadband
+  data, and about 2.5 % for a steady sinusoid inside a filter's ramp ("Sample windows");
+  1.5× the margin gives under 0.7 % there, at 50 % more decoded samples per zoom edge. A
+  viewer that sees the difference can decode `ceil(1.5 · requiredMargin)` without any
+  library change; if it always does, the library's margin should grow instead.
 
 Settled: the pool is public API (`ProcessPool`, decided 2026-11-09).
