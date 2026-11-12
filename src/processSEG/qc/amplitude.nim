@@ -30,12 +30,17 @@
 ##   every finite sample equals the same non-zero value. Neither gets the
 ##   flags below;
 ## - `afClipped`: `clipped` counts the samples in runs of at least `clipRun`
-##   consecutive samples at the trace's maximum magnitude (`|x| ≥ (1 −
-##   clipTolerance)·max |x|`), positive or negative: a recorder or a
-##   conversion that saturated. Asymmetric clipping is seen at the larger
-##   level only; Inf samples are not clips. Integer-valued data of low
-##   amplitude (a weak trace recorded as integers, a quiet window) sits at
-##   its maximum for runs too and reads as clipped;
+##   consecutive samples at the trace's maximum, `x ≥ (1 − clipTolerance)·
+##   max x` or `x ≤ (1 − clipTolerance)·min x`: a recorder or a conversion
+##   that saturated. Each polarity has its own level when both reach the
+##   maximum magnitude (within 1 %, or `clipTolerance` if larger), as the
+##   two rails of an integer recorder do (+2ⁿ − 1 and −2ⁿ); a side that
+##   stays below it is not examined, so asymmetric clipping is seen at the
+##   larger level only. Inf samples are not clips. The flag needs two such
+##   runs, or one of `2·clipRun` samples: weak data recorded as integers
+##   sits at its largest count for a few samples somewhere, which `clipped`
+##   counts and the flag ignores (data of very few counts, with many such
+##   runs, still reads as clipped);
 ## - `afSpiky`: `spikes` counts the samples whose deviation from the mean is
 ##   more than `spikeFactor` times the RMS deviation of their neighbours
 ##   within `±spikeWindowMs` (the sample itself left out, so a spike does not
@@ -70,7 +75,7 @@ type
     afNonFinite = "non-finite" ## A NaN or Inf sample.
     afDead = "dead"            ## Every finite sample is 0.
     afConstant = "constant"    ## Every finite sample is the same non-zero value.
-    afClipped = "clipped"      ## Runs of samples at the maximum magnitude.
+    afClipped = "clipped"      ## Two runs of samples at the maximum, or a long one.
     afSpiky = "spiky"          ## Samples far above their neighbours.
     afDcOffset = "dc offset"   ## A mean large against the deviation.
     afWeak = "weak"            ## RMS far below the record's (`recordAmplitude`).
@@ -95,7 +100,7 @@ type
     maxDb*: float64         ## `20·log₁₀ max |x|`; NaN without finite samples.
     mean*: float64          ## The mean (DC level); NaN without finite samples.
     nonFinite*: int         ## NaN and Inf samples.
-    clipped*: int           ## Samples in clipped runs.
+    clipped*: int           ## Samples in runs of `clipRun` and more at the maximum.
     spikes*: int            ## Spike samples.
     robustZ*: float64 = NaN ## Of `rmsDb` in its record (`recordAmplitude`).
     flags*: set[AmplitudeFlag]
@@ -172,15 +177,24 @@ func traceAmplitudeImpl[T](x: openArray[T], half: int,
   let sigma = sqrt(max(sumSq / n - mean * mean, 0.0))
   if abs(mean) > p.dcRatio * sigma: result.flags.incl afDcOffset
 
-  # Clipped runs at the maximum magnitude.
-  let level = (1 - p.clipTolerance) * mx
-  var run = 0
+  # Clipped runs at the maximum. Each polarity has its own level when both
+  # reach the maximum magnitude (within 1 %, or the tolerance): a
+  # two's-complement recorder clips at +2ⁿ − 1 and −2ⁿ, and with one level
+  # for both only the negative rail counted. A side that stays below that
+  # is not clipped, whatever runs it has at its own extreme.
+  let near = (1 - max(p.clipTolerance, 0.01)) * mx
+  let up = (if hi >= near: (1 - p.clipTolerance) * hi else: Inf)
+  let down = (if -lo >= near: (1 - p.clipTolerance) * lo else: -Inf)
+  var run, runs, longest = 0
   for i in 0 .. x.len:
     let v = (if i < x.len: float64(x[i]) else: 0.0)
-    let at = i < x.len and v - v == 0 and abs(v) >= level         # Inf is not a clip
-    if at: inc run
+    if i < x.len and (v >= up or v <= down) and v - v == 0: # Inf is not a clip
+      inc run
     else:
-      if run >= p.clipRun: result.clipped += run
+      if run >= p.clipRun:
+        result.clipped += run
+        inc runs
+        longest = max(longest, run)
       run = 0
 
   # Spikes: the deviation against its neighbours' RMS deviation in
@@ -207,7 +221,10 @@ func traceAmplitudeImpl[T](x: openArray[T], half: int,
       let others = max(win - d, 0.0)
       if count > 0 and d > 0 and d * float64(count) > k2 * others:
         inc result.spikes
-  if result.clipped > 0: result.flags.incl afClipped
+  # One short run at the maximum is what weak data recorded as integers
+  # gives somewhere (4 traces of the 3954 of a field record, 83 dB and more
+  # below its level): a clip repeats, or lasts.
+  if runs >= 2 or longest >= 2 * p.clipRun: result.flags.incl afClipped
   if result.spikes > 0: result.flags.incl afSpiky
 {.pop.}
 

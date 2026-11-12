@@ -207,7 +207,11 @@ present, 31 missing, 2858 live stations the XPS does not list, 3 auxiliary trace
 `traceAmplitudeInto(samples, meta, params, amps)` measures each trace: RMS and maximum in
 dB, the mean, non-finite samples, clipped runs at the maximum, spikes against their
 neighbours, and flags the traces that are dead, constant, clipped, spiky or DC-offset by
-their samples, whatever their header status says. `recordAmplitude(amps, params, ws)` then
+their samples, whatever their header status says. A clip is a run of `clipRun` samples at
+the trace's maximum, of either polarity (an integer recorder's two rails differ by one
+count); the flag needs two runs, or one of twice that length, since weak data recorded as
+integers holds its largest count for a few samples somewhere, which only `clipped`
+counts. `recordAmplitude(amps, params, ws)` then
 takes the record's median and MAD of the RMS in dB, and flags the weak and noisy outliers
 by a robust z-score. Give it one record at a time; amplitudes fall with offset, so the
 near traces of a shot read as noisy (112 of Morgantown's 3954, over whole traces): compare

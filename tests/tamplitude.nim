@@ -2,9 +2,10 @@
 ## constant, clipped, spiky, DC-offset, noisy, weak and NaN traces is
 ## flagged with exactly those flags; header-dead and failed rows are skipped;
 ## windows, short traces, the record statistics, the pool, float32 and
-## float64, no allocation, and parameter errors.
+## float64, no allocation, and parameter errors; clips of both polarities
+## and of quantized data; the example SEG-D record (skipped when absent).
 
-import std/[assertions, math]
+import std/[assertions, math, os]
 import processSEG
 import parseSEG
 import utils/[allocs, synth]
@@ -55,9 +56,12 @@ proc record[T](): SynthGather[T] =
     elif r == injectedRow[inConstant]:
       for v in x.mitems: v = 0.7
     elif r == injectedRow[inClipped]:
+      # At 0.3 of the peak the wavelet's main lobe and both side lobes are
+      # cut: three runs. (At 0.5 it was one run of 5 samples, which is now
+      # counted but, alone and under 2·clipRun, not flagged.)
       var m = 0.0
       for v in x: m = max(m, abs(v))
-      for v in x.mitems: v = clamp(v, -0.5 * m, 0.5 * m)
+      for v in x.mitems: v = clamp(v, -0.3 * m, 0.3 * m)
     elif r == injectedRow[inSpiky]:
       x[1600 div 2] += 1.0 # 1600 ms, far from the wavelet
     elif r == injectedRow[inDc]:
@@ -100,7 +104,7 @@ proc checkRecord[T]() =
   doAssert amps[injectedRow[inNan]].nonFinite == 3
   doAssert amps[injectedRow[inNan]].samples == cols
   doAssert amps[injectedRow[inSpiky]].spikes == 1
-  doAssert amps[injectedRow[inClipped]].clipped >= 3, $amps[injectedRow[inClipped]].clipped
+  doAssert amps[injectedRow[inClipped]].clipped >= 12, $amps[injectedRow[inClipped]].clipped
   doAssert amps[injectedRow[inDead]].rmsDb == -Inf
   doAssert abs(amps[injectedRow[inConstant]].rmsDb - 20 * log10(0.7)) < 1e-5
   doAssert abs(amps[injectedRow[inConstant]].mean - 0.7) < 1e-6
@@ -177,14 +181,20 @@ block single_trace:
   doAssert a.maxDb == 0
   let b = traceAmplitude(x, 1, AmplitudeParams(spikeFactor: Inf, dcRatio: Inf))
   doAssert b.flags == {}
-  # Clip runs: three samples at the maximum, positive and negative.
+  # Clip runs: three samples at the maximum, positive and negative, are
+  # counted; the flag takes a run of twice clipRun (or a second run).
   var y = newSeq[float64](64)
   y.addSinusoid(1, 37)
   for j in 10 .. 11: y[j] = 2
   y[12] = -2
   let c = traceAmplitude(y, 1, AmplitudeParams(spikeFactor: Inf))
-  doAssert c.clipped == 3 and c.flags == {afClipped}
-  doAssert traceAmplitude(y, 1, AmplitudeParams(clipRun: 4, spikeFactor: Inf)).flags == {}
+  doAssert c.clipped == 3 and c.flags == {}
+  for j in 13 .. 15: y[j] = -2
+  let c6 = traceAmplitude(y, 1, AmplitudeParams(spikeFactor: Inf))
+  doAssert c6.clipped == 6 and c6.flags == {afClipped}
+  let c4 = traceAmplitude(y, 1, AmplitudeParams(clipRun: 4, spikeFactor: Inf))
+  doAssert c4.clipped == 6 and c4.flags == {}
+  doAssert traceAmplitude(y, 1, AmplitudeParams(clipRun: 7, spikeFactor: Inf)).clipped == 0
   var allNan = [NaN, NaN]
   let d = traceAmplitude(allNan, 1)
   doAssert d.flags == {afNonFinite} and d.rmsDb.isNaN and d.nonFinite == 2
@@ -212,6 +222,66 @@ block inf_is_not_clipped:
   x.addSinusoid(1, 37)
   for j in 50 ..< 55: x[j] = Inf
   doAssert traceAmplitude(x, 1, AmplitudeParams(spikeFactor: Inf)).flags == {afNonFinite}
+
+block clips_of_both_polarities:
+  # A 24-bit recorder clips at +8388607 and at −8388608: the two rails
+  # differ by one count, and both are clips.
+  var x = newSeq[float32](2000)
+  var atRail = 0
+  for j in 0 ..< x.len:
+    let v = clamp(round(1.5 * 8388608.0 * sin(2 * PI * 25 * float64(j) * 0.002)),
+      -8388608.0, 8388607.0)
+    x[j] = float32(v)
+    if v == 8388607.0 or v == -8388608.0: inc atRail
+  let a = traceAmplitude(x, 2, AmplitudeParams(spikeFactor: Inf))
+  doAssert a.clipped == atRail and afClipped in a.flags, $a.clipped & " of " & $atRail
+  # A one-sided signal clips at its one rail: the small side's own
+  # maximum is no clip level.
+  var y = newSeq[float64](400)
+  for j in 0 ..< y.len:
+    y[j] = min(100 * abs(sin(0.05 * float64(j))), 80.0) - (if j mod 40 < 5: 3.0 else: 0.0)
+  var top = 0
+  for v in y:
+    if v == 80: inc top
+  doAssert traceAmplitude(y, 2, AmplitudeParams(spikeFactor: Inf, dcRatio: Inf)).clipped == top
+
+block one_short_run_at_the_maximum_is_not_a_clip:
+  # Weak data recorded as integers sits at its largest count for a few
+  # samples somewhere: counted, not flagged. Two such runs, or one of twice
+  # clipRun, are.
+  var x = newSeq[float32](600)
+  for j in 0 ..< x.len: x[j] = float32((j * 7919) mod 5 - 2) # −2 .. 2, no run
+  for j in 100 .. 102: x[j] = 3
+  var a = traceAmplitude(x, 2)
+  doAssert a.clipped == 3 and afClipped notin a.flags, $a
+  for j in 300 .. 302: x[j] = 3
+  a = traceAmplitude(x, 2)
+  doAssert a.clipped == 6 and afClipped in a.flags, $a
+  for j in 300 .. 302: x[j] = 0
+  for j in 100 .. 105: x[j] = 3
+  a = traceAmplitude(x, 2)
+  doAssert a.clipped == 6 and afClipped in a.flags, $a
+
+const shotFile = currentSourcePath().parentDir.parentDir / "exampleFiles" /
+  "00000151_12900_11300.sgd"
+
+block the_example_record_is_not_clipped:
+  if not fileExists(shotFile):
+    echo "  skipped: the example SEG-D record is not present"
+  else:
+    var f = openSeismic(shotFile, keys = true)
+    defer: f.close()
+    let data = f.readTraces(0 ..< f.len, float32)
+    let meta = chunkMeta(f, 0 ..< f.len)
+    var amps = newSeq[TraceAmplitude](meta.len)
+    traceAmplitudeInto(data, meta, AmplitudeParams(), amps)
+    var flagged, runs = 0
+    for a in amps:
+      if afClipped in a.flags: inc flagged
+      if a.clipped > 0: inc runs
+    echo "  example record: ", runs, " traces with a run at their maximum, ", flagged,
+      " flagged as clipped"
+    doAssert flagged == 0 # four weak traces (max −83 .. −99 dB) had one run of 3
 
 block errors:
   var x = newSeq[float32](10)
