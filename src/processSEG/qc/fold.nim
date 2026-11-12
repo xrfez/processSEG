@@ -290,12 +290,18 @@ type
 
   FoldMap* = object
     ## Source–receiver pairs per bin; build it with `initFoldMap` or
-    ## `preplotFold`.
+    ## `preplotFold`. It is moved, not copied: its counts are tensors, and a
+    ## copy would share them (`clone` makes an independent map).
     binning: Binning
     options: FoldOptions
     fold, offsetFold, azimuthFold: Tensor[int32]
     offsetMin, offsetMax: Tensor[float32]
     binned, outside, noCoordinates, notLive: int
+
+# A copied tensor shares its storage: a copied map would keep its own totals
+# (`binned`, ...) over counts that the other map goes on changing.
+proc `=copy`*(dst: var FoldMap, src: FoldMap) {.error.}
+proc `=dup`*(src: FoldMap): FoldMap {.error.}
 
 proc checkBinBudget(binning: Binning, maxBins: int) =
   # Before any count is allocated: out of memory cannot be caught.
@@ -342,6 +348,16 @@ proc initFoldMap*(binning: Binning, opts = FoldOptions(), maxBins = 1 shl 26): F
     result.offsetMin.apply_inline(NaN)
     result.offsetMax = result.offsetMin.clone
 
+proc clone*(m: FoldMap): FoldMap =
+  ## An independent copy of `m`, with its own counts: a snapshot, or a map
+  ## to go on adding to. (Assigning a `FoldMap` is a compile-time error.)
+  template own[T](t: Tensor[T]): Tensor[T] =
+    (if t.size > 0: t.clone else: default(Tensor[T])) # the optional counts may be empty
+  FoldMap(binning: m.binning, options: m.options, fold: own(m.fold),
+    offsetFold: own(m.offsetFold), azimuthFold: own(m.azimuthFold),
+    offsetMin: own(m.offsetMin), offsetMax: own(m.offsetMax), binned: m.binned,
+    outside: m.outside, noCoordinates: m.noCoordinates, notLive: m.notLive)
+
 func binning*(m: FoldMap): lent Binning {.inline.} =
   ## The bins counted.
   m.binning
@@ -351,7 +367,9 @@ func options*(m: FoldMap): lent FoldOptions {.inline.} =
   m.options
 
 func fold*(m: FoldMap): lent Tensor[int32] {.inline.} =
-  ## Pairs per bin, `[inlines, crosslines]`.
+  ## Pairs per bin, `[inlines, crosslines]`. Like every tensor of the map it
+  ## is lent: a tensor assigned from it shares the map's counts (Arraymancer
+  ## tensors are references), so `clone` it to keep a snapshot.
   m.fold
 
 func offsetFold*(m: FoldMap): lent Tensor[int32] {.inline.} =

@@ -365,6 +365,40 @@ block fold_options:
   doAssertRaises(ValueError): discard initFoldMap(b, FoldOptions(azimuthSectors: -1))
   doAssertRaises(ValueError): discard initFoldMap(b, FoldOptions(sectorStartDeg: NaN))
 
+block clone_is_independent:
+  # A map's counts are tensors, which share their storage when copied: a map
+  # is moved or cloned, never copied (tests/reject/rfoldcopy.nim).
+  let grid = gridBinning(0, 0, 0, 10, 10, 4, 4)
+  var k = initTraceKeys()
+  k.status = tsLive
+  (k.srcX, k.srcY, k.rcvX, k.rcvY) = (0.0, 0.0, 20.0, 20.0)
+  let keys = @[k]
+  let counts = @[1]
+  var a = initFoldMap(grid, FoldOptions(offsetBounds: @[0.0, 100], azimuthSectors: 2,
+    offsetRange: true))
+  a.addFold(rowsOf(keys, counts))
+  var b = a.clone
+  doAssert b.binned == 1 and b.fold.toFlatSeq == a.fold.toFlatSeq
+  doAssert b.binning.len == a.binning.len and b.options.azimuthSectors == 2
+  b.addFold(rowsOf(keys, counts))
+  doAssert a.binned == 1 and b.binned == 2
+  template total(t: untyped): int =
+    var n = 0
+    for v in t: n += int(v)
+    n
+  doAssert total(a.fold) == 1 and total(b.fold) == 2, "the clone has its own fold"
+  doAssert total(a.offsetFold) == 1 and total(b.offsetFold) == 2
+  doAssert total(a.azimuthFold) == 1 and total(b.azimuthFold) == 2
+  b.clear
+  doAssert total(a.fold) == 1 and total(b.fold) == 0
+  var known = 0
+  for v in a.offsetMin: known += int(not v.isNaN)
+  doAssert known == 1, "clearing the clone leaves the original's offset range"
+  # A map without the optional counts clones too; a returned map is a move.
+  var plain = initFoldMap(grid).clone
+  plain.addFold(rowsOf(keys, counts))
+  doAssert plain.binned == 1 and plain.offsetFold.size == 0 and plain.offsetMin.size == 0
+
 # Traces of the swath, one per pre-plot pair (keys as parseSEG's applySurvey
 # leaves them); `drop` decides each pair's fate.
 type Fate = enum fLive, fOmitted, fDead, fAux, fFailed

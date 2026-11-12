@@ -134,7 +134,9 @@ range. `initFoldMap` + `addFold` count live traces (by their header midpoint, or
 between their source and receiver coordinates), chunk by chunk in any order. Both use the
 same midpoint maths, so `foldDifference(pre, actual)` (pre-plot − actual) is exact: positive
 where traces are missing, negative where traces fall that the pre-plot has fewer of (a
-geometry error). The results are tensors plus the `Binning`, ready for a display.
+geometry error). The results are tensors plus the `Binning`, ready for a display. A
+`FoldMap` is moved, never copied (its tensors would be shared): `m.clone` gives an
+independent map, for a snapshot before more traces are added.
 
 ```nim
 import parseSEG, processSEG
