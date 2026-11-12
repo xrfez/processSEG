@@ -22,6 +22,7 @@
 ## let res = bruteStack(f, float32, cdpBinning(firstCdp = 1, count = 800),
 ##   velocities, opts, progress = proc (done, total: int64): bool = true)
 ## let part = bruteStack(f, float32, 0 ..< 5000, binning, velocities, opts)
+## let side = bruteStack(f, float32, picked, binning, velocities, opts) # a list
 ## # res.data: [bins, samples]; res.fold; res.binning.location(bin)
 ## ```
 ##
@@ -38,7 +39,9 @@
 ## read them with parseSEG if needed). The live traces with an interval
 ## must all have the same one (a mixed SEG-D record: select the traces of
 ## one channel set), and the stack and the flow are sized by the longest
-## of them. The traces need not be sorted.
+## of them. The traces need not be sorted. `traces` is a range of the file
+## or a list of trace indices (a map selection, one component, one channel
+## set), stacked in list order; a trace listed twice counts twice.
 ##
 ## **Reproducibility.** The traces are summed in the order of `traces`,
 ## whatever the number of workers (the workers correct the traces; one
@@ -252,23 +255,30 @@ proc stackChunk[T](acc: var StackAccumulator[T], c: PrefetchChunk[T],
       if added: inc stacked
       else: inc skipped
 
-proc liveTraces(f: SeismicFile, traces: Slice[int]): (float64, int) =
+type TraceSel = object
+  ## The traces of a job: a range of the file, or a list.
+  listed: bool
+  span: Slice[int]
+  list: seq[int]
+
+func len(sel: TraceSel): int =
+  if sel.listed: sel.list.len else: max(sel.span.b - sel.span.a + 1, 0)
+
+proc liveTraces(rows: TraceRows): (float64, int) =
   # The one sample interval of the live traces (in µs) and their longest
   # length; traces without an interval are left out (and skipped later).
-  let rows = f.rowsOf(traces)
   var us = NaN
   var longest = 0
   for i in 0 ..< rows.len:
     let k = rows.keysAt(i)
-    if k.status notin {tsLive, tsUnknown}: continue
     let x = k.intervalUs
-    if not (x > 0 and x < Inf): continue
-    if us.isNaN: us = x
-    elif x != us:
-      raise newException(ValueError, "the live traces have different sample " &
-        "intervals (" & $us & " and " & $x & " µs, trace " & $(traces.a + i) &
-        "): stack the traces of one interval (one channel set)")
-    longest = max(longest, rows.numSamples(i))
+    if k.status in {tsLive, tsUnknown} and x > 0 and x < Inf:
+      if us.isNaN: us = x
+      elif x != us:
+        raise newException(ValueError, "the live traces have different sample " &
+          "intervals (" & $us & " and " & $x & " µs, trace " & $rows.traceOf(i) &
+          "): stack the traces of one interval (one channel set)")
+      longest = max(longest, rows.numSamples(i))
   if us.isNaN:
     raise newException(ValueError, "no live traces with a sample interval to stack")
   (us, longest)
@@ -286,13 +296,15 @@ proc checkOptions(o: BruteStackOptions) =
   if o.statics.isSome and not (o.statics.get.vReplacement > 0):
     raise newException(ValueError, "opts.statics must hold a datumStatics(...)")
 
-proc runStack[T](f: SeismicFile, traces: Slice[int], binning: Binning,
+proc runStack[T](f: SeismicFile, sel: TraceSel, binning: Binning,
     job: var Job[T], opts: BruteStackOptions, progress: Progress): StackResult[T] =
   if not f.hasKeys:
     raise newException(ValueError, "bruteStack needs stored keys: open the " &
       "file with keys = true (or call ensureKeys)")
   checkOptions(opts)
-  let (intervalUs, inSamples) = liveTraces(f, traces)
+  # `rowsOf` refuses traces outside the file.
+  let (intervalUs, inSamples) = liveTraces(
+    if sel.listed: f.rowsOf(sel.list) else: f.rowsOf(sel.span))
   let dtMs = intervalUs / 1000
   let samples = if opts.samples > 0: opts.samples else: inSamples
   let plan = opts.flow.compile(T, dtMs, max(inSamples, 1))
@@ -323,13 +335,21 @@ proc runStack[T](f: SeismicFile, traces: Slice[int], binning: Binning,
   # stack of 40 000 bins: 846 against 583 ms, 5.7 against 1.3 GB.)
   var acc = initStackAccumulator[T](binning.len, samples, dtMs, opts.startMs)
   result = StackResult[T](binning: binning, dtMs: dtMs, startMs: opts.startMs)
-  let total = int64(traces.len)
+  let total = int64(sel.len)
   var done = 0'i64
   block run:
-    var p = newPrefetcher[T](f, traces, chunkTraces = opts.chunkTraces,
-      depth = opts.workers + 2, cols = max(inSamples, samples),
-      workers = opts.workers, maxRingBytes = opts.maxRingBytes, uniform = true,
-      transform = correctChunk[T], user = addr job)
+    # (The list form takes its own copy of the list.)
+    var p =
+      if sel.listed:
+        newPrefetcher[T](f, sel.list, chunkTraces = opts.chunkTraces,
+          depth = opts.workers + 2, cols = max(inSamples, samples),
+          workers = opts.workers, maxRingBytes = opts.maxRingBytes,
+          uniform = true, transform = correctChunk[T], user = addr job)
+      else:
+        newPrefetcher[T](f, sel.span, chunkTraces = opts.chunkTraces,
+          depth = opts.workers + 2, cols = max(inSamples, samples),
+          workers = opts.workers, maxRingBytes = opts.maxRingBytes,
+          uniform = true, transform = correctChunk[T], user = addr job)
     defer: p.close()
     var c: PrefetchChunk[T]
     while p.nextInto(c) and not job.anyFailed.load:
@@ -369,13 +389,13 @@ proc bruteStack*(f: SeismicFile, T: typedesc[SampleType], traces: Slice[int],
   ## NMO velocities from `velocity` at each bin (a 2D field by the bin's
   ## CDP, which a 2D binning gives; a 3D field by its inline and
   ## crossline). Blocks until done; see the module documentation. Raises
-  ## `ValueError` when the file has no keys, the live traces have no single
-  ## sample interval, the field does not suit the binning, an option is
-  ## invalid or the flow does not compile, and `SegCancelledError` when
-  ## `progress` cancels.
+  ## `ValueError` when the file has no keys, a trace is outside the file,
+  ## the live traces have no single sample interval, the field does not
+  ## suit the binning, an option is invalid or the flow does not compile,
+  ## and `SegCancelledError` when `progress` cancels.
   checkField(binning, velocity)
   var job = Job[T](velKind: velField, field: addr velocity)
-  runStack[T](f, traces, binning, job, opts, progress)
+  runStack[T](f, TraceSel(span: traces), binning, job, opts, progress)
 
 proc bruteStack*(f: SeismicFile, T: typedesc[SampleType], traces: Slice[int],
     binning: Binning, velocity: VelocityFunction,
@@ -384,7 +404,29 @@ proc bruteStack*(f: SeismicFile, T: typedesc[SampleType], traces: Slice[int],
   ## form.
   checkFunction(velocity)
   var job = Job[T](velKind: velFunction, fun: addr velocity)
-  runStack[T](f, traces, binning, job, opts, progress)
+  runStack[T](f, TraceSel(span: traces), binning, job, opts, progress)
+
+proc bruteStack*(f: SeismicFile, T: typedesc[SampleType],
+    traces: openArray[int], binning: Binning, velocity: VelocityField,
+    opts = initBruteStackOptions(), progress: Progress = nil): StackResult[T] =
+  ## A brute stack of a list of traces (a map selection, one component, one
+  ## channel set), read and stacked in list order: `traces[i]` is a trace
+  ## index, and a trace listed twice is stacked twice. `progress` counts
+  ## list positions. The list is copied. Otherwise as the range form.
+  checkField(binning, velocity)
+  var job = Job[T](velKind: velField, field: addr velocity)
+  runStack[T](f, TraceSel(listed: true, list: @traces), binning, job, opts,
+    progress)
+
+proc bruteStack*(f: SeismicFile, T: typedesc[SampleType],
+    traces: openArray[int], binning: Binning, velocity: VelocityFunction,
+    opts = initBruteStackOptions(), progress: Progress = nil): StackResult[T] =
+  ## A brute stack of a list of traces with one velocity function; see the
+  ## other list form.
+  checkFunction(velocity)
+  var job = Job[T](velKind: velFunction, fun: addr velocity)
+  runStack[T](f, TraceSel(listed: true, list: @traces), binning, job, opts,
+    progress)
 
 proc bruteStack*(f: SeismicFile, T: typedesc[SampleType], binning: Binning,
     velocity: VelocityField, opts = initBruteStackOptions(),

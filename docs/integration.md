@@ -432,7 +432,9 @@ processSEG's QC modules score this automatically (experimental for land data):
 ## Batch results: brute stack
 
 `bruteStack(f, T, [traces,] binning, velocity, opts, progress)` (`processSEG/batch`) reads
-the file through parseSEG's prefetcher (`uniform = true`). On each chunk, in the
+the file through parseSEG's prefetcher (`uniform = true`); `traces` is a range or a list
+of trace indices (a map selection, one component, one channel set), the whole file when
+left out. On each chunk, in the
 prefetcher's `transform` hook on its decode worker, it runs datum statics (optional:
 `opts.statics = some(datumStatics(datumZ, vReplacement))`, an `Option`), the pre-stack
 flow (`opts.flow`, a `Pipeline`: mutes, filters, gain), NMO with a stretch mute

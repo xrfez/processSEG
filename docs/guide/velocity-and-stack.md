@@ -269,6 +269,13 @@ doAssert res.stacked == 240 and res.skipped == 0 and res.failed == 0
 doAssert res.data.shape == [20, ns] and res.fold[5, 700] == 12
 doAssert res.data[5, 300] > 0.8 and res.data[5, 700] > 0.8 and calls > 0
 
+var near: seq[int]                      # a list of traces: the near offsets only
+for t in 0 ..< f.len:
+  if f.traceKeys(t).offset < 500: near.add t
+let nearStack = bruteStack(f, float32, near, cdpBinning(firstCdp = 1, count = 20),
+  velocity, opts)
+doAssert nearStack.stacked == near.len and nearStack.fold[5, 700] == 3
+
 let log = writeStack("stack.sgy", res)  # SEG-Y Rev 2.1, trace sorting 4
 doAssert not log.isFatal
 var s = openSeismic("stack.sgy", keys = true)
@@ -287,5 +294,8 @@ f.close()
   workers (the sums are normalized in place and become the result), plus the prefetch
   ring and each worker's scratch; `bruteStackMemory` estimates it. A float32 3D stack of
   100 000 bins × 2001 samples is 1.6 GB.
+- Part of a file: pass a range, `bruteStack(f, float32, 0 ..< 5000, binning, ...)`, or a
+  list of trace indices (a map selection, one channel set of a mixed SEG-D record),
+  `bruteStack(f, float32, picked, binning, ...)`; a list is stacked in its own order.
 - 3D: `gridBinning` (a rotated grid of midpoints) or `inlineCrosslineBinning` (header
   numbers), and a 3D `VelocityField`.

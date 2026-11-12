@@ -214,6 +214,64 @@ block subset_and_field:
       worst = max(worst, abs(float64(byField.data[b, j] - three.data[b, j])))
   doAssert worst <= 5e-3, $worst
 
+block trace_list:
+  # A list of traces (a map selection, one side of the spread, one channel
+  # set) is stacked in list order.
+  var f = openSeismic(flat.path, keys = true)
+  var opts = initBruteStackOptions(workers = 2)
+  opts.chunkTraces = 16
+  let whole = bruteStack(f, float32, binning, vel, opts)
+  var all: seq[int]
+  for t in 0 ..< f.len: all.add t
+  let listed = bruteStack(f, float32, all, binning, vel, opts)
+  doAssert listed.data == whole.data and listed.fold == whole.fold
+  doAssert listed.stacked == whole.stacked
+  # The first three shots, as a list and as a range; an array will do.
+  let part = bruteStack(f, float32, all[0 ..< 72], binning, vel, opts)
+  let span = bruteStack(f, float32, 0 ..< 72, binning, vel, opts)
+  doAssert part.stacked == 72 and part.data == span.data and part.fold == span.fold
+  doAssert bruteStack(f, float32, [3, 4, 5], binning, vel).stacked == 3
+  # One side of the split spread, picked by key: half the fold everywhere.
+  var positive: seq[int]
+  for t in 0 ..< f.len:
+    if f.traceKeys(t).offset > 0: positive.add t
+  doAssert positive.len == flat.traces div 2
+  let side = bruteStack(f, float32, positive, binning, vel, opts)
+  doAssert side.stacked == positive.len
+  let deep = int(1500 / dt) # below any stretch mute: every trace counts
+  var foldSum = 0
+  for b in 0 ..< cdps: foldSum += side.fold[b, deep]
+  doAssert foldSum == positive.len
+  # Any order (the sums then differ in their last bits only), and a trace
+  # listed twice counts twice.
+  var back = all
+  for i in 0 ..< back.len div 2: swap(back[i], back[back.high - i])
+  let reversed = bruteStack(f, float32, back, binning, vel, opts)
+  doAssert reversed.fold == whole.fold
+  for b in 0 ..< cdps:
+    for j in 0 ..< ns:
+      doAssert abs(reversed.data[b, j] - whole.data[b, j]) <= 1e-5
+  let once = bruteStack(f, float32, [100], binning, vel)
+  let twice = bruteStack(f, float32, [100, 100], binning, vel)
+  doAssert twice.stacked == 2 and twice.data == once.data
+  let bin = binning.binOf(f.traceKeys(100))
+  doAssert once.fold[bin, deep] == 1 and twice.fold[bin, deep] == 2
+  # Progress counts the list's traces.
+  var last: (int64, int64)
+  let rec: Progress = proc (done, total: int64): bool {.gcsafe.} =
+    last = (done, total)
+    true
+  discard bruteStack(f, float32, positive, binning, vel, opts, rec)
+  doAssert last == (int64(positive.len), int64(positive.len))
+  doAssertRaises ValueError: discard bruteStack(f, float32, [0, f.len], binning, vel)
+  doAssertRaises ValueError: discard bruteStack(f, float32, [-1], binning, vel)
+  doAssertRaises ValueError:
+    discard bruteStack(f, float32, newSeq[int](), binning, vel) # nothing to stack
+  let field = initVelocityField([1.0, float64(cdps)], [vel, vel], dtMs = 4,
+    tMaxMs = 2400)
+  doAssert bruteStack(f, float32, positive, binning, field, opts).stacked ==
+    positive.len
+
 block statics_and_flow:
   var f = openSeismic(topo.path, keys = true)
   var opts = initBruteStackOptions(flow = initPipeline([bandPassOp(Corners(
