@@ -159,6 +159,66 @@ block ffid_mismatch:
   let none = g.recordCompleteness(rowsOf(keys, newSeq[int](keys.len)))
   doAssert none.xpsRecord == -1 and none.expected == 0
 
+block auto_falls_back_to_the_ffid:
+  # The header source station has no X record (renumbered, or mistyped):
+  # by default the FFID finds the record, and the source is reported.
+  var keys = recordKeys()
+  for k in keys.mitems: k.srcPoint += 1000
+  let counts = newSeq[int](keys.len)
+  let c = g.recordCompleteness(rowsOf(keys, counts))
+  doAssert c.recordMatch == rmFieldRecord and c.xpsRecord == shot.record, $c
+  doAssert c.hasSource and c.sourceMismatch and not c.recordMismatch and c.present == 44
+  # Asked for by source station: no X record.
+  let bySource = g.recordCompleteness(rowsOf(keys, counts), recordMatch = rmSourceStation)
+  doAssert bySource.recordMatch == rmSourceStation and bySource.xpsRecord == -1
+  doAssert bySource.candidates.len == 0 and bySource.expected == 0
+  # Neither the station nor the FFID has one: still reported by its station.
+  for k in keys.mitems: k.record = 999_999
+  let neither = g.recordCompleteness(rowsOf(keys, counts))
+  doAssert neither.recordMatch == rmSourceStation and neither.xpsRecord == -1
+
+block zeroed_stations_are_no_stations:
+  # Recorders that do not fill the station fields leave line 0, point 0:
+  # that is no station, as NaN is none.
+  var keys = recordKeys()
+  for k in keys.mitems: (k.srcLine, k.srcPoint) = (0.0, 0.0)
+  let counts = newSeq[int](keys.len)
+  let c = g.recordCompleteness(rowsOf(keys, counts))
+  doAssert not c.hasSource and c.recordMatch == rmFieldRecord, $c
+  doAssert c.xpsRecord == shot.record and not c.sourceMismatch and c.present == 44
+  # The receivers too: the traces match by channel.
+  for k in keys.mitems: (k.rcvLine, k.rcvPoint) = (0.0, 0.0)
+  let d = g.recordCompleteness(rowsOf(keys, counts))
+  doAssert d.traceMatch == tmChannel and d.present == 44 and d.duplicates == 0, $d
+  doAssert d.unlisted == 0 and d.noStation == 0
+  let byStation = g.recordCompleteness(rowsOf(keys, counts), traceMatch = tmStation)
+  doAssert byStation.noStation == 44 and byStation.present == 0 and byStation.duplicates == 0
+
+block unknown_channels:
+  # Headers without channel numbers: nothing to compare, so no mismatch.
+  var keys = recordKeys()
+  for k in keys.mitems: k.channel = NaN
+  let c = g.recordCompleteness(rowsOf(keys, newSeq[int](keys.len)))
+  doAssert c.present == 44 and c.channelMismatch == 0, $c
+
+block failed_auxiliary_row:
+  # Matching by channel: an auxiliary trace numbered 1 in its own channel
+  # set is not seismic channel 1, also when it could not be decoded.
+  var keys = recordKeys()
+  for k in keys.mitems: (k.rcvLine, k.rcvPoint) = (NaN, NaN)
+  var aux = initTraceKeys()
+  (aux.record, aux.channel, aux.status) = (float64(shot.record), 1.0, tsAuxiliary)
+  keys.insert(aux, 0)
+  let counts = newSeq[int](keys.len)
+  let rows = rowsOf(keys, counts)
+  let decoded = g.recordCompleteness(initChunkMeta(rows, dtMs = 2))
+  doAssert decoded.traceMatch == tmChannel and decoded.aux == 1 and decoded.failed == 0
+  doAssert decoded.duplicates == 0 and decoded.presentLive == 44
+  let failed = @[0]
+  let c = g.recordCompleteness(initChunkMeta(rows, dtMs = 2, failed = failed))
+  doAssert c.failed == 1 and c.aux == 0 and c.live == 44, $c
+  doAssert c.duplicates == 0 and c.present == 44 and c.presentLive == 44, $c
+
 block channel_match:
   var keys = recordKeys()
   for k in keys.mitems: (k.rcvLine, k.rcvPoint) = (NaN, NaN)

@@ -192,10 +192,12 @@ doAssert missing == 1 and min(diff.toFlatSeq) == 0
 
 `recordCompleteness(g, meta)` checks one field record against the XPS. The X record is
 found by the header's **source station** (`recordsAt`; when a source was shot more than
-once, the FFID chooses), or by the FFID with `rmFieldRecord`; the other key is always
+once, the FFID chooses), or by the FFID: with `rmFieldRecord`, and by default when the
+headers have no source station or one that no X record lists. The other key is always
 checked, and a mismatch is reported (`recordMismatch`, `sourceMismatch`: the Morgantown
 case). Traces match by **receiver station** (by channel only when the headers have no
-stations). The result counts the expected, present and live stations, the **missing** ones
+stations). A station whose line and point are both 0 is a header left empty, not a
+station. The result counts the expected, present and live stations, the **missing** ones
 as station ranges per line, the **unlisted** live stations, duplicates, renumbered
 channels (informational), and per receiver line expected / live / missing.
 `summarize(g, records)` totals many records, and lists the XPS records no data matched.

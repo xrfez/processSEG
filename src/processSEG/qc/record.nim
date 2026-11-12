@@ -16,12 +16,18 @@
 ## (`rmSourceStation`, the default when the headers carry one): parseSEG's
 ## `recordsAt` gives the X records of that station; with several, the one
 ## equal to the header FFID, else none (`candidates` lists them). Or by the
-## **FFID** (`rmFieldRecord`, the default without a source station). Either
-## way the other key is checked, never ignored: `recordMismatch` when the X
-## record's number is not the header FFID (a header without one, NaN, is no
-## mismatch), `sourceMismatch` when its source
-## is not the header's (index 0 matches any). The header source station and
-## FFID are those of the first seismic trace that has them.
+## **FFID** (`rmFieldRecord`, the default without a source station, and
+## with one that has no X record at all: `recordMatch` says which it was).
+## Either way the other key is checked, never ignored: `recordMismatch` when
+## the X record's number is not the header FFID (a header without one, NaN,
+## is no mismatch), `sourceMismatch` when its source is not the header's
+## (index 0 matches any). The header source station and FFID are those of
+## the first seismic trace that has them.
+##
+## **Stations.** A header station is a finite line and point that are not
+## both 0: recorders that do not fill the station fields write zeros, which
+## is no station, as NaN is none. This holds for the source and for the
+## receivers.
 ##
 ## **Trace match.** By **receiver station** (`tmStation`, the default when
 ## the headers carry receiver stations): the data's stations are hashed once
@@ -29,7 +35,8 @@
 ## (O(expected)). By **channel** (`tmChannel`, the default without receiver
 ## stations): the header channel against the X channel. Recorders often
 ## number channels their own way, so a matched station whose header channel
-## differs from the X channel only counts in `channelMismatch`. Stations
+## differs from the X channel only counts in `channelMismatch` (a header
+## without a channel number, NaN, has none to differ). Stations
 ## match with their index: a header index 0 (unknown, as SEG-D writes it)
 ## matches any X index, and an X index 0 matches index 1; two traces at one
 ## line and point with different indices are two stations.
@@ -44,7 +51,8 @@
 ## `duplicates` (stations with two seismic traces of one component),
 ## `noStation` (seismic traces without the key matched on), and per receiver
 ## line `lines` (expected, live, missing). Auxiliary traces take no part in
-## matching.
+## matching, whether or not they could be decoded (one that could not counts
+## in `failed`).
 ##
 ## **Survey.** `summarize` adds up many records and lists the X records no
 ## data matched.
@@ -56,7 +64,7 @@ import ../core/types
 type
   RecordMatch* = enum
     ## How a record's traces find their X record.
-    rmAuto = "auto"            ## By source station when the headers have one, else FFID.
+    rmAuto = "auto"            ## By source station when it has an X record, else FFID.
     rmSourceStation = "source" ## By the header source station (`recordsAt`).
     rmFieldRecord = "FFID"     ## By the header field record number.
 
@@ -139,6 +147,11 @@ type
 
 func finite(x: float64): bool {.inline.} = x.classify notin {fcNan, fcInf, fcNegInf}
 
+func hasStation(line, point: float64): bool {.inline.} =
+  # A station is a finite line and point. Both zero is a header left empty
+  # (recorders that do not fill the station fields write zeros), not point 0
+  # of line 0: it counts as no station, like NaN.
+  finite(line) and finite(point) and not (line == 0 and point == 0)
 
 func channelKey(channel: float64): StationKey {.inline.} =
   # Channel matching reuses the station table: the channel as the line.
@@ -156,28 +169,32 @@ func statusAt(m: ChunkMeta, i: int): Status {.inline.} =
 func keyAt(r: TraceRows, i: int): lent TraceKeys {.inline.} = r.keysAt(i)
 func statusAt(r: TraceRows, i: int): Status {.inline.} = statusOf(r.keysAt(i))
 
+func hasRecord(g: SurveyGeometry, record: int64): bool =
+  # The X record lists at least one channel.
+  for _ in g.relations(record): return true
+  false
+
 proc check[S: ChunkMeta | TraceRows](g: SurveyGeometry, src: S, recordMatch: RecordMatch,
     traceMatch: TraceMatch): RecordCompleteness =
   result = RecordCompleteness(fieldRecord: NaN, xpsRecord: -1)
   let n = src.len
-  template keyAt(i: int): untyped = src.keyAt(i)
-  template statusAt(i: int): untyped = src.statusAt(i)
   # header keys: FFID, source station, whether receivers have stations
   var rcvStations = false
   for i in 0 ..< n:
-    let st = statusAt(i)
-    case st
+    case src.statusAt(i)
     of stLive: inc result.live
     of stDead: inc result.dead
     of stAux: inc result.aux
     of stFailed: inc result.failed
-    if st == stAux: continue
-    let k = keyAt(i)
-    if result.fieldRecord.isNaN and finite(k.record): result.fieldRecord = k.record
-    if not result.hasSource and finite(k.srcLine) and finite(k.srcPoint):
-      result.source = stationKey(k.srcLine, k.srcPoint, k.srcIndex)
-      result.hasSource = true
-    if finite(k.rcvLine) and finite(k.rcvPoint): rcvStations = true
+    let k = src.keyAt(i)
+    # By the header status: an auxiliary trace that failed to decode counts
+    # as failed, and is auxiliary all the same.
+    if k.status != tsAuxiliary:
+      if result.fieldRecord.isNaN and finite(k.record): result.fieldRecord = k.record
+      if not result.hasSource and hasStation(k.srcLine, k.srcPoint):
+        result.source = stationKey(k.srcLine, k.srcPoint, k.srcIndex)
+        result.hasSource = true
+      if hasStation(k.rcvLine, k.rcvPoint): rcvStations = true
   result.traces = n
   result.recordMatch =
     if recordMatch != rmAuto: recordMatch
@@ -188,48 +205,43 @@ proc check[S: ChunkMeta | TraceRows](g: SurveyGeometry, src: S, recordMatch: Rec
     elif rcvStations: tmStation
     else: tmChannel
   # the X record
-  case result.recordMatch
-  of rmSourceStation:
-    if result.hasSource:
-      result.candidates = g.recordsAt(result.source)
-      if result.candidates.len == 1: result.xpsRecord = result.candidates[0]
-      elif finite(result.fieldRecord) and abs(result.fieldRecord) < 9e18 and
-          int64(result.fieldRecord).float64 == result.fieldRecord and
-          int64(result.fieldRecord) in result.candidates:
-        result.xpsRecord = int64(result.fieldRecord)
-  of rmFieldRecord, rmAuto:
-    if finite(result.fieldRecord) and abs(result.fieldRecord) < 9e18 and
-        float64(int64(result.fieldRecord)) == result.fieldRecord:
-      for _ in g.relations(int64(result.fieldRecord)):
-        result.xpsRecord = int64(result.fieldRecord)
-        break
+  let ffid = result.fieldRecord
+  let hasFfid = finite(ffid) and abs(ffid) < 9e18 and float64(int64(ffid)) == ffid
+  if result.recordMatch == rmSourceStation and result.hasSource:
+    result.candidates = g.recordsAt(result.source)
+    if result.candidates.len == 1: result.xpsRecord = result.candidates[0]
+    elif hasFfid and int64(ffid) in result.candidates: result.xpsRecord = int64(ffid)
+  # By the FFID: when asked for, without a header source station, and by
+  # default (`rmAuto`) also when the header's source station has no X record
+  # at all; the source is then checked against the X record's.
+  if (result.recordMatch == rmFieldRecord or
+      (recordMatch == rmAuto and result.candidates.len == 0)) and hasFfid and
+      g.hasRecord(int64(ffid)):
+    result.xpsRecord = int64(ffid)
+    result.recordMatch = rmFieldRecord
   if result.xpsRecord < 0: return
   # the data's stations (or channels), once
   var seen = initTable[StationKey, Seen](2 * n)
   let byStation = result.traceMatch == tmStation
   for i in 0 ..< n:
-    let st = statusAt(i)
-    if st == stAux: continue
-    let k = keyAt(i)
-    let key =
-      if byStation:
-        if not (finite(k.rcvLine) and finite(k.rcvPoint)):
-          inc result.noStation
-          continue
-        stationKey(k.rcvLine, k.rcvPoint, max(k.rcvIndex, 0'i16))             # 0: unknown index
+    let k = src.keyAt(i)
+    if k.status != tsAuxiliary:
+      let live = src.statusAt(i) == stLive
+      let known = if byStation: hasStation(k.rcvLine, k.rcvPoint) else: finite(k.channel)
+      if not known:
+        inc result.noStation
       else:
-        if not finite(k.channel):
-          inc result.noStation
-          continue
-        channelKey(k.channel)
-    seen.withValue(key, e):
-      if k.component in e.components: inc result.duplicates
-      e.components.incl k.component
-      inc e.seismic
-      if st == stLive: inc e.live
-    do:
-      seen[key] = Seen(seismic: 1, live: int32(st == stLive), channel: k.channel,
-        components: {k.component})
+        let key = # index 0: unknown
+          if byStation: stationKey(k.rcvLine, k.rcvPoint, max(k.rcvIndex, 0'i16))
+          else: channelKey(k.channel)
+        seen.withValue(key, e):
+          if k.component in e.components: inc result.duplicates
+          e.components.incl k.component
+          inc e.seismic
+          if live: inc e.live
+        do:
+          seen[key] = Seen(seismic: 1, live: int32(live), channel: k.channel,
+            components: {k.component})
   # walk the X record
   var listed: HashSet[StationKey]
   var lineAt: Table[float64, int]
@@ -266,7 +278,9 @@ proc check[S: ChunkMeta | TraceRows](g: SurveyGeometry, src: S, recordMatch: Rec
       if e.live > 0:
         inc result.presentLive
         inc result.lines[li].live
-      if byStation and e.channel != float64(channel): inc result.channelMismatch
+      # A header without a channel number (NaN) has none to compare.
+      if byStation and finite(e.channel) and e.channel != float64(channel):
+        inc result.channelMismatch
     if found:
       lastMissing = false
     else:
