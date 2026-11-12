@@ -281,6 +281,7 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `gridBinning(x0, y0, azimuthDeg, crosslineSpacing, inlineSpacing, inlines, crosslines, firstInline = 1, firstCrossline = 1, clockwise = true)`, `inlineCrosslineBinning(firstInline, inlines, firstCrossline, crosslines, inlineStep = 1, crosslineStep = 1)` | 3D: a rotated grid of midpoints; header inline and crossline numbers. |
 | `b.kind`, `b.len`, `b.inlines`, `b.crosslines`, `b.is3D` | Its size. |
 | `b.binOf(k: TraceKeys): int`, `binsInto(rows \| meta, b, bins)` | A trace's bin, −1 for none (NaN key, outside, off the line). |
+| `b.binAt(x, y): int` | The bin of a midpoint position (line and grid binnings; −1 for none, always −1 for header binnings); the maths `binOf` uses. |
 | `BinLocation` (`cdp`, `inline`, `crossline`, `x`, `y`); `b.location(bin)` | What a bin stands for (NaN where undefined). |
 
 ## stack/stack: `StackAccumulator`
@@ -348,11 +349,15 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 
 ## qc/fold: fold maps of a survey
 
-Data in: a parseSEG `SurveyGeometry` (R and S records; X not needed for the grid).
+Data in: a parseSEG `SurveyGeometry` (R and S records for the grid; X or O relations for the pre-plot fold).
 
 | Proc | What |
 |---|---|
 | `surveyGrid(g, binInline = NaN, binCrossline = NaN, azimuthDeg = NaN): Binning` | A `gridBinning` covering the midpoint of every source–receiver pair: inlines along `azimuthDeg` (default: the receiver-line azimuth, median bearing between consecutive stations), bins `binInline` along them (`gridBinning`'s `crosslineSpacing`; default half the median receiver interval) by `binCrossline` across (default half the median source interval: the natural bin of an orthogonal survey). Extent: half the sum of the source and receiver extents on each axis; origin at its minimum corner; numbers from 1. `ValueError` for a bad given value, no stations with coordinates, or a default that cannot be measured. |
+| `FoldOptions` (`offsetBounds`, `azimuthSectors`, `sectorStartDeg`, `offsetRange`) | What is counted besides the fold: offset classes (ascending edges, n edges → n − 1 classes `[e_k, e_k+1)`), source → receiver bearing sectors (sector k from `sectorStartDeg + k·360°/n`), each bin's offset range. |
+| `FoldMap`; `initFoldMap(binning, opts = FoldOptions())` | Pairs per bin of a `Binning`, empty. `ValueError` for bad options. |
+| `m.binning`, `m.options`, `m.fold` (`[inlines, crosslines]` int32), `m.offsetFold` (`[classes, inlines, crosslines]`), `m.azimuthFold` (`[sectors, inlines, crosslines]`), `m.offsetMin`, `m.offsetMax` (float32, NaN: empty bin), `m.binned`, `m.outside`, `m.noCoordinates` | The counts; tensors not asked for are empty. |
+| `preplotFold(g, binning, opts = FoldOptions(), domain = rdSource): FoldMap` | The fold of every X relation (O with `rdReceiver`): midpoint bin by `binAt`, station coordinates from per-line sorted arrays with a run cursor (no hash lookup per pair). `ValueError` for a header binning. |
 
 ## pipeline: `Op`, `Pipeline`, `PipelinePlan`
 

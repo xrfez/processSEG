@@ -185,30 +185,36 @@ func nearest(u: float64, n: int): int {.inline.} =
   if not (u > -0.5 and u < float64(n) - 0.5): return -1
   int(floor(u + 0.5))
 
+func gridBin(b: Binning, u, v: float64): int {.inline.} =
+  let i = nearest(v, b.inlines)
+  let j = nearest(u, b.crosslines)
+  if i < 0 or j < 0: -1 else: i * b.crosslines + j
+
+func binAt*(b: Binning, x, y: float64): int {.raises: [].} =
+  ## The bin of a midpoint at `(x, y)` in a line or grid binning, or −1
+  ## when it falls in none (NaN, outside the bins, too far from the line);
+  ## always −1 for the header binnings (`bnCdp`, `bnInlineCrossline`).
+  ## `binOf` uses the same maths.
+  let dx = x - b.x0
+  let dy = y - b.y0
+  case b.kind
+  of bnLine:
+    if not (abs(dx * b.uy - dy * b.ux) <= b.maxOff): return -1
+    nearest((dx * b.ux + dy * b.uy) / b.size0, b.crosslines)
+  of bnGrid:
+    b.gridBin((dx * b.ux + dy * b.uy) / b.size0, (dx * b.vx + dy * b.vy) / b.size1)
+  of bnCdp, bnInlineCrossline: -1
+
 func binOf*(b: Binning, k: TraceKeys): int {.raises: [].} =
   ## The bin of a trace with keys `k`, or −1 when it falls in none (a NaN
   ## key, outside the bins, too far from the line).
   case b.kind
   of bnCdp:
     nearest((k.ensemble - b.first0) / b.step0, b.crosslines)
-  of bnLine:
-    let dx = k.cmpX - b.x0
-    let dy = k.cmpY - b.y0
-    if not (abs(dx * b.uy - dy * b.ux) <= b.maxOff): return -1
-    nearest((dx * b.ux + dy * b.uy) / b.size0, b.crosslines)
-  of bnGrid, bnInlineCrossline:
-    var u, v: float64
-    if b.kind == bnGrid:
-      let dx = k.cmpX - b.x0
-      let dy = k.cmpY - b.y0
-      v = (dx * b.vx + dy * b.vy) / b.size1
-      u = (dx * b.ux + dy * b.uy) / b.size0
-    else:
-      v = (k.inline - b.first0) / b.step0
-      u = (k.crossline - b.first1) / b.step1
-    let i = nearest(v, b.inlines)
-    let j = nearest(u, b.crosslines)
-    if i < 0 or j < 0: -1 else: i * b.crosslines + j
+  of bnLine, bnGrid:
+    b.binAt(k.cmpX, k.cmpY)
+  of bnInlineCrossline:
+    b.gridBin((k.crossline - b.first1) / b.step1, (k.inline - b.first0) / b.step0)
 
 proc binsInto*(rows: TraceRows, b: Binning, bins: var openArray[int]) =
   ## Fills `bins[i]` with row `i`'s bin (−1 for none), for every row

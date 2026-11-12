@@ -1,8 +1,12 @@
-## Survey bin grid (`qc/fold`): an orthogonal synthetic survey at several
+## Survey fold maps (`qc/fold`): an orthogonal synthetic survey at several
 ## azimuths gives back its natural grid exactly, with every midpoint at a bin
-## centre; overrides; errors; Morgantown (skipped when its files are absent).
+## centre; overrides; errors. Pre-plot fold of an orthogonal swath with an X
+## template: brute-force counts per bin (fold, offset classes, azimuth
+## sectors, offset range), the nominal fold in the full-fold area, X and O
+## alike. Morgantown (skipped when its files are absent).
 
 import std/[assertions, math, os, strutils]
+when defined(release) or defined(danger): import std/times
 import parseSEG
 import processSEG/stack/binning
 import processSEG/qc/fold
@@ -118,6 +122,154 @@ block errors:
   let single = surveyGrid(one, binInline = 10, binCrossline = 10, azimuthDeg = 90)
   doAssert single.len == 1 and close(single.location(0).x, 50)
 
+# An orthogonal swath with X records: 10 receiver lines 200 apart (c = 200 i),
+# 81 stations every 50 (a = 50 k); 20 source lines between stations
+# (a = 25 + 200 m), 36 points every 50 (c = 25 + 50 q). Patch: the 4 receiver
+# lines nearest the source (2 each side) × 32 stations (16 each side), clipped
+# at the edges. Nominal fold: inline 32 × 50 / (2 × 200) = 4, crossline 4 / 2 = 2.
+const
+  swRl = 10
+  swSt = 81
+  swSl = 20
+  swSp = 36
+
+func swReceiver(i, k: int): (float64, float64) = (50.0 * float64(k), 200.0 * float64(i))
+func swSource(m, q: int): (float64, float64) = (25 + 200.0 * float64(m), 25 + 50.0 * float64(q))
+
+proc swathFile(o: Ortho): SpsFile =
+  for i in 0 ..< swRl:
+    for k in 0 ..< swSt:
+      var p = initSpsPoint(pkReceiver)
+      (p.line, p.point) = (float64(2001 + i), float64(101 + k))
+      let (a, c) = swReceiver(i, k)
+      (p.easting, p.northing) = o.at(a, c)
+      p.elevation = 0
+      result.points.add p
+  var record = 1'i64
+  for m in 0 ..< swSl:
+    for q in 0 ..< swSp:
+      var p = initSpsPoint(pkSource)
+      (p.line, p.point) = (float64(5001 + m), float64(301 + q))
+      let (a, c) = swSource(m, q)
+      (p.easting, p.northing) = o.at(a, c)
+      p.elevation = 0
+      result.points.add p
+      let i0 = int(floor(c / 200))
+      var channel = 1'i64
+      for i in max(0, i0 - 1) .. min(swRl - 1, i0 + 2):
+        let (k0, k1) = (max(0, 4 * m - 15), min(swSt - 1, 4 * m + 16))
+        var r = initSpsRelation()
+        r.fieldRecord = record
+        (r.srcLine, r.srcPoint) = (p.line, p.point)
+        r.fromChannel = channel
+        r.toChannel = channel + int64(k1 - k0)
+        r.rcvLine = float64(2001 + i)
+        (r.fromReceiver, r.toReceiver) = (float64(101 + k0), float64(101 + k1))
+        result.relations.add r
+        channel = r.toChannel + 1
+      inc record
+
+block preplot_swath:
+  let bounds = @[0.0, 300, 800, 1500]
+  let opts = FoldOptions(offsetBounds: bounds, azimuthSectors: 6, sectorStartDeg: 15,
+    offsetRange: true)
+  for az in [90.0, 30.0, 200.0]:
+    let o = Ortho(azimuthDeg: az, x0: 512_000, y0: 4_300_000)
+    var g = initSurveyGeometry()
+    g.addSps(o.swathFile)
+    let b = surveyGrid(g)
+    doAssert close(b.location(0).x, o.at(12.5, 12.5)[0]) # bins 25 × 25 from (12.5, 12.5)
+    let f = g.preplotFold(b, opts)
+    doAssert f.fold.shape == [b.inlines, b.crosslines]
+    doAssert f.offsetFold.shape == [3, b.inlines, b.crosslines]
+    doAssert f.azimuthFold.shape == [6, b.inlines, b.crosslines]
+    # brute force from the generator's own coordinates
+    var fold = newSeq[int32](b.len)
+    var byOffset = newSeq[int32](3 * b.len)
+    var byAzimuth = newSeq[int32](6 * b.len)
+    var lo = newSeq[float64](b.len)
+    var hi = newSeq[float64](b.len)
+    for x in lo.mitems: x = Inf
+    for x in hi.mitems: x = -Inf
+    var pairs = 0
+    for r in o.swathFile.relations:
+      let m = int(r.srcLine) - 5001
+      let q = int(r.srcPoint) - 301
+      let (sx, sy) = o.at(swSource(m, q)[0], swSource(m, q)[1])
+      for k in int(r.fromReceiver) - 101 .. int(r.toReceiver) - 101:
+        let i = int(r.rcvLine) - 2001
+        let (a, c) = swReceiver(i, k)
+        let (rx, ry) = o.at(a, c)
+        let bin = b.binOf(midKeys((sx + rx) / 2, (sy + ry) / 2))
+        doAssert bin >= 0
+        inc pairs
+        inc fold[bin]
+        let off = hypot(rx - sx, ry - sy)
+        for j in 0 ..< 3:
+          if off >= bounds[j] and off < bounds[j + 1]: inc byOffset[j * b.len + bin]
+        let bearing = floorMod(radToDeg(arctan2(rx - sx, ry - sy)) - 15, 360)
+        inc byAzimuth[int(bearing / 60) * b.len + bin]
+        lo[bin] = min(lo[bin], off)
+        hi[bin] = max(hi[bin], off)
+    doAssert f.binned == pairs and f.outside == 0 and f.noCoordinates == 0
+    let fl = f.fold.toFlatSeq
+    doAssert fl == fold
+    doAssert f.offsetFold.toFlatSeq == byOffset
+    doAssert f.azimuthFold.toFlatSeq == byAzimuth
+    let (fmin, fmax) = (f.offsetMin.toFlatSeq, f.offsetMax.toFlatSeq)
+    for i in 0 ..< b.len:
+      if fold[i] == 0: doAssert fmin[i].isNaN and fmax[i].isNaN
+      else:
+        doAssert abs(fmin[i] - lo[i]) < 1e-3 and abs(fmax[i] - hi[i]) < 1e-3
+    # nominal fold 4 × 2 = 8 in the full-fold area, never more
+    doAssert max(fl) == 8
+    var full = 0
+    for i in 0 ..< b.inlines:
+      for j in 0 ..< b.crosslines:
+        let (a, c) = (12.5 + 25.0 * float64(j), 12.5 + 25.0 * float64(i))
+        # far enough from the edges that no patch reaching it is clipped
+        if a >= 800 + 400 and a <= 4000 - 800 - 400 and c >= 400 + 200 and c <= 1800 - 400 - 200:
+          doAssert fl[i * b.crosslines + j] == 8, $(a, c, fl[i * b.crosslines + j])
+          inc full
+    doAssert full > 1000, $full
+    # the same pairs from the receiver domain (O records)
+    var go = initSurveyGeometry()
+    var oFile = o.swathFile
+    oFile.relations = g.receiverRelations
+    go.addSps(oFile)
+    let fo = go.preplotFold(b, opts, domain = rdReceiver)
+    doAssert fo.fold.toFlatSeq == fold and fo.offsetFold.toFlatSeq == byOffset
+    doAssert fo.azimuthFold.toFlatSeq == byAzimuth
+    # a 2D line binning works too; a header binning is refused
+    let line = lineBinning(o.at(0, 900)[0], o.at(0, 900)[1], az, 25, 200, maxOffLine = 100)
+    let fl2 = g.preplotFold(line)
+    doAssert fl2.fold.shape == [1, 200] and fl2.binned + fl2.outside == pairs
+    doAssert fl2.binned > 0 and fl2.outside > 0
+    doAssertRaises(ValueError): discard g.preplotFold(cdpBinning(1, 10))
+
+block preplot_missing_coordinates:
+  let o = Ortho(azimuthDeg: 90)
+  var f = o.swathFile
+  var dropped = 0
+  for p in f.points.mitems:
+    if p.kind == pkReceiver and p.line == 2005 and p.point == 140:
+      (p.easting, p.northing) = (NaN, NaN)
+  var g = initSurveyGeometry()
+  g.addSps(f)
+  for r in f.relations:
+    if r.rcvLine == 2005 and r.fromReceiver <= 140 and r.toReceiver >= 140: inc dropped
+  let m = g.preplotFold(surveyGrid(g))
+  doAssert dropped > 0 and m.noCoordinates == dropped, $(m.noCoordinates, dropped)
+
+block fold_options:
+  let b = gridBinning(0, 0, 90, 10, 10, 3, 4)
+  let m = initFoldMap(b)
+  doAssert m.fold.shape == [3, 4] and m.offsetFold.size == 0 and m.offsetMin.size == 0
+  for bad in [@[1.0], @[0.0, 0.0], @[2.0, 1.0], @[0.0, NaN], @[0.0, Inf]]:
+    doAssertRaises(ValueError): discard initFoldMap(b, FoldOptions(offsetBounds: bad))
+  doAssertRaises(ValueError): discard initFoldMap(b, FoldOptions(azimuthSectors: -1))
+  doAssertRaises(ValueError): discard initFoldMap(b, FoldOptions(sectorStartDeg: NaN))
+
 const
   dir = currentSourcePath().parentDir.parentDir / "exampleFiles" / "sps"
   base = dir / "PGI_NNE_West_Morgantown_3D_Post261019_NAD27_SPCS_WV_N_USFeet"
@@ -138,3 +290,17 @@ block morgantown:
       b.inlines, " inlines × ", b.crosslines, " crosslines"
     doAssert abs(az - 91) < 1, $az
     doAssert abs(binI - 111.3) < 0.5, $binI
+    if fileExists(base & ".xps"):
+      g.addSps(base & ".xps")
+      when defined(release) or defined(danger): (let t0 = cpuTime())
+      let f = g.preplotFold(b, FoldOptions(offsetBounds: @[0.0, 5000, 10000, 20000, 40000],
+        azimuthSectors: 8, offsetRange: true))
+      when defined(release) or defined(danger):
+        echo "  Morgantown preplotFold: ", formatFloat(cpuTime() - t0, ffDecimal, 2), " s"
+      let fl = f.fold.toFlatSeq
+      var live = 0
+      for x in fl:
+        if x > 0: inc live
+      echo "  Morgantown pre-plot fold: ", f.binned, " pairs, max ", max(fl), ", ", live,
+        " bins with fold; outside ", f.outside, ", no coordinates ", f.noCoordinates
+      doAssert f.binned + f.noCoordinates == 11_180_874 and f.outside == 0
