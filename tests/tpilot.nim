@@ -23,7 +23,7 @@ block validation:
   doAssert initPilot(@[1.0, -1.0], 2, 0.6).t0Ms == 0.6
 
 block sweep_overrides:
-  let spec = linearSweep(8.4, 79.6, 12000, 2, initSweepTaper(250, 500, tpCos2))
+  let spec = linearSweep(8, 80, 12000, 2, initSweepTaper(250, 500, tpCos2))
   let o = spec.sweepOverrides
   doAssert o.len == 7 and o[0].name == "trace.sweepFreqStart"
   doAssert o[0].value.toFloat == 8 and o[1].value.toFloat == 80
@@ -32,6 +32,14 @@ block sweep_overrides:
   doAssert spec.sweepOverrides(binary = true)[3].name == "binary.sweepType"
   # A sweep over 32.767 s does not fit the int16 length field.
   doAssertRaises(ValueError): discard linearSweep(8, 80, 40000, 2).sweepOverrides
+  # The fields hold whole Hz and ms. A 7.5 Hz start written as 8 would be
+  # read back as the pilot's sweep, a wrong one: refused, not rounded.
+  doAssertRaises(ValueError): discard linearSweep(7.5, 80, 12000, 2).sweepOverrides
+  doAssertRaises(ValueError): discard linearSweep(8, 79.6, 12000, 2).sweepOverrides
+  doAssertRaises(ValueError):
+    discard linearSweep(8, 80, 12000.5, 0.5, maxNyquistFraction = 0.1).sweepOverrides
+  doAssertRaises(ValueError):
+    discard linearSweep(8, 80, 12000, 2, initSweepTaper(250.5, 0)).sweepOverrides
 
 block round_trip_through_segy:
   # Written with parseSEG from pilotKeys and sweepOverrides, read back as a pilot.
@@ -62,6 +70,53 @@ block round_trip_through_segy:
   doAssert sweepFromHeaders(8, 80, 8000, 4, 0, 0, 1, 2).isNone
   doAssert sweepFromHeaders(8, 80, 8000, 3, 0, 0, 3, 2).get.law == slExponential
   removeFile(path)
+
+const sweepFile = currentSourcePath().parentDir.parentDir / "exampleFiles" / "Sweep0.sgy"
+
+block headers_that_do_not_fit_the_trace:
+  # Fields no trace at that interval can hold are not its description.
+  doAssert sweepFromHeaders(80, 1100, 12000, 1, 500, 300, 5, 1).isNone # above Nyquist
+  doAssert sweepFromHeaders(8, 110, 12000, 1, 500, 300, 5, 1).isSome
+  doAssert sweepFromHeaders(8, 110, 12000, 1, 500, 300, 5, 1, samples = 12001).isSome
+  doAssert sweepFromHeaders(8, 110, 12000, 1, 500, 300, 5, 1, samples = 16001).isSome
+  doAssert sweepFromHeaders(8, 110, 12000, 1, 500, 300, 5, 1, samples = 6001).isNone
+  doAssert sweepFromHeaders(8, 110, 12000, 1, 9000, 9000, 1, 1).isNone # tapers overlap
+  doAssert sweepFromHeaders(8, 110, 12000.5, 1, 0, 0, 1, 1).isNone # not whole samples
+  doAssert sweepFromHeaders(8, 110, 12000, 1, 0, 0, 1, NaN).isNone
+  # Frequencies ten times the sweep's (a controller that writes 0.1 Hz)
+  # pass every header check at 0.25 ms; the samples say otherwise.
+  let spec = linearSweep(8, 80, 4000, 0.25, initSweepTaper(200, 200),
+    maxNyquistFraction = 0.1)
+  let p = generatePilot(spec, float32)
+  doAssert abs(p.energyAbove(44) - 0.5) < 0.01 and p.energyAbove(400) < 1e-6
+  doAssert p.energyAbove(-1) == 1 and p.energyAbove(2000) == 0
+  let path = getTempDir() / "processseg_tpilot_tenths.sgy"
+  for (scale, described) in [(1.0, true), (10.0, false)]:
+    var o = spec.sweepOverrides
+    o[0] = headerOverride("trace.sweepFreqStart", int16(8 * scale))
+    o[1] = headerOverride("trace.sweepFreqEnd", int16(80 * scale))
+    block:
+      var w = openSeismicWriter(path, SegyOutputOptions())
+      w.writeTrace(p.pilotKeys, p.samples, overrides = o)
+      doAssert not w.close().isFatal
+    var f = openSeismic(path, keys = true)
+    let back = pilotFromTrace(f, 0, float32)
+    doAssert back.samples == p.samples and back.sweep.isSome == described, $scale
+    f.close()
+  removeFile(path)
+
+block the_example_pilot:
+  # A controller's pilot: 8–110 Hz over 12 s at 1 ms, with 80 and 1100 in
+  # its header's frequency fields.
+  if not fileExists(sweepFile):
+    echo "  skipped: Sweep0.sgy is not present"
+  else:
+    var f = openSeismic(sweepFile, keys = true)
+    let p = pilotFromTrace(f, 0)
+    f.close()
+    doAssert p.len == 12001 and p.dtMs == 1 and p.sweep.isNone
+    doAssert p.energyAbove(8) > 0.99 and p.energyAbove(110) < 0.01
+    doAssert p.resamplePilot(2).len == 6001
 
 block from_row_window_and_t0:
   var keys = @[initTraceKeys()]
@@ -96,11 +151,22 @@ block resample_down_and_up:
   doAssert up.len == wantFine.len
   let upErr = maxDiff(up.samples, wantFine.samples, 0)
   doAssert upErr < 2e-3, "upsampled pilot differs by " & $upErr
-  # A sweep above the new limit is refused; a pilot without a sweep is not checked.
-  doAssertRaises(ValueError): discard fine.resamplePilot(4) # 160 Hz > 0.9 · 125
+  # A pilot with energy above the new limit is refused, whatever it says of
+  # its sweep (160 Hz > 0.9 · 125), unless cutting it is what is asked for.
+  doAssertRaises(ValueError): discard fine.resamplePilot(4)
   var anon = fine
   anon.sweep = none(SweepSpec)
-  discard anon.resamplePilot(4)
+  doAssertRaises(ValueError): discard anon.resamplePilot(4)
+  let cut = fine.resamplePilot(4, bandLimit = true)
+  doAssert cut.len == 1001 and cut.sweep.isNone # no longer the sweep it was
+  # A description the samples contradict does not stop the resampling.
+  var wrong = fine
+  wrong.sweep = some(linearSweep(80, 800, 4000, 0.5, taper, maxNyquistFraction = 1))
+  let ok = wrong.resamplePilot(2)
+  doAssert ok.samples == coarse.samples and ok.sweep.isNone
+  # A length that is no whole number of the new samples: resampled, undescribed.
+  let odd = fine.resamplePilot(3, bandLimit = true)
+  doAssert odd.len == 1334 and odd.sweep.isNone
   doAssertRaises(ValueError): discard fine.resamplePilot(0)
   doAssertRaises(ValueError): discard anon.resamplePilot(1e-9) # over 2³¹ samples
   doAssertRaises(ValueError): discard fine.resamplePilot(2, cutoffFraction = 0)

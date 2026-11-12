@@ -126,11 +126,16 @@ proc pilotFromTrace*(f: SeismicFile, trace: int, T: typedesc[SampleType] = float
   ## samples, its interval (from its keys unless `dtMs` is given) and its
   ## start time (`TraceKeys.t0Ms` unless `t0Ms` is given). For SEG-Y, the
   ## sweep fields of the trace header (bytes 127-140) give `sweep` when
-  ## they describe a linear or exponential sweep (`sweepFromHeaders`), else
-  ## those of the binary header; other standards give none. Raises
-  ## `ValueError` for a trace outside the file, a file without keys, an
-  ## unknown interval or start time without an override, or a pilot
-  ## `validate` rejects; parseSEG's errors for a trace that cannot be read.
+  ## they describe a linear or exponential sweep that this trace can be
+  ## (`sweepFromHeaders` with its interval and length), else those of the
+  ## binary header; other standards give none. A description the samples
+  ## contradict is dropped too: some controllers write the frequencies in
+  ## 0.1 Hz, and a sweep reaches the upper half of its band (at least 5 % of
+  ## the trace's energy must lie above half the top frequency;
+  ## `energyAbove`). Raises `ValueError` for a trace outside the file, a
+  ## file without keys, an unknown interval or start time without an
+  ## override, or a pilot `validate` rejects; parseSEG's errors for a trace
+  ## that cannot be read.
   if trace notin 0 ..< f.len:
     raise newException(ValueError, "trace " & $trace & " is outside 0 ..< " & $f.len)
   let rows = f.rowsOf(trace .. trace)
@@ -160,10 +165,16 @@ proc pilotFromTrace*(f: SeismicFile, trace: int, T: typedesc[SampleType] = float
     sweep = sweepFromHeaders(field("trace.", "sweepFreqStart"), field("trace.", "sweepFreqEnd"),
       field("trace.", "sweepLength"), field("trace.", "sweepType"),
       field("trace.", "sweepTaperStart"), field("trace.", "sweepTaperEnd"),
-      field("trace.", "taperType"), dt)
+      field("trace.", "taperType"), dt, n)
     if sweep.isNone:
       sweep = sweepFromHeaders(f.fromBinary("sweepFreqStart"), f.fromBinary("sweepFreqEnd"),
         f.fromBinary("sweepLength"), f.fromBinary("sweepType"),
         f.fromBinary("sweepTaperStart"), f.fromBinary("sweepTaperEnd"),
-        f.fromBinary("taperType"), dt)
-  initPilot(s, dt, t0, sweep)
+        f.fromBinary("taperType"), dt, n)
+  result = initPilot(s, dt, t0, sweep)
+  if sweep.isSome:
+    # A sweep spends a twentieth of its energy, and far more, above half
+    # its top frequency, whatever its law; one whose header frequencies are
+    # ten times its own has nothing there.
+    let top = max(sweep.get.f1Hz, sweep.get.f2Hz)
+    if not (result.energyAbove(top / 2) >= 0.05): result.sweep = none(SweepSpec)

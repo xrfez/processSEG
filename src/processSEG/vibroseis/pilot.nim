@@ -19,8 +19,9 @@
 ##
 ## **Sample rate** (task 10.3b). Correlation refuses a pilot whose `dtMs`
 ## differs from the records': `resamplePilot` converts it explicitly, with a
-## band-limited (Kaiser-windowed sinc) interpolation, and refuses when the
-## pilot's sweep reaches above the new anti-alias limit.
+## band-limited (Kaiser-windowed sinc) interpolation, and refuses a pilot
+## whose samples hold energy above the new anti-alias limit (`energyAbove`;
+## what its headers say of the sweep is not asked).
 ##
 ## **Instrument response.** Data reach the recorder through its anti-alias
 ## filter, often minimum phase; a recorded pilot went through it too, a
@@ -33,11 +34,16 @@
 ## **Headers.** `sweepOverrides` gives the SEG-Y sweep fields of a spec, for
 ## parseSEG's `writeTrace` (`trace.` fields) or `HeaderEditor.setFileField`
 ## (`binary.` fields), and `pilotKeys` a pilot trace's keys (a sweep trace,
-## identification code 6). Header values are whole Hz and ms (int16).
+## identification code 6). Header values are whole Hz and ms (int16): a
+## sweep with a fractional frequency or length has no header description
+## and `sweepOverrides` refuses it. Read back (`sweepFromHeaders`), fields
+## count as a description only when a trace at that interval could hold
+## the sweep; controllers that write other units (0.1 Hz) are common.
 
 import std/[math, options]
 import parseSEG
 import ../core/[types, workspace]
+import ../fft/plan
 import ../filter/[design, apply, iir]
 import taper, sweep, kaiser
 
@@ -145,10 +151,14 @@ func pilotKeys*[T](p: Pilot[T]): TraceKeys =
   result.traceCode = 6
   result.status = tsAuxiliary
 
-proc int16Field(v: float64, what: string): int16 =
+proc int16Field(v: float64, what, unit: string): int16 =
   let r = round(v)
   if not (r >= float64(low(int16)) and r <= float64(high(int16))):
     badPilot(what & " = " & $v & " does not fit a SEG-Y int16 field")
+  if abs(v - r) > 1e-9 * max(1.0, abs(r)):
+    badPilot(what & " = " & $v & " " & unit & " is not a whole number: the SEG-Y sweep " &
+      "fields hold whole " & unit & ", and a rounded value would be read back as " &
+      "the sweep (write the trace without them)")
   int16(r)
 
 proc sweepOverrides*(spec: SweepSpec, binary = false): seq[HeaderOverride] =
@@ -157,50 +167,102 @@ proc sweepOverrides*(spec: SweepSpec, binary = false): seq[HeaderOverride] =
   ## and taper type (`segyTaperType`). As `trace.` fields (bytes 127-140)
   ## for `writeTrace`'s `overrides`, or with `binary`, as `binary.` fields
   ## (3233-3248, without the sweep channel) for
-  ## `HeaderEditor.setFileField(o.name, o.value)` after writing. Values are
-  ## rounded to whole Hz and ms. Raises `ValueError` for a value outside
-  ## int16 (a sweep over 32.767 s).
+  ## `HeaderEditor.setFileField(o.name, o.value)` after writing. The fields
+  ## are whole Hz and ms: raises `ValueError` for a frequency, length or
+  ## taper that is not a whole number (rounded, it would be read back as a
+  ## sweep the pilot is not), or outside int16 (a sweep over 32.767 s).
   let pre = if binary: "binary." else: "trace."
   let t = spec.taper
   let ts = if t.startMs.isNaN: 0.0 else: t.startMs
   let te = if t.endMs.isNaN: 0.0 else: t.endMs
-  @[headerOverride(pre & "sweepFreqStart", int16Field(spec.f1Hz, "f1Hz")),
-    headerOverride(pre & "sweepFreqEnd", int16Field(spec.f2Hz, "f2Hz")),
-    headerOverride(pre & "sweepLength", int16Field(spec.lengthMs, "lengthMs")),
+  @[headerOverride(pre & "sweepFreqStart", int16Field(spec.f1Hz, "f1Hz", "Hz")),
+    headerOverride(pre & "sweepFreqEnd", int16Field(spec.f2Hz, "f2Hz", "Hz")),
+    headerOverride(pre & "sweepLength", int16Field(spec.lengthMs, "lengthMs", "ms")),
     headerOverride(pre & "sweepType", spec.segySweepType),
-    headerOverride(pre & "sweepTaperStart", int16Field(ts, "taper startMs")),
-    headerOverride(pre & "sweepTaperEnd", int16Field(te, "taper endMs")),
+    headerOverride(pre & "sweepTaperStart", int16Field(ts, "taper startMs", "ms")),
+    headerOverride(pre & "sweepTaperEnd", int16Field(te, "taper endMs", "ms")),
     headerOverride(pre & "taperType", t.segyTaperType)]
 
-func sweepFromHeaders*(f1Hz, f2Hz, lengthMs, sweepType, taperStartMs, taperEndMs,
-    taperType, dtMs: float64): Option[SweepSpec] =
+proc sweepFromHeaders*(f1Hz, f2Hz, lengthMs, sweepType, taperStartMs, taperEndMs,
+    taperType, dtMs: float64, samples = 0): Option[SweepSpec] =
   ## The sweep that SEG-Y sweep fields describe, when they describe one
-  ## fully: frequencies and a length above 0, and type 1 (linear) or 3
-  ## (exponential); otherwise none (types 2 and 4 do not say the law). The
-  ## taper shape is linear for type 1, cos² for 2 and 3 (other). The spec is
-  ## not validated: a recorded sweep may sit closer to Nyquist than
-  ## generation allows (`maxNyquistFraction` is 1).
-  if not (f1Hz > 0 and f2Hz > 0 and lengthMs > 0 and dtMs > 0) or
-      sweepType notin [1.0, 3.0]:
+  ## that a trace at `dtMs` can hold: type 1 (linear) or 3 (exponential;
+  ## types 2 and 4 do not say the law), and a spec that `validate` accepts
+  ## at `dtMs` with frequencies up to Nyquist (`maxNyquistFraction` is 1: a
+  ## recorded sweep may sit closer to Nyquist than generation allows); with
+  ## `samples` (the trace's sample count; 0: not checked) also no longer
+  ## than the trace. Otherwise none: fields that do not fit the trace say
+  ## nothing of it (a controller writing 80 and 1100 for an 8–110 Hz sweep
+  ## at 1 ms). The taper shape is linear for type 1, cos² for 2 and 3
+  ## (other).
+  if sweepType notin [1.0, 3.0] or not (dtMs > 0 and dtMs < Inf):
     return none(SweepSpec)
-  let shape = if taperType == 1: tpLinear else: tpCos2
-  some(SweepSpec(law: if sweepType == 1: slLinear else: slExponential, f1Hz: f1Hz,
+  if samples > 0 and not (lengthMs <= float64(samples) * dtMs):
+    return none(SweepSpec)
+  let spec = SweepSpec(law: if sweepType == 1: slLinear else: slExponential, f1Hz: f1Hz,
     f2Hz: f2Hz, lengthMs: lengthMs, dtMs: dtMs, amplitude: 1,
     taper: SweepTaper(startMs: max(taperStartMs, 0), endMs: max(taperEndMs, 0),
-    shape: shape, param: NaN), maxNyquistFraction: 1))
+    shape: if taperType == 1: tpLinear else: tpCos2, param: NaN), maxNyquistFraction: 1)
+  try:
+    spec.validate
+    result = some(spec)
+  except ValueError:
+    result = none(SweepSpec)
+
+# -------------------------------------------------------------- spectrum --
+
+proc energyAbove*[T: SampleType](p: Pilot[T], fHz: float64): float64 =
+  ## The fraction of the pilot's energy at frequencies above `fHz`, from
+  ## the power spectrum of its samples: 1 for `fHz < 0`, 0 from Nyquist up.
+  ## What a pilot holds, whatever its headers say. NaN for a pilot without
+  ## energy or with a sample that is not finite (`validate` rejects both).
+  if p.samples.len == 0 or not (p.dtMs > 0): return NaN
+  let n = nextFastLen(p.samples.len)
+  let fft = initFftPlan(float64, n)
+  var ws = initWorkspace()
+  ws.reserve(fft.workspaceSize(batched = false))
+  var x = newSeq[float64](n)
+  for j, v in p.samples: x[j] = float64(v)
+  var re, im = newSeq[float64](fft.bins)
+  fft.forward(x, re, im, ws)
+  let binHz = 1000 / (float64(n) * p.dtMs)
+  var total, above = 0.0
+  for k in 0 ..< fft.bins:
+    # Each bin but 0 Hz and Nyquist stands for itself and its mirror image.
+    let e = (re[k] * re[k] + im[k] * im[k]) * (if k == 0 or 2 * k == n: 1.0 else: 2.0)
+    total += e
+    if float64(k) * binHz > fHz: above += e
+  above / total
 
 # ------------------------------------------------------------ resampling --
 
+const resampleLeak = 0.005
+  # The share of a pilot's energy that may lie above the resampling cutoff:
+  # the side lobes of an 8 s sweep that ends there (0.06 % with 250 ms
+  # tapers, 0.4 % without) pass, a sweep that runs 1 % of its band beyond
+  # does not.
+
 proc resamplePilot*[T: SampleType](p: Pilot[T], dtMs: float64, cutoffFraction = 0.9,
-    halfWidth = 24): Pilot[T] =
+    halfWidth = 24, bandLimit = false): Pilot[T] =
   ## `p` at the interval `dtMs`, by band-limited interpolation: a sinc low-pass
   ## at `cutoffFraction` of the lower of the two Nyquist frequencies, Kaiser
   ## windowed (β = 8) over `halfWidth` samples of the coarser interval on
   ## each side. The new pilot covers the same time span from the same
-  ## `t0Ms`. Its sweep, when known, takes the new `dtMs`, and
+  ## `t0Ms`.
+  ##
+  ## A pilot whose samples hold energy above the cutoff (`energyAbove`: more
+  ## than 0.5 % of it) is refused, whatever its sweep description says: the
+  ## result would not be the same sweep. With `bandLimit` it is cut there
+  ## instead, which is what matches records that went through an anti-alias
+  ## filter at the new interval; the result is then no longer described.
+  ## Otherwise the description, when there is one, takes the new `dtMs` and
   ## `cutoffFraction` as its `maxNyquistFraction` (the band the new pilot
-  ## holds). Raises `ValueError` for a bad `dtMs`, `cutoffFraction` outside
-  ## (0, 1], `halfWidth < 2`, or a known sweep above the cutoff.
+  ## holds), and is kept only if it is still valid (not, for instance, when
+  ## its length is not a whole number of the new samples).
+  ##
+  ## Raises `ValueError` for a bad `dtMs`, `cutoffFraction` outside (0, 1],
+  ## `halfWidth < 2`, a result of over 2³¹ samples, or energy above the
+  ## cutoff without `bandLimit`.
   p.validate
   if not (dtMs > 0 and dtMs < Inf): badPilot("dtMs must be finite and positive, got " & $dtMs)
   if not (cutoffFraction > 0 and cutoffFraction <= 1):
@@ -208,18 +270,20 @@ proc resamplePilot*[T: SampleType](p: Pilot[T], dtMs: float64, cutoffFraction = 
   if halfWidth < 2: badPilot("halfWidth must be ≥ 2, got " & $halfWidth)
   let coarse = max(dtMs, p.dtMs)
   let fc = cutoffFraction * 500 / coarse # Hz
-  var sweep = p.sweep
-  if sweep.isSome:
-    var s = sweep.get
+  let cut = p.energyAbove(fc) > resampleLeak
+  if cut and not bandLimit:
+    badPilot($(100 * p.energyAbove(fc)) & " % of the pilot's energy is above the " &
+      "resampling cutoff " & $fc & " Hz at " & $dtMs & " ms (bandLimit = true cuts it)")
+  var sweep = none(SweepSpec)
+  if p.sweep.isSome and not cut:
+    var s = p.sweep.get
     s.dtMs = dtMs
     s.maxNyquistFraction = cutoffFraction # what the resampled pilot holds
-    let top = max(s.f1Hz, s.f2Hz)
-    if top > fc:
-      badPilot("the sweep reaches " & $top & " Hz, above the resampling cutoff " & $fc &
-        " Hz at " & $dtMs & " ms")
-    try: s.validate
-    except ValueError as e: badPilot("the resampled sweep is invalid: " & e.msg)
-    sweep = some(s)
+    try:
+      s.validate
+      sweep = some(s)
+    except ValueError:
+      discard # the samples are fine; the description no longer says what they are
   let steps = p.lengthMs / dtMs
   if steps > float64(high(int32)):
     badPilot("resampling to " & $dtMs & " ms gives over 2³¹ samples")
