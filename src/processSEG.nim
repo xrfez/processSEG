@@ -41,7 +41,8 @@
 ## - `processSEG/continuous/slice`: continuous recordings cut into records at shot times
 ##   (`planSlices`, `extractInto`);
 ## - `processSEG/survey/patch`: receiver patches of an X survey, template and distance box
-##   (`describePatches`, `receiverLayout`).
+##   (`describePatches`, `receiverLayout`);
+## - `processSEG/qc/fold`: fold maps of a survey, its bin grid (`surveyGrid`).
 
 import processSEG/core/[types, rows, workspace, basic, mute, shift]
 import processSEG/fft/[plan, spectrum]
@@ -52,7 +53,7 @@ import processSEG/core/pool
 import processSEG/velocity/[model, formats, moveout]
 import processSEG/statics/elevation
 import processSEG/stack/[nmo, binning, stack]
-import processSEG/qc/[geometry, firstbreak, snr, shotfit]
+import processSEG/qc/[geometry, firstbreak, snr, shotfit, fold]
 import processSEG/vibroseis/[taper, sweep, pilot, correlate, vstack]
 import processSEG/continuous/slice
 import processSEG/survey/patch
@@ -60,4 +61,4 @@ export types, rows, workspace, basic, mute, plan, spectrum, design,
     apply, iir, gain, curves, stats, pipeline, adapters, pool, shift, model,
     formats, moveout, elevation, nmo, binning, stack, batch, geometry, firstbreak, snr,
     shotfit
-export taper, sweep, pilot, correlate, vstack, slice, patch
+export taper, sweep, pilot, correlate, vstack, slice, patch, fold

@@ -346,6 +346,14 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `ShotFit` (`model`, `interceptMs`, `v1`, `v2`, `crossover`, `used`, `asymmetryMs`, `threshold`, `position`, `modelMs`, `residualMs`, `localMs`, `lagMs`, `coherence`, `suspect`) | One shot's fit; the per-row seqs are resized and reused. |
 | `fitShot(meta, picks, params, fit)`, `fitShot(b \| samples, meta, picks, params, fit)` | Fit one shot's rows; flag traces whose residual jumps against their neighbours, and (with samples) the odd ones out by cross-correlation. `asymmetryMs` hints at a misplaced source. |
 
+## qc/fold: fold maps of a survey
+
+Data in: a parseSEG `SurveyGeometry` (R and S records; X not needed for the grid).
+
+| Proc | What |
+|---|---|
+| `surveyGrid(g, binInline = NaN, binCrossline = NaN, azimuthDeg = NaN): Binning` | A `gridBinning` covering the midpoint of every source–receiver pair: inlines along `azimuthDeg` (default: the receiver-line azimuth, median bearing between consecutive stations), bins `binInline` along them (`gridBinning`'s `crosslineSpacing`; default half the median receiver interval) by `binCrossline` across (default half the median source interval: the natural bin of an orthogonal survey). Extent: half the sum of the source and receiver extents on each axis; origin at its minimum corner; numbers from 1. `ValueError` for a bad given value, no stations with coordinates, or a default that cannot be measured. |
+
 ## pipeline: `Op`, `Pipeline`, `PipelinePlan`
 
 | Proc | What |
