@@ -378,11 +378,24 @@ proc suite[T]() =
     var stale = initSliceReport(planSlices(meta, [shotAt(0), shotAt(5)], window(10)))
     doAssertRaises ValueError:
       extractInto(plan, s.data, meta, dst, stale, ws)
-    # A segment of another interval.
+
+  block a_row_of_another_interval_is_reported:
+    # Mixed sample rates are a property of the data (a line recorded at
+    # 1 ms beside one at 2 ms), not a bad argument: the row is left out and
+    # listed, and its span is a gap.
+    var s = segmentsOf[T]([(0, 100), (100, 100), (200, 100)])
     s.keys[1].intervalUs = 1000
-    let mixed = initChunkMeta(rowsOf(s.keys, s.counts), dtMs = Dt)
-    doAssertRaises ValueError:
-      discard planSlices(mixed, [shotAt(0)], window(10))
+    s.keys[2].intervalUs = NaN # unknown: taken at the meta's interval
+    let meta = initChunkMeta(rowsOf(s.keys, s.counts), dtMs = Dt)
+    let plan = planSlices(meta, [shotAt(90), shotAt(190)], window(20))
+    doAssert plan.otherInterval == @[1] and plan.untimed.len == 0
+    doAssert plan.rowsNeeded == @[0, 2]
+    doAssert plan.gapSamples(0) == 10 and plan.gapSamples(1) == 10
+    var report: SliceReport
+    let dst = cut(s, meta, plan, report)
+    for j in 0 ..< 10:
+      doAssert dst[0, j] == T(streamValue(90 + j)) and dst[0, 10 + j] == 0
+      doAssert dst[1, j] == 0 and dst[1, 10 + j] == T(streamValue(200 + j))
 
 suite[float32]()
 suite[float64]()

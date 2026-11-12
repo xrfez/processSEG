@@ -33,9 +33,11 @@
 ## elsewhere). The time is the trace's time zero, as `TraceKeys.time`: column
 ## 0 of the row is at `time + sampleTimeMs(row, 0) / 1000`. Rows with a NaN
 ## or infinite time (or `t0Ms`), or one beyond ±1e11 s (year 5000), are not
-## used and are listed in `plan.untimed`; dead, auxiliary and failed rows are not used either (their
-## span is a gap). Every used row must have the meta's interval (`intervalUs`,
-## when known): another interval raises `ValueError`.
+## used and are listed in `plan.untimed`; dead, auxiliary and failed rows
+## are not used either (their span is a gap). Nor is a row whose keys give
+## another sample interval than the meta's (`intervalUs`, when known): mixed
+## sample rates are a property of the data, so such rows are listed in
+## `plan.otherInterval`, and are sliced with a meta of their own interval.
 ##
 ## **Receivers.** Segments are grouped per receiver and never stitched
 ## across receivers, even when their times line up. By default a receiver is
@@ -160,6 +162,7 @@ type
     overlaps: seq[SliceOverlap]
     issues: seq[SliceTimingIssue]
     untimed: seq[int]
+    otherInterval: seq[int]
 
   SliceGap* = object
     ## A run of zero-filled output columns.
@@ -278,12 +281,11 @@ proc planCore(meta: ChunkMeta, times: openArray[float64], recv: openArray[int],
         badSlice("row " & $row & " has " & $n & " samples, more than the " &
           $MaxSegmentSamples & " a segment may have")
       let iu = meta.keys(row).intervalUs
+      let start = times[row] + meta.sampleTimeMs(row, 0) / 1000
       if iu.classify in {fcNormal, fcSubnormal} and
           abs(iu - dtMs * 1000) > 1e-6 * dtMs * 1000:
-        badSlice("row " & $row & " is sampled every " & $iu & " µs, not " &
-          $(dtMs * 1000) & " µs: segments of another interval cannot be sliced together")
-      let start = times[row] + meta.sampleTimeMs(row, 0) / 1000
-      if start.classify in {fcNormal, fcZero, fcNegZero, fcSubnormal} and
+        result.otherInterval.add row
+      elif start.classify in {fcNormal, fcZero, fcNegZero, fcSubnormal} and
           abs(start) <= 1e11:
         segs.add Segment(recv: recv[row], row: row, n: n, start: start)
       else:
@@ -419,10 +421,9 @@ proc planSlices*(meta: ChunkMeta, times: openArray[float64], receivers: openArra
   ## Raises `ValueError` when `times` or `receivers` does not have one entry
   ## per row, a shot time or the window start is not finite, the window
   ## length is not a positive whole number of samples, `meta.dtMs` is under
-  ## 1e-4 ms, a used row has more than 2⁴⁸ samples (no file holds such a
-  ## trace), or a used row has
-  ## another sample interval than `meta.dtMs`. Data problems (gaps, overlaps,
-  ## off-grid segments, rows without a time) are reported in the plan.
+  ## 1e-4 ms, or a used row has more than 2⁴⁸ samples (no file holds such a
+  ## trace). Data problems (gaps, overlaps, off-grid segments, rows without
+  ## a time or of another sample interval) are reported in the plan.
   if times.len != meta.len:
     badSlice("times has " & $times.len & " entries, the meta " & $meta.len & " rows")
   if receivers.len != meta.len:
@@ -558,6 +559,11 @@ func timingIssues*(plan: SlicePlan): lent seq[SliceTimingIssue] {.inline,
 func untimed*(plan: SlicePlan): lent seq[int] {.inline, raises: [].} =
   ## The live rows not used because their time (or `t0Ms`) is not finite.
   plan.untimed
+
+func otherInterval*(plan: SlicePlan): lent seq[int] {.inline, raises: [].} =
+  ## The live rows not used because their keys give another sample interval
+  ## (`intervalUs`) than the planning meta's `dtMs`, ascending.
+  plan.otherInterval
 
 func sliceKeys*(plan: SlicePlan, trace: int): TraceKeys =
   ## The keys of output trace `trace` (decision D14), for parseSEG's writer:
