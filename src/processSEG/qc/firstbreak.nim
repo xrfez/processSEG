@@ -22,7 +22,8 @@
 ##   where the break's energy enters the STA (a ratio's maximum sits on a
 ##   plateau up to a window after the onset). This is the energy arrival,
 ##   about a quarter period after the onset: a bias that is the same on
-##   every trace of one wavelet, so relative times keep their accuracy;
+##   every trace of one wavelet and one SNR, so relative times keep their
+##   accuracy (see "Band-pass" for what the SNR does to it);
 ## - `pmEnergyRatio`: the modified energy ratio (Wong et al., 2009): the
 ##   energy of the `w` samples from the sample over that of the `w` before
 ##   it (equal windows), times the amplitude there (the root of the energy
@@ -30,12 +31,14 @@
 ##   the maximum.
 ##   The plain ratio has a plateau up to a window before the onset, where
 ##   noise sets the maximum; the weight moves it onto the break's first
-##   strong sample, a bias that is the same on every trace;
-## - `pmCoppens`: modified Coppens (Sabbione and Velis, 2010): the energy
-##   of the `w` samples ending at the sample over the energy from the start
-##   of the trace to it, plus a stabilization term `β = stabilization ·
-##   (mean energy) · w`; the pick is the largest rise of that ratio
-##   (smoothed over `w / 2` samples).
+##   strong sample, a bias that is the same on every trace of one SNR;
+## - `pmCoppens`: Coppens' energy ratio with the stabilization term of the
+##   modified Coppens method (Sabbione and Velis, 2010), but without that
+##   method's edge-preserving smoothing of the ratio: the energy of the `w`
+##   samples ending at the sample over the energy from the start of the
+##   trace to it plus `β = stabilization · (mean energy) · w`; the pick is
+##   the largest rise of that ratio (a mean rise over `w / 2` samples, in
+##   place of the smoothing).
 ##
 ## The ratios' denominators get `1e-6` of the mean energy of the samples
 ## read (below), so a zero (muted) stretch does not divide by zero. A pick
@@ -86,7 +89,10 @@
 ## sample (a recording delay, padding, a mute) are not data: a row is
 ## picked over its `liveSpan` (`stack/stack`), so the step from zeros to
 ## data is not a break, the zeros are not its noise, and the data a pick
-## needs before it count from the first non-zero sample.
+## needs before it count from the first non-zero sample. The price: a
+## noise-free synthetic, whose break is that very step, is not picked on it
+## (the pick comes late or not at all, without confidence). Its break is
+## `liveSpan(x).a`; to exercise the pickers, add noise.
 ##
 ## **No pick** (`timeMs`, `col`, `snrDb` NaN, `confidence` 0): a non-live
 ## row, an empty search window or a trace without energy there. A trace
@@ -96,8 +102,25 @@
 ##
 ## **Band-pass.** A Butterworth minimum-phase (causal) band-pass
 ## (`filter/iir`, one pass): a zero-phase filter would put a precursor
-## before the break, and picks with it. Its group delay moves the picks
-## later by a few ms, the same on every trace.
+## before the break, and picks with it. It moves the picks later, and by
+## more at a lower SNR: the filtered break grows out of the noise over a
+## few samples (the filter's rise time), and a picker finds it where it
+## clears the noise. Median pick minus onset, in samples, of 400 traces
+## with a 30 Hz onset at 2 ms in a guided window, default windows, at noise
+## of 2.6 %, 6.6 %, 13 % and 26 % of the onset's peak:
+##
+##     picker          no filter              8–60 Hz, 24 dB/octave
+##     pmStaLta        1.9  1.9  1.9  1.8     7.7  8.7  9.5  10.3
+##     pmEnergyRatio   0.7  0.9  1.2  1.6     2.9  3.6  4.1   4.8
+##     pmCoppens       0.6  1.0  1.4  1.7     2.8  3.6  9.7  10.7
+##
+## (Coppens with the band-pass jumps a cycle at 13 %: half its picks are on
+## either side.) So along a spread whose SNR falls with offset, band-passed
+## picks lag by a few samples more at the far traces; without the filter
+## the energy ratio and Coppens drift by one sample and STA/LTA by none.
+## That is harmless for geometry QC and a bias for a velocity read from
+## the picks' slope: filter only when the noise needs it, and compare picks
+## of like SNR.
 ##
 ## The input samples are not changed: the trace is filtered in the
 ## workspace. A plan is read-only and may be shared by threads, each with
@@ -142,7 +165,7 @@ type
   FirstBreakPick* = object
     ## One trace's pick.
     timeMs*: float64     ## Pick time (`t0Ms` based); NaN: no pick, or no `t0Ms`.
-    col*: float64        ## The pick's column in the block; NaN: no pick.
+    col*: float64        ## The pick's column in the block, a whole number; NaN: no pick.
     snrDb*: float64      ## Energy after / before the pick, in dB; NaN: none.
     confidence*: float64 ## 0 .. 1 from `snrDb` (`lowDb` .. `highDb`); 0 without a pick.
 

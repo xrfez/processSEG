@@ -56,9 +56,9 @@ A `FirstBreakPlan` picks every live row: an optional minimum-phase band-pass
 (`lowCutHz`, `highCutHz`), one of three pickers on the trace energy (`pmStaLta`,
 `pmEnergyRatio`, `pmCoppens`), in a fixed search window (`searchStartMs`, `searchEndMs`)
 or one guided by a linear moveout (`guideVelocity`, `guideT0Ms`, `beforeMs`,
-`afterMs`). Each pick has a time (on the meta's time axis), a fractional column and a
-confidence from 0 to 1, mapped from the SNR around the pick (`lowDb` .. `highDb`). The
-input samples are not changed: the workspace holds the filtered copy.
+`afterMs`). Each pick has a time (on the meta's time axis), the block's column it is on
+and a confidence from 0 to 1, mapped from the SNR around the pick (`lowDb` .. `highDb`).
+The input samples are not changed: the workspace holds the filtered copy.
 
 ```nim
 import std/[math, random]
@@ -108,7 +108,28 @@ biases (energy arrival vs onset).
 Zeros before a row's first and after its last non-zero sample (a recording delay,
 padding, a mute) are not data: the row is picked over its `liveSpan`, so the step from
 zeros to data is never the break. A pick with no energy at all in its noise window (the
-end of a dropout) has a NaN `snrDb` and confidence 0.
+end of a dropout) has a NaN `snrDb` and confidence 0. A noise-free synthetic, whose break
+is that very step, is therefore not picked on it: add noise to synthetics, as the
+examples here do.
+
+**The band-pass delays picks, by more at a lower SNR.** The filter is causal, so the
+break grows out of the noise over the filter's rise time, and a picker finds it where
+it clears the noise. Median pick minus onset, in samples, for a 30 Hz onset at 2 ms in a
+guided window (400 traces, default windows):
+
+| noise, of the onset's peak | 2.6 % | 6.6 % | 13 % | 26 % |
+|---|---|---|---|---|
+| `pmStaLta` | 1.9 | 1.9 | 1.9 | 1.8 |
+| `pmStaLta`, 8–60 Hz band-pass | 7.7 | 8.7 | 9.5 | 10.3 |
+| `pmEnergyRatio` | 0.7 | 0.9 | 1.2 | 1.6 |
+| `pmEnergyRatio`, 8–60 Hz | 2.9 | 3.6 | 4.1 | 4.8 |
+| `pmCoppens` | 0.6 | 1.0 | 1.4 | 1.7 |
+| `pmCoppens`, 8–60 Hz | 2.8 | 3.6 | 9.7 | 10.7 |
+
+(Coppens with the band-pass jumps a cycle at 13 %.) Along a spread whose SNR falls with
+offset the band-passed picks therefore lag a few samples more at the far traces: harmless
+for geometry QC, a bias for a velocity read from their slope. Filter only when the noise
+needs it, and compare picks of like SNR.
 
 **Windows, zooms and threads.** With a search window (fixed or guided), `pmStaLta` and
 `pmEnergyRatio` read and band-pass only the stretch of each trace their picks depend on:

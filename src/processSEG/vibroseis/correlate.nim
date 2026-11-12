@@ -7,7 +7,7 @@
 ## let plan = initCorrelationPlan(float32, pilot, recordSamples = 10001, dtMs = 2)
 ## var ws = initWorkspace()
 ## ws.reserve(plan.workspaceSize)
-## var correlated = zeros[float32](raw.shape[0], plan.outSamples)   # 2001: 4 s listen
+## var correlated = zeros[float32](raw.shape[0], plan.outSamples)   # 6001: 12 s listen
 ## plan.correlateInto(raw, correlated, meta, ws)
 ## ```
 ##
