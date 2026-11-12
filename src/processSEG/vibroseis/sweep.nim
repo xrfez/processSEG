@@ -27,7 +27,10 @@
 ##   `t(f) = T·(f^m − f1^m)/(f2^m − f1^m)`, `m = n + 1`. Dwelling on the
 ##   high frequencies (`boostDb > 0`) makes up for the earth's absorption;
 ## - `slDbPerHz`: the same with `dt/df ∝ 10^(boostDb·f/10)`, an amplitude
-##   spectrum rising by `boostDb` per Hz;
+##   spectrum rising by `boostDb` per Hz. A boost may add up to 300 dB over
+##   the band per octave (`|boostDb| · log₂(f2/f1)`) and 150 dB per Hz
+##   (`|boostDb| · |f2 − f1|`): steeper, the far end of the law is passed in
+##   less time than a float64 resolves;
 ## - `slExponential`: `f = f1·(f2/f1)^(t/T)`, an equal time per octave
 ##   (−3 dB/octave: `slDbPerOctave` with `boostDb = −3.0103`);
 ## - `slTable`: `f(t)` linear between the caller's `(tMs, fHz)` points, which
@@ -38,7 +41,8 @@
 ## `maxNyquistFraction` (default 0.8) of the Nyquist frequency, so the sweep
 ## stays below the anti-alias filter of the data it is correlated with, and
 ## never above Nyquist; a length of a whole number of samples (within 1e-6),
-## at least one and below 2³¹; tapers that fit (`checkFits`).
+## at least one and below 2³¹; a boost within its bound; tapers that fit
+## (`checkFits`).
 
 import std/math
 import parseSEG
@@ -72,6 +76,10 @@ type
     amplitude*: float64 = 1 ## Peak amplitude.
     taper*: SweepTaper ## Start and end ramps.
     maxNyquistFraction*: float64 = 0.8 ## Highest frequency allowed, as a fraction of Nyquist (≤ 1).
+
+const
+  maxDbPerOctaveTotal = 300.0 # the largest |boostDb| · octaves of a dB/octave sweep
+  maxDbPerHzTotal = 150.0     # the largest |boostDb| · bandwidth of a dB/Hz sweep
 
 proc badSweep(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
@@ -123,9 +131,17 @@ proc validate*(spec: SweepSpec) =
   of slDbPerOctave, slDbPerHz:
     if not (spec.boostDb.classify in {fcNormal, fcSubnormal, fcZero, fcNegZero}):
       badSweep("boostDb must be finite, got " & $spec.boostDb)
-    if spec.law == slDbPerHz and abs(spec.boostDb * (spec.f2Hz - spec.f1Hz)) > 600:
-      badSweep("a dB/Hz boost of " & $spec.boostDb & " over " & $abs(spec.f2Hz - spec.f1Hz) &
-        " Hz exceeds 600 dB")
+    # What the boost adds up to over the band. A dB/Hz law is an exponential
+    # of it: past 156 dB (e⁻³⁶) its far end is below a float64's resolution
+    # and the end frequency came out infinite. A dB/octave law is a power
+    # of f2 / f1 that overflows past 3000 dB; 300 dB is no sweep either.
+    let (total, limit) =
+      if spec.law == slDbPerHz: (abs(spec.boostDb * (spec.f2Hz - spec.f1Hz)), maxDbPerHzTotal)
+      else: (abs(spec.boostDb * log2(spec.f2Hz / spec.f1Hz)), maxDbPerOctaveTotal)
+    if total > limit:
+      badSweep("a boost of " & $spec.boostDb & (if spec.law == slDbPerHz: " dB/Hz" else:
+        " dB/octave") & " from " & $spec.f1Hz & " to " & $spec.f2Hz & " Hz adds up to " &
+        $(round(10 * total) / 10) & " dB, over the limit of " & $limit)
   of slTable:
     let t = spec.table
     if t.len < 2: badSweep("a table sweep needs at least two points")
@@ -206,23 +222,34 @@ func ln1p(x: float64): float64 =
 
 func frequencyAt*(spec: SweepSpec, tMs: float64): float64 {.raises: [].} =
   ## The instantaneous frequency at `tMs` (clamped to `0 .. lengthMs`), in
-  ## Hz. The spec is assumed valid.
+  ## Hz: `f1Hz` at 0 and `f2Hz` at `lengthMs`, exactly. The spec is assumed
+  ## valid.
   let T = spec.lengthMs
   let x = clamp(tMs, 0.0, T) / T
   let f1 = spec.f1Hz
   let f2 = spec.f2Hz
+  # The ends as given: a steep law's formula loses its last step to
+  # rounding (1 + (r − 1) with r below 1e-16), which read as an infinite
+  # end frequency.
+  if x <= 0: return f1
+  if x >= 1: return f2
+  # The laws from f1 to f2 run one way: rounding does not take them past
+  # either (a steep one came out 1e-14 Hz above f2 just before its end).
+  template within(f: float64): float64 = clamp(f, min(f1, f2), max(f1, f2))
   case spec.law
-  of slLinear: f1 + (f2 - f1) * x
-  of slExponential: f1 * pow(f2 / f1, x)
+  of slLinear: within(f1 + (f2 - f1) * x)
+  of slExponential: within(f1 * pow(f2 / f1, x))
   of slDbPerOctave:
+    # f^m linear in time, written in f2 / f1 so that no power of a
+    # frequency in Hz can overflow.
     let m = spec.boostDb / octaveDb + 1
-    if abs(m) < 1e-12: f1 * pow(f2 / f1, x)
-    else: pow(pow(f1, m) + x * (pow(f2, m) - pow(f1, m)), 1 / m)
+    if abs(m) < 1e-12: within(f1 * pow(f2 / f1, x))
+    else: within(f1 * pow(1 + x * expm1(m * ln(f2 / f1)), 1 / m))
   of slDbPerHz:
     let k = spec.boostDb * ln(10.0) / 10 # dt/df ∝ exp(k·f)
     let e = expm1(k * (f2 - f1)) # exp(k(f2 − f1)) − 1
-    if abs(k * (f2 - f1)) < 1e-12: f1 + (f2 - f1) * x
-    else: f1 + ln1p(x * e) / k
+    if abs(k * (f2 - f1)) < 1e-12: within(f1 + (f2 - f1) * x)
+    else: within(f1 + ln1p(x * e) / k)
   of slTable:
     let t = clamp(tMs, 0.0, T)
     var i = 1

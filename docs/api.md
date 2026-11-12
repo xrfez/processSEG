@@ -440,11 +440,11 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 |---|---|
 | `SweepLaw` (`slLinear`, `slDbPerOctave`, `slDbPerHz`, `slExponential`, `slTable`), `SweepPoint` (`tMs`, `fHz`) | How the frequency runs; a table point. |
 | `SweepSpec` (`law`, `f1Hz`, `f2Hz`, `lengthMs`, `dtMs`, `boostDb`, `table`, `startPhaseDeg`, `amplitude`, `taper`, `maxNyquistFraction`) | A sweep. |
-| `linearSweep(f1Hz, f2Hz, lengthMs, dtMs, taper = noTaper(), startPhaseDeg = 0, amplitude = 1, maxNyquistFraction = 0.8)`; `dbPerOctaveSweep(..., dtMs, boostDb, ...)`, `dbPerHzSweep(..., dtMs, boostDb, ...)`, `exponentialSweep(...)`, `tableSweep(points, dtMs, ...)` | Validated specs. A dB boost is of the amplitude spectrum, per octave or per Hz. |
+| `linearSweep(f1Hz, f2Hz, lengthMs, dtMs, taper = noTaper(), startPhaseDeg = 0, amplitude = 1, maxNyquistFraction = 0.8)`; `dbPerOctaveSweep(..., dtMs, boostDb, ...)`, `dbPerHzSweep(..., dtMs, boostDb, ...)`, `exponentialSweep(...)`, `tableSweep(points, dtMs, ...)` | Validated specs. A dB boost is of the amplitude spectrum, per octave or per Hz, and may add up to 300 dB over the band per octave, 150 dB per Hz. |
 | `validate(spec)` | `ValueError`: frequencies ≤ 0, above `maxNyquistFraction`·Nyquist or Nyquist, a length under one sample, a bad table, boost or taper. |
-| `sweepLen(spec)` | Samples: `lengthMs / dtMs + 1` (both ends). |
+| `sweepLen(spec)` | Samples: `lengthMs / dtMs + 1` (both ends); 0 for a spec whose interval or length `validate` rejects. |
 | `sweepSamples(spec, T = float64): seq[T]`, `sweepInto(spec, x: var openArray[T])` | The sweep, `amplitude·taper·sin(φ₀ + 2π∫f)`. |
-| `frequencyAt(spec, tMs)`, `phaseAt(spec, tMs)` | The instantaneous frequency; the phase in radians (closed-form laws; NaN for the dB laws). |
+| `frequencyAt(spec, tMs)`, `phaseAt(spec, tMs)` | The instantaneous frequency (`f1Hz` and `f2Hz` exactly at the two ends, never outside them for the laws that run one way); the phase in radians (closed-form laws; NaN for the dB laws). |
 | `segySweepType(spec)` | SEG-Y sweep type: 1 linear, 3 exponential, 4 other. |
 
 ## vibroseis/pilot: generated and recorded pilots
