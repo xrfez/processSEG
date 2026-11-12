@@ -460,7 +460,7 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 | `sweepFromHeaders(f1Hz, f2Hz, lengthMs, sweepType, taperStartMs, taperEndMs, taperType, dtMs, samples = 0): Option[SweepSpec]` | The sweep SEG-Y fields describe (linear or exponential only), or none unless it is valid at `dtMs` up to Nyquist and, with `samples`, no longer than the trace. |
 | `energyAbove(pilot, fHz): float64` | The fraction of the pilot's energy above `fHz`, from its samples' power spectrum. |
 | `resamplePilot(pilot, dtMs, cutoffFraction = 0.9, halfWidth = 32, bandLimit = false)` | Band-limited resampling (Kaiser-windowed sinc at `cutoffFraction` of the lower Nyquist; flat up to the passband edge `cutoffFraction − 2.736 / halfWidth`, 0.8145 by default, closed from `cutoffFraction + 2.736 / halfWidth`). `ValueError` when over 0.5 % of the samples' energy lies above the passband edge, whatever the sweep description says; `bandLimit` cuts it instead (and drops the description). The description is kept, with the passband edge as its `maxNyquistFraction`, only if still valid. Taps beyond the pilot's ends are made up for by rescaling. |
-| `InstrumentPhase` (`ipMinimumPhase`, `ipZeroPhase`), `InstrumentFilter` (`highCutHz`, `highSlopeDbPerOctave`, `lowCutHz`, `lowSlopeDbPerOctave`, `phase`) | A recorder's filters as Butterworth responses (SEG-Y bytes 141-152). |
+| `InstrumentFilter` (`highCutHz`, `highSlopeDbPerOctave`, `lowCutHz`, `lowSlopeDbPerOctave`, `phase: IirPhase = ipMinimum`) | A recorder's filters as Butterworth responses (SEG-Y bytes 141-152). |
 | `applyInstrumentFilter(pilot, filter)` | The pilot through the recorder's filters from rest (causal for minimum phase), same length. |
 
 ## vibroseis/correlate: correlation and sweep deconvolution

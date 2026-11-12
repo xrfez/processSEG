@@ -262,18 +262,23 @@ block instrument_filter_causality:
   s[200] = 1
   let spike = initPilot(s, 2)
   let mp = spike.applyInstrumentFilter(InstrumentFilter(highCutHz: 100,
-    highSlopeDbPerOctave: 36, phase: ipMinimumPhase))
+    highSlopeDbPerOctave: 36, phase: ipMinimum))
   for j in 0 ..< 200: doAssert mp.samples[j] == 0, "a minimum-phase filter is causal"
   doAssert mp.samples[200] != 0
+  # The phase is filter/iir's IirPhase, and a recorder's filter is minimum
+  # phase unless said otherwise.
+  doAssert InstrumentFilter().phase == ipMinimum
+  doAssert spike.applyInstrumentFilter(InstrumentFilter(highCutHz: 100,
+    highSlopeDbPerOctave: 36)).samples == mp.samples
   let zp = spike.applyInstrumentFilter(InstrumentFilter(highCutHz: 100,
-    highSlopeDbPerOctave: 36, phase: ipZeroPhase))
+    highSlopeDbPerOctave: 36, phase: ipZero))
   for k in 1 .. 30: doAssert abs(zp.samples[200 - k] - zp.samples[200 + k]) < 1e-9
   doAssert zp.len == 400 and zp.t0Ms == 0
   # A low-cut alone, and a band-pass with equal slopes.
   discard spike.applyInstrumentFilter(InstrumentFilter(lowCutHz: 3,
-    lowSlopeDbPerOctave: 12, phase: ipMinimumPhase))
+    lowSlopeDbPerOctave: 12, phase: ipMinimum))
   discard spike.applyInstrumentFilter(InstrumentFilter(lowCutHz: 3, lowSlopeDbPerOctave: 12,
-    highCutHz: 100, highSlopeDbPerOctave: 12, phase: ipZeroPhase))
+    highCutHz: 100, highSlopeDbPerOctave: 12, phase: ipZero))
   doAssertRaises(ValueError): discard spike.applyInstrumentFilter(InstrumentFilter())
   # Each cut has its own slope, as the SEG-Y header gives a recorder's: a
   # 3 Hz low-cut at 6 dB/octave with a 200 Hz alias filter at 72. The
@@ -282,7 +287,7 @@ block instrument_filter_causality:
   var long = newSeq[float64](8000)
   long[100] = 1
   let recorder = initPilot(long, 2).applyInstrumentFilter(InstrumentFilter(lowCutHz: 3,
-    lowSlopeDbPerOctave: 6, highCutHz: 200, highSlopeDbPerOctave: 72, phase: ipMinimumPhase))
+    lowSlopeDbPerOctave: 6, highCutHz: 200, highSlopeDbPerOctave: 72, phase: ipMinimum))
   proc gainDb(x: seq[float64], fHz: float64): float64 =
     var re, im = 0.0
     for j, v in x:
@@ -295,6 +300,6 @@ block instrument_filter_causality:
   doAssert gainDb(recorder.samples, 0.75) < -11 and gainDb(recorder.samples, 0.75) > -13
   doAssert gainDb(recorder.samples, 240) < -18 # 72 dB/octave: well below the 6 dB side
   discard spike.applyInstrumentFilter(InstrumentFilter(lowCutHz: 3, lowSlopeDbPerOctave: 12,
-    highCutHz: 100, highSlopeDbPerOctave: 24, phase: ipZeroPhase))
+    highCutHz: 100, highSlopeDbPerOctave: 24, phase: ipZero))
   doAssertRaises(ValueError): discard spike.applyInstrumentFilter(InstrumentFilter(
-    highCutHz: 100, highSlopeDbPerOctave: 7, phase: ipMinimumPhase))
+    highCutHz: 100, highSlopeDbPerOctave: 7, phase: ipMinimum))

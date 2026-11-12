@@ -110,7 +110,7 @@ doAssert pilot.dtMs == 2 and pilot.len == 3001
 # The recorder's filters, as the decimated 2 ms data went through them: a minimum-phase
 # 3 Hz low-cut and 200 Hz high-cut, 18 dB/octave each.
 let inst = InstrumentFilter(lowCutHz: 3, lowSlopeDbPerOctave: 18,
-  highCutHz: 200, highSlopeDbPerOctave: 18, phase: ipMinimumPhase)
+  highCutHz: 200, highSlopeDbPerOctave: 18, phase: ipMinimum)
 let matched = pilot.applyInstrumentFilter(inst)
 doAssert matched.len == pilot.len and matched.dtMs == 2
 ```

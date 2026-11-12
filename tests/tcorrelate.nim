@@ -211,7 +211,7 @@ block instrument_filter_phase:
   let spec = linearSweep(8, 80, 4000, dt, initSweepTaper(200, 200))
   let raw = generatePilot(spec)
   let inst = InstrumentFilter(highCutHz: 100, highSlopeDbPerOctave: 36,
-    lowCutHz: 3, lowSlopeDbPerOctave: 36, phase: ipMinimumPhase)
+    lowCutHz: 3, lowSlopeDbPerOctave: 36, phase: ipMinimum)
   let filtered = raw.applyInstrumentFilter(inst)
   let n = 4001
   var refl = newSeq[float64](n)

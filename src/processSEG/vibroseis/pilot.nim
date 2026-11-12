@@ -28,8 +28,8 @@
 ## synthetic one did not, which leaves the correlated data with the filter's
 ## phase. `applyInstrumentFilter` passes a pilot through the same filter
 ## (`InstrumentFilter`: Butterworth high-cut and optional low-cut, minimum
-## or zero phase, as SEG-Y trace bytes 141-152 describe the recorder's
-## filters), so that it matches the data.
+## or zero phase (`filter/iir`'s `IirPhase`), as SEG-Y trace bytes 141-152
+## describe the recorder's filters), so that it matches the data.
 ##
 ## **Headers.** `sweepOverrides` gives the SEG-Y sweep fields of a spec, for
 ## parseSEG's `writeTrace` (`trace.` fields) or `HeaderEditor.setFileField`
@@ -59,21 +59,18 @@ type
     t0Ms*: float64
     sweep*: Option[SweepSpec]
 
-  InstrumentPhase* = enum
-    ## The phase of a recorder's filters.
-    ipMinimumPhase ## causal (analogue and minimum-phase digital filters)
-    ipZeroPhase    ## linear phase with its delay removed
-
   InstrumentFilter* = object
     ## A recorder's filters, as Butterworth responses (SEG-Y trace bytes
     ## 141-152: alias filter and low-cut frequency and slope). A NaN or 0
     ## frequency means no such filter. Slopes are of the magnitude, in
-    ## dB/octave: a multiple of 6 (minimum phase) or 12 (zero phase).
+    ## dB/octave: a multiple of 6 (minimum phase) or 12 (zero phase). The
+    ## phase is `ipMinimum` (causal, as analogue and minimum-phase digital
+    ## filters are) or `ipZero` (linear phase with its delay removed).
     highCutHz*: float64
     highSlopeDbPerOctave*: float64
     lowCutHz*: float64
     lowSlopeDbPerOctave*: float64
-    phase*: InstrumentPhase
+    phase*: IirPhase = ipMinimum ## Of `filter/iir`: causal (the default) or zero phase.
 
 proc badPilot(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
@@ -420,7 +417,7 @@ proc applyInstrumentFilter*[T: SampleType](p: Pilot[T], f: InstrumentFilter): Pi
   let spec = f.toSpec
   let n = p.len
   case f.phase
-  of ipMinimumPhase:
+  of ipMinimum:
     let probe = initIirPlan(T, spec, p.dtMs, n, ipMinimum, trNone)
     let pad = probe.requiredMargin + 1
     let plan = initIirPlan(T, spec, p.dtMs, n + 2 * pad, ipMinimum, trNone)
@@ -431,7 +428,7 @@ proc applyInstrumentFilter*[T: SampleType](p: Pilot[T], f: InstrumentFilter): Pi
     buf.applyFilter(plan, ws)
     result = p
     for j in 0 ..< n: result.samples[j] = buf[pad + j]
-  of ipZeroPhase:
+  of ipZero:
     let probe = initFilterPlan(T, spec, p.dtMs, n, trNone)
     let pad = probe.requiredMargin + 1
     let plan = initFilterPlan(T, spec, p.dtMs, n + 2 * pad, trNone)
