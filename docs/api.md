@@ -326,8 +326,10 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `PickMethod` (`pmStaLta`, `pmEnergyRatio`, `pmCoppens`) | The picker. |
 | `FirstBreakParams` (`pickMethod`, `windowMs`, `ltaMs`, `stabilization`, `lowCutHz`, `highCutHz`, `slopeDbPerOctave`, `searchStartMs`, `searchEndMs`, `guideVelocity`, `guideT0Ms`, `beforeMs`, `afterMs`, `snrWindowMs`, `lowDb`, `highDb`) | Defaults set in the type: energy ratio, 20 ms window, no filter, no guide. |
 | `FirstBreakPlan[T]`; `initFirstBreakPlan(T, params, dtMs, samples)`, `plan.params`, `plan.dtMs`, `plan.samples`, `plan.workspaceSize` | A compiled picker (optional minimum-phase band-pass, fixed or LMO-guided window). |
+| `plan.requiredMargin` | The samples a zoom window must hold on each side of a row's search window to pick as the whole trace does, bit for bit: what the attribute and the confidence read before the window, plus the band-pass's margin. `plan.samples` for a plan that reads whole traces (no window, or `pmCoppens`). |
 | `FirstBreakPick` (`timeMs`, `col`, `snrDb`, `confidence`); `noPick()` | One pick; confidence 0 .. 1 from the SNR (`lowDb` .. `highDb`). |
-| `plan.pick(x, ws, offset = NaN, t0Ms = 0)`, `plan.pickInto(b \| samples, meta, ws, dst)` | Pick one trace, or every live row (others get `noPick`). The samples are not changed. |
+| `plan.pick(x, ws, offset = NaN, t0Ms = 0)`, `plan.pickInto(b \| samples, meta, ws, dst)` | Pick one trace, or every live row (others get `noPick`). The samples are not changed. With a search window, STA/LTA and the energy ratio read and band-pass only the window and its margins; zeros before a row's first and after its last non-zero sample are not data. |
+| `checkPick(plan, b, meta, picks)`; `pickInto(pool, plan, b \| samples, meta, dst)` | The checks of `pickInto` (`ValueError`); the picks with the rows split across a `ProcessPool`'s workers (identical results). |
 
 ## qc/snr: signal-to-noise ratios
 
@@ -410,6 +412,7 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 | `pool.ping` | An empty job: the per-job overhead. |
 | `correlateInto(pool, plan: CorrelationPlan[T], src, dst: RowBlock[T] \| Tensor[T], meta)` | Vibroseis correlation with the rows split across the workers; checks as `checkCorrelate` on the caller's thread. |
 | `traceAmplitudeInto(pool, b \| samples, meta, params, dst)` | Amplitude QC (`qc/amplitude`) with the rows split across the workers. |
+| `pickInto(pool, plan: FirstBreakPlan[T], b \| samples, meta, dst)` | First-break picking (`qc/firstbreak`) with the rows split across the workers; checks as `checkPick` on the caller's thread. |
 
 ## adapters: metas from parseSEG reads
 

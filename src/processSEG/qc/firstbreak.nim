@@ -57,7 +57,8 @@
 ## band-passed as it is; a whole trace has its linear trend taken out
 ## first. Without a window, and for `pmCoppens` always (its ratio is
 ## cumulative from the trace's start, and its `β` set by the whole trace),
-## the whole trace is read.
+## the whole trace is read. So a zoom window that holds `requiredMargin`
+## samples on each side of the search window picks as the whole trace does.
 ##
 ## **Windows and noise.** Short windows follow the break closely; at low
 ## SNR the noise in a short "before" window sets the maximum, so lengthen
@@ -100,7 +101,8 @@
 ##
 ## The input samples are not changed: the trace is filtered in the
 ## workspace. A plan is read-only and may be shared by threads, each with
-## its own `Workspace`.
+## its own `Workspace`; `ProcessPool.pickInto` (`core/pool`) picks a block's
+## rows on its workers.
 
 import std/math
 import parseSEG
@@ -241,6 +243,17 @@ func dtMs*[T](plan: FirstBreakPlan[T]): float64 {.inline, raises: [].} =
 func samples*[T](plan: FirstBreakPlan[T]): int {.inline, raises: [].} =
   ## The longest trace the plan takes.
   plan.samples
+
+func requiredMargin*[T](plan: FirstBreakPlan[T]): int {.raises: [].} =
+  ## The samples a block must hold on each side of a row's search window
+  ## for the row to pick as the whole trace does, bit for bit (see "What a
+  ## pick reads" in the module documentation; fewer are needed after the
+  ## window than before it, and the trace's own ends cut the margin):
+  ## `decodeWindow(searchColumns, plan.requiredMargin, traceLen)` is such a
+  ## zoom window. `plan.samples` for a plan that reads whole traces (no
+  ## search window, or `pmCoppens`): no window of the trace picks as all of
+  ## it does.
+  if plan.whole: plan.samples else: plan.before
 
 func filterSize[T](plan: FirstBreakPlan[T]): WorkspaceSize {.inline, raises: [].} =
   if plan.filtered: plan.filter.workspaceSize else: WorkspaceSize()
@@ -436,13 +449,12 @@ proc pick*[T: SampleType](plan: FirstBreakPlan[T], x: openArray[T],
     y = c
   plan.pickStretch(y, s, ws)
 
-proc pickInto*[T: SampleType](plan: FirstBreakPlan[T], b: RowBlock[T], meta: ChunkMeta,
-    ws: var Workspace, dst: var openArray[FirstBreakPick]) =
-  ## The pick of every live row of `b` into `dst[row]` (each row to its live
-  ## length, on `meta`'s time axis; non-live rows get `noPick`). `ws` must
-  ## hold `plan.workspaceSize`. Raises `ValueError` when `b` does not match
+proc checkPick*[T: SampleType](plan: FirstBreakPlan[T], b: RowBlock[T], meta: ChunkMeta,
+    picks: int) =
+  ## The checks of `pickInto` on `b`, `meta` and the length `picks` of its
+  ## `dst`, without picking: raises `ValueError` when `b` does not match
   ## `meta`, has more columns than `plan.samples`, its interval is not the
-  ## plan's, or `dst` is not `meta.len` long.
+  ## plan's, or `picks` is not `meta.len`.
   meta.checkShape(b)
   if b.cols > plan.samples:
     raise newException(ValueError, "the block has " & $b.cols & " columns, the plan " &
@@ -450,9 +462,16 @@ proc pickInto*[T: SampleType](plan: FirstBreakPlan[T], b: RowBlock[T], meta: Chu
   if meta.dtMs != plan.dtMs:
     raise newException(ValueError, "the block's interval " & $meta.dtMs &
       " ms is not the plan's " & $plan.dtMs & " ms")
-  if dst.len != meta.len:
-    raise newException(ValueError, "dst holds " & $dst.len & " picks, the meta " &
+  if picks != meta.len:
+    raise newException(ValueError, "dst holds " & $picks & " picks, the meta " &
       $meta.len & " rows")
+
+proc pickInto*[T: SampleType](plan: FirstBreakPlan[T], b: RowBlock[T], meta: ChunkMeta,
+    ws: var Workspace, dst: var openArray[FirstBreakPick]) =
+  ## The pick of every live row of `b` into `dst[row]` (each row to its live
+  ## length, on `meta`'s time axis; non-live rows get `noPick`). `ws` must
+  ## hold `plan.workspaceSize`. Raises `ValueError` as `checkPick`.
+  plan.checkPick(b, meta, dst.len)
   template stretchOfRow(row: int): Stretch =
     let k = meta.keys(row)
     plan.stretchOf(b.rowPtr(row), meta.liveSamples(row, b.cols), k.offset, k.t0Ms,

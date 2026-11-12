@@ -110,6 +110,19 @@ padding, a mute) are not data: the row is picked over its `liveSpan`, so the ste
 zeros to data is never the break. A pick with no energy at all in its noise window (the
 end of a dropout) has a NaN `snrDb` and confidence 0.
 
+**Windows, zooms and threads.** With a search window (fixed or guided), `pmStaLta` and
+`pmEnergyRatio` read and band-pass only the stretch of each trace their picks depend on:
+the window, what the attribute and the confidence need around it, and the band-pass's
+settling margin before it. A guided pick on a 3000-sample trace costs what it costs on a
+300-sample one, and a later, stronger event does not move it. `plan.requiredMargin` is
+that stretch's reach in samples: a zoom window that holds as many on each side of every
+row's search window (`decodeWindow(searchColumns, plan.requiredMargin, traceLen)`) gives
+the same picks as the whole traces, bit for bit, so picks do not move as the view pans.
+A plan without a window, and `pmCoppens` (whose ratio is cumulative from the trace's
+start), read whole traces: their `requiredMargin` is `plan.samples`, and their picks do
+change with the block's first sample. `pool.pickInto(plan, samples, meta, picks)` picks
+the rows on a `ProcessPool`'s workers, with the same results.
+
 ## A refraction fit per shot
 
 `fitShot` fits the confident picks of one shot (a `meta.sub` of its rows) against the

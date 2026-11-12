@@ -406,3 +406,79 @@ block a_windowed_pick_reads_only_its_stretch:
       p.lowCutHz = lc
       p.highCutHz = hc
       doAssert picks(loud, p) == picks(g, p), $m & " " & $lc
+
+func same(a, b: FirstBreakPick): bool =
+  # Equal picks, a NaN equal to a NaN.
+  template eq(x, y: float64): bool = x == y or (x.isNaN and y.isNaN)
+  eq(a.timeMs, b.timeMs) and eq(a.col, b.col) and eq(a.snrDb, b.snrDb) and
+    a.confidence == b.confidence
+
+block a_zoom_window_with_the_required_margin_picks_the_same:
+  # The first breaks come 500 ms and more into the traces. A window of the
+  # block that holds requiredMargin samples on each side of every row's
+  # search window picks as the whole traces do, bit for bit.
+  var g = shot(0.1, 12, splitSpread(12, 25, 1000))
+  let meta = initChunkMeta(g.rows, dt)
+  for m in [pmStaLta, pmEnergyRatio]:
+    for (lc, hc) in [(0.0, Inf), (8.0, 70.0)]:
+      var p = guided
+      p.pickMethod = m
+      p.lowCutHz = lc
+      p.highCutHz = hc
+      let plan = initFirstBreakPlan(float32, p, dt, cols)
+      let margin = plan.requiredMargin
+      var ws = initWorkspace()
+      ws.reserve(plan.workspaceSize)
+      var full = newSeq[FirstBreakPick](g.len)
+      plan.pickInto(g.data, meta, ws, full)
+      # The search windows: 60 ms before the nearest break to 80 ms after
+      # the farthest.
+      let shown = int(floor((onsetMs(1000) - 60) / dt)) .. int(ceil((onsetMs(1275) + 80) / dt))
+      let zoom = decodeWindow(shown, margin, cols)
+      doAssert zoom.a > 0 and zoom.b < cols - 1, $m & " " & $lc & ": " & $zoom
+      let w = g.window(zoom.a, zoom.len)
+      let wmeta = initChunkMeta(w.rows, dt, firstSample = w.firstSample)
+      var got = newSeq[FirstBreakPick](w.len)
+      plan.pickInto(w.data, wmeta, ws, got)
+      for r in 0 ..< g.len:
+        doAssert not full[r].col.isNaN
+        var want = full[r]
+        want.col -= float64(zoom.a)
+        doAssert same(got[r], want), $m & " " & $lc & " row " & $r & ": " & $got[r] &
+          " vs " & $want
+  # A plan that reads whole traces says so.
+  for p in [FirstBreakParams(), FirstBreakParams(pickMethod: pmCoppens, guideVelocity: vel)]:
+    doAssert initFirstBreakPlan(float32, p, dt, cols).requiredMargin == cols
+
+block the_pool_picks_the_same:
+  # Rows of uneven cost and state, more rows than one run of a worker.
+  var g = shot(0.3, 13, splitSpread(150, 5, 25))
+  g.setLive(3, 200)
+  g.setLive(11, 1)
+  g.keys[9].status = tsDead
+  g.keys[40].offset = NaN
+  let failed = @[17, 130]
+  let meta = initChunkMeta(g.rows, dt, failed = failed)
+  for m in PickMethod:
+    for (lc, hc) in [(0.0, Inf), (8.0, 70.0)]:
+      var p = guided
+      p.pickMethod = m
+      p.lowCutHz = lc
+      p.highCutHz = hc
+      let plan = initFirstBreakPlan(float32, p, dt, cols)
+      var ws = initWorkspace()
+      ws.reserve(plan.workspaceSize)
+      var want = newSeq[FirstBreakPick](g.len)
+      plan.pickInto(g.data, meta, ws, want)
+      for workers in [1, 3, 8]:
+        var pool = newProcessPool(workers)
+        var got = newSeq[FirstBreakPick](g.len)
+        pool.pickInto(plan, g.data, meta, got)
+        for r in 0 ..< g.len:
+          doAssert same(got[r], want[r]), $m & " " & $workers & " workers, row " & $r
+        pool.pickInto(plan, g.data, meta, got) # the workspaces are reserved now
+        doAssert allocsIn(pool.pickInto(plan, g.data, meta, got)) == 0
+  var pool = newProcessPool(2)
+  let plan = initFirstBreakPlan(float32, guided, dt, cols)
+  var short = newSeq[FirstBreakPick](1)
+  doAssertRaises(ValueError): pool.pickInto(plan, g.data, meta, short)
