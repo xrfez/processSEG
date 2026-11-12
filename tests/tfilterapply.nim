@@ -198,6 +198,57 @@ block rows_of_varying_live_length:
   rowsMatchSingle(float64, 1e-12)
   rowsMatchSingle(float32, 2e-5)
 
+proc sameBits[T](a, b: T): bool =
+  when T is float32: cast[uint32](a) == cast[uint32](b)
+  else: cast[uint64](a) == cast[uint64](b)
+
+proc rowsIgnoreTheirBatch(T: typedesc, spec: FilterSpec) =
+  # A row's result does not depend on the rows filtered with it: the whole
+  # block (full batches of one length go through the lane-wise pack, the
+  # others row by row), each row alone, and a split at an odd row give the
+  # same bits. A pool relies on this to match the single-thread apply.
+  const rows = 27
+  var g = cmpGather[T](cmpX = 0, offsets = newSeq[float64](rows), ns, dt)
+  for r in 0..<rows:
+    var row = clean[T]()
+    row.addNoise(0.3, seed = r)
+    row.addDc(100 * float64(r mod 4) - 150)
+    row.addDrift(dt, slopePerS = float64(r mod 5) - 2, start = 0)
+    for j in 0..<ns: g.data[r, j] = row[j]
+  for j in 0..<ns: g.data[10, j] = T(0) # a zero trend among others
+  g.data[10, 5] = T(-0.0)
+  g.setLive(3, 1500) # rows 0 ..< 8 are not of one length; 8 ..< 16 are
+  g.setLive(20, 1)
+  g.keys[17].status = tsDead
+  let meta = initChunkMeta(g.rows, dtMs = dt)
+  let plan = initFilterPlan(T, spec, dt, ns)
+  var ws = initWorkspace()
+  ws.reserve(plan.workspaceSize)
+  var whole = g.data.clone()
+  whole.applyFilter(meta, plan, ws)
+  var alone = g.data.clone()
+  let ab = rowBlock(alone)
+  for r in 0..<rows:
+    ab.sub(r .. r).applyFilter(meta.sub(r .. r), plan, ws)
+  var split = g.data.clone()
+  let sb = rowBlock(split)
+  for part in [0 .. 10, 11 .. rows - 1]:
+    sb.sub(part).applyFilter(meta.sub(part), plan, ws)
+  for r in 0..<rows:
+    for j in 0..<ns:
+      doAssert sameBits(whole[r, j], alone[r, j]), $T & " " & $spec.kind &
+        ": row " & $r & " sample " & $j & " differs alone"
+      doAssert sameBits(whole[r, j], split[r, j]), $T & " " & $spec.kind &
+        ": row " & $r & " sample " & $j & " differs in a split"
+
+block rows_do_not_depend_on_their_batch:
+  # A band-pass drops the trend; the high-cuts add it back (all or its slope).
+  let specs = [bandPass(Corners(f1: 4, f2: 8, f3: 60, f4: 80)), highCut(60, 80),
+    highCut(60, 80).withZeroDc]
+  for spec in specs:
+    rowsIgnoreTheirBatch(float32, spec)
+    rowsIgnoreTheirBatch(float64, spec)
+
 block zoom_window_with_margin:
   # A window decoded with requiredMargin on each side, filtered, matches the
   # whole trace filtered, over the window.

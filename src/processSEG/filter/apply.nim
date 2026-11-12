@@ -53,8 +53,10 @@
 ## **Rows.** The block forms filter the live rows, each to its live length
 ## (`ChunkMeta.liveSamples`); dead, auxiliary and failed rows and the padding
 ## past a trace's end are left untouched. The rows go through the batched FFT,
-## `fftLanes` at a time. A NaN or Inf sample makes its own row NaN (its trend
-## is NaN) and no other. Nothing allocates once the workspace is reserved.
+## `fftLanes` at a time; a row's result does not depend on the rows batched
+## with it, so any split of the rows across threads gives the same samples. A
+## NaN or Inf sample makes its own row NaN (its trend is NaN) and no other.
+## Nothing allocates once the workspace is reserved.
 
 import std/math
 import parseSEG
@@ -78,6 +80,9 @@ type
     trend: TrendRemoval
 
   Buf[T] = ptr UncheckedArray[T]
+
+template `+@`[T](b: Buf[T], o: int): Buf[T] =
+  cast[Buf[T]](addr b[o])
 
 proc badPlan(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
@@ -183,28 +188,100 @@ proc unpackFrom[T](plan: FilterPlan[T], src: Buf[T], stride: int, a, b: float64,
         float64(i)))
   {.pop.}
 
-{.push boundChecks: off, overflowChecks: off.} # an inline kernel keeps the
-                                              # checks of its definition site
-proc gainKernel[T](re {.noalias.}, im {.noalias.}: Buf[T],
-    g {.noalias.}: Buf[T], bins: int, L: static int) {.inline.} =
+{.push boundChecks: off, overflowChecks: off.}
+proc gainRun[T](re {.noalias.}, im {.noalias.}, g {.noalias.}: Buf[T], bins,
+    lanes: int) {.noinline, raises: [].} =
+  ## Multiplies bin `k` of `lanes` interleaved spectra by `g[k]`. `lanes` is
+  ## a run-time value on purpose: with a constant lane count GCC 12
+  ## vectorizes the loop over the bins instead (eight bins at a time, through
+  ## permutes), four times the instructions of this form.
   for k in 0..<bins:
     let w = g[k]
-    for l in 0..<L:
-      re[k * L + l] = re[k * L + l] * w
-      im[k * L + l] = im[k * L + l] * w
+    let r = cast[Buf[T]](addr re[k * lanes])
+    let i = cast[Buf[T]](addr im[k * lanes])
+    for l in 0..<lanes:
+      r[l] = r[l] * w
+      i[l] = i[l] * w
 {.pop.}
 
-proc gainLanes[T](plan: FilterPlan[T], re, im: Buf[T]) {.noinline, raises: [].} =
-  {.push boundChecks: off, overflowChecks: off.}
-  gainKernel(re, im, cast[ptr UncheckedArray[T]](unsafeAddr plan.gain[0]),
-      plan.fft.bins, fftLanes)
-  {.pop.}
+proc gainLanes[T](plan: FilterPlan[T], re, im: Buf[T]) {.inline, raises: [].} =
+  gainRun(re, im, cast[Buf[T]](addr plan.gain[0]), plan.fft.bins, fftLanes)
 
-proc gainSingle[T](plan: FilterPlan[T], re, im: Buf[T]) {.noinline, raises: [].} =
-  {.push boundChecks: off, overflowChecks: off.}
-  gainKernel(re, im, cast[ptr UncheckedArray[T]](unsafeAddr plan.gain[0]),
-      plan.fft.bins, 1)
-  {.pop.}
+proc gainSingle[T](plan: FilterPlan[T], re, im: Buf[T]) {.inline, raises: [].} =
+  gainRun(re, im, cast[Buf[T]](addr plan.gain[0]), plan.fft.bins, 1)
+
+# A full batch of rows of one length (the usual case) is packed and unpacked
+# sample by sample across the lanes, so the lane buffer is written and read
+# front to back, one cache line after the other. `packInto` on each row in
+# turn writes every eighth value: each of its stores misses L1 (the buffer
+# of a batch is larger), 8 times per line. Both forms compute the same
+# expression per sample, so a row's result does not depend on its batch.
+
+type
+  LaneRows[T] = array[fftLanes, Buf[T]]
+  LaneTrend = array[fftLanes, float64]
+
+{.push boundChecks: off, overflowChecks: off.}
+proc packSample[T](d {.noalias.}: Buf[T], rows: LaneRows[T], i: int,
+    a, b: LaneTrend) {.inline.} =
+  let fi = float64(i)
+  for l in 0..<fftLanes:
+    d[l] = T(float64(rows[l][i]) - (a[l] + b[l] * fi))
+
+proc reflectSample[T](d {.noalias.}, mirror {.noalias.}, edge {.noalias.}: Buf[T],
+    fall: T) {.inline.} =
+  for l in 0..<fftLanes:
+    d[l] = (edge[l] + edge[l] - mirror[l]) * fall
+
+proc packLanes[T](plan: FilterPlan[T], rows: LaneRows[T], n: int,
+    a, b: LaneTrend, dst: Buf[T]) {.noinline, raises: [].} =
+  ## `packInto` for `fftLanes` rows of `n` samples each, into the lane buffer
+  ## `dst` (sample `j` of lane `l` at `dst[j·fftLanes + l]`).
+  const L = fftLanes
+  let p = plan.pad
+  for i in 0..<n:
+    packSample(dst +@ ((p + i) * L), rows, i, a, b)
+  let first = dst +@ (p * L)
+  let last = dst +@ ((p + n - 1) * L)
+  for k in 1..p:
+    let m = min(k, n - 1)
+    reflectSample(dst +@ ((p - k) * L), dst +@ ((p + m) * L), first, plan.fall[k - 1])
+    reflectSample(dst +@ ((p + n - 1 + k) * L), dst +@ ((p + n - 1 - m) * L), last,
+      plan.fall[k - 1])
+  for j in (2 * p + n) * L..<plan.fft.len * L: dst[j] = T(0)
+
+proc unpackSample[T](s {.noalias.}: Buf[T], rows: LaneRows[T], i: int,
+    ga, gb: LaneTrend) {.inline.} =
+  let fi = float64(i)
+  for l in 0..<fftLanes:
+    rows[l][i] = T(float64(s[l]) + (ga[l] + gb[l] * fi))
+
+proc copySample[T](s {.noalias.}: Buf[T], rows: LaneRows[T], i: int) {.inline.} =
+  for l in 0..<fftLanes:
+    rows[l][i] = s[l]
+
+proc unpackLanes[T](plan: FilterPlan[T], src: Buf[T], a, b: LaneTrend,
+    rows: LaneRows[T], n: int) {.noinline, raises: [].} =
+  ## `unpackFrom` for `fftLanes` rows of `n` samples each.
+  const L = fftLanes
+  let p = plan.pad
+  var ga, gb: LaneTrend
+  var plain = true
+  for l in 0..<L:
+    gb[l] = b[l] * plan.dcGain
+    ga[l] = (if plan.spec.zeroDc: -gb[l] * float64(n - 1) / 2 else: a[l] * plan.dcGain)
+    if ga[l] != 0 or gb[l] != 0:
+      plain = false
+    else:
+      # No trend to add back: `x + (−0 + −0·i)` is `x` bit for bit (adding
+      # +0 would turn a −0 sample into +0, unlike `unpackFrom`'s plain copy).
+      ga[l] = -0.0
+      gb[l] = -0.0
+  if plain:
+    for i in 0..<n: copySample(src +@ ((p + i) * L), rows, i)
+  else:
+    for i in 0..<n: unpackSample(src +@ ((p + i) * L), rows, i, ga, gb)
+{.pop.}
 
 # -------------------------------------------------------------- one trace --
 
@@ -260,39 +337,42 @@ proc applyFilter*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
   let re = cast[ptr UncheckedArray[T]](addr buf[nf * fftLanes])
   let im = cast[ptr UncheckedArray[T]](addr buf[nf * fftLanes + nb * fftLanes])
   var lane = 0
-  var rowOf: array[fftLanes, int]
+  var rowsOf: LaneRows[T]
   var lenOf: array[fftLanes, int]
-  var ta, tb: array[fftLanes, float64]
+  var ta, tb: LaneTrend
 
   template flush() =
     if lane > 0:
-      for l in lane..<fftLanes: # unused lanes are zero
-        for j in 0..<nf: buf[j * fftLanes + l] = T(0)
+      var uniform = lane == fftLanes
+      for l in 1..<lane:
+        if lenOf[l] != lenOf[0]: uniform = false
+      if uniform:
+        plan.packLanes(rowsOf, lenOf[0], ta, tb, buf)
+      else:
+        for l in 0..<lane:
+          plan.packInto(rowsOf[l], lenOf[l], ta[l], tb[l], buf +@ l, fftLanes)
+        for l in lane..<fftLanes: # unused lanes are zero
+          for j in 0..<nf: buf[j * fftLanes + l] = T(0)
       plan.fft.forwardLanes(buf.toOpenArray(0, nf * fftLanes - 1),
-        re.toOpenArray(0, nb * fftLanes - 1), im.toOpenArray(0, nb * fftLanes -
-            1), ws)
+        re.toOpenArray(0, nb * fftLanes - 1), im.toOpenArray(0, nb * fftLanes - 1), ws)
       plan.gainLanes(re, im)
       plan.fft.inverseLanes(re.toOpenArray(0, nb * fftLanes - 1),
-        im.toOpenArray(0, nb * fftLanes - 1), buf.toOpenArray(0, nf * fftLanes -
-            1), ws)
-      for l in 0..<lane:
-        plan.unpackFrom(cast[ptr UncheckedArray[T]](addr buf[l]), fftLanes, ta[
-            l], tb[l],
-          b.rowPtr(rowOf[l]), lenOf[l])
+        im.toOpenArray(0, nb * fftLanes - 1), buf.toOpenArray(0, nf * fftLanes - 1), ws)
+      if uniform:
+        plan.unpackLanes(buf, ta, tb, rowsOf, lenOf[0])
+      else:
+        for l in 0..<lane:
+          plan.unpackFrom(buf +@ l, fftLanes, ta[l], tb[l], rowsOf[l], lenOf[l])
       lane = 0
 
   for r in 0..<b.len:
-    if not meta.isLive(r): continue
-    let n = meta.liveSamples(r, b.cols)
-    if n == 0: continue
-    let src = b.rowPtr(r)
-    (ta[lane], tb[lane]) = trendOf(plan.trend, src, n)
-    plan.packInto(src, n, ta[lane], tb[lane], cast[ptr UncheckedArray[T]](
-        addr buf[lane]), fftLanes)
-    rowOf[lane] = r
-    lenOf[lane] = n
-    inc lane
-    if lane == fftLanes: flush()
+    let n = (if meta.isLive(r): meta.liveSamples(r, b.cols) else: 0)
+    if n > 0:
+      rowsOf[lane] = b.rowPtr(r)
+      lenOf[lane] = n
+      (ta[lane], tb[lane]) = trendOf(plan.trend, rowsOf[lane], n)
+      inc lane
+      if lane == fftLanes: flush()
   flush()
 
 proc applyFilter*[T: SampleType](samples: var Tensor[T], meta: ChunkMeta,

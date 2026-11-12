@@ -55,7 +55,7 @@
 
 import std/math
 import parseSEG
-import ../core/[rows, types, workspace]
+import ../core/[rows, sums, types, workspace]
 import plan
 
 type
@@ -64,6 +64,7 @@ type
     ## documentation.
     fft: FftPlan[T]
     taper: seq[T] # windowLen weights
+    taperSum: float64 # Σ taper: Σw of a full window
     dtMs: float64
     demean: bool
 
@@ -103,6 +104,7 @@ proc initSpectrumPlan*(T: typedesc[SampleType], windowLen: int, dtMs: float64,
       if d >= ramp: 1.0
       else: sin(PI / 2 * float64(d + 1) / float64(ramp + 1)) ^ 2
     result.taper[i] = T(w)
+    result.taperSum += float64(result.taper[i])
 
 func sides[T](sp: SpectrumPlan[T], k: int): float64 {.inline.} =
   ## The one-sided factor of bin `k`: 1 at 0 Hz and at Nyquist, else 2.
@@ -174,15 +176,14 @@ proc windowInto[T](sp: SpectrumPlan[T], x: openArray[T],
   ## documentation, "Short windows") into `dst[j·stride]`, j < nfft. Returns
   ## Σw, or NaN when `x` holds a NaN or infinite sample.
   let n = min(x.len, sp.taper.len)
-  var sum = 0.0
-  for j in 0..<n: sum += float64(x[j])
+  let sum = sum64(x.toOpenArray(0, n - 1))
   let finite = sum - sum == 0 # false for a NaN or ±Inf sum
   let m = if sp.demean and n > 0 and finite: T(sum / float64(n)) else: T(0)
   var sw = 0.0
   {.push boundChecks: off.}
   if n == sp.taper.len:
     for j in 0..<n: dst[j * stride] = (x[j] - m) * sp.taper[j]
-    for j in 0..<n: sw += float64(sp.taper[j])
+    sw = sp.taperSum
   else:
     for j in 0..<n:
       let w = min(sp.taper[j], sp.taper[n - 1 - j])

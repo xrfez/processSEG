@@ -26,39 +26,9 @@
 
 import std/math
 import parseSEG
-import rows, types
+import rows, sums, types
 
 # ------------------------------------------------------------------ helpers --
-
-func sum64[T: SampleType](x: openArray[T]): float64 {.raises: [].} =
-  ## Σ x in float64, with eight independent accumulators (so it vectorizes).
-  {.push boundChecks: off.}
-  var acc: array[8, float64]
-  let n = x.len div 8 * 8
-  var i = 0
-  while i < n:
-    for j in 0..<8: acc[j] += float64(x[i + j])
-    i += 8
-  for j in 0..<8: result += acc[j]
-  for k in n..<x.len: result += float64(x[k])
-  {.pop.}
-
-func sumIndexed64[T: SampleType](x: openArray[T]): float64 {.raises: [].} =
-  ## Σ i·x[i] in float64, vectorized like `sum64` (the index runs in float64
-  ## lanes, so there is no integer-to-float conversion per sample).
-  {.push boundChecks: off.}
-  var acc, idx: array[8, float64]
-  for j in 0..<8: idx[j] = float64(j)
-  let n = x.len div 8 * 8
-  var i = 0
-  while i < n:
-    for j in 0..<8:
-      acc[j] += idx[j] * float64(x[i + j])
-      idx[j] += 8
-    i += 8
-  for j in 0..<8: result += acc[j]
-  for k in n..<x.len: result += float64(k) * float64(x[k])
-  {.pop.}
 
 proc badLimits(lo, hi: float64) {.noinline, noreturn.} =
   raise newException(ValueError, "clip needs lo ≤ hi, both not NaN; got " &

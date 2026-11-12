@@ -42,9 +42,11 @@
 ## steady-state start replaces the taper.
 ##
 ## **Rows.** As for `filter/apply`: live rows, each to its live length,
-## `fftLanes` traces at a time (the recursion runs across traces, which
-## vectorizes); a NaN stays in its row; no allocation once the workspace is
-## reserved.
+## `fftLanes` traces at a time: a recursion is a serial dependency chain, so
+## eight independent ones run side by side and the CPU overlaps them (the
+## compiler keeps them scalar: a zero-phase band-pass costs about twice the
+## FFT filter's time; see bench/README). A NaN stays in its row; no
+## allocation once the workspace is reserved.
 
 import std/[complex, math]
 import parseSEG

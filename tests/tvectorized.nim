@@ -20,8 +20,10 @@ const
       # scalar by design). The butterflies are inlined into the passes, the
       # split kernels into forwardImpl/inverseImpl.
     "pass2", "pass3", "pass4", "pass5", "forwardImpl", "inverseImpl",
-    # Filter: the gain multiply of the lanes path (packing is strided, scalar).
-    "gainLanes",
+    # Filter: the gain multiply and the pack of a batch of rows of one
+    # length (its unpack stores to eight rows, and a mixed batch packs row by
+    # row with a stride: both scalar).
+    "gainRun", "packLanes",
     # Gain statistics: Σx² (eight accumulators), max |x| (integer max).
     "sumSq64", "maxAbs",
     # AGC: the gain loops (the block sums are serial add chains, scalar).
@@ -32,7 +34,9 @@ const
     "accumulate"]
   # Non-generic kernels: their symbols carry their own module (and GCC clones
   # such as `.constprop.0` count too).
-  moduleKernels = [("sosLanes", "ZfilterZiir"),
+  # (The IIR section kernel, `sosLanes`, is not here: a recursion is a serial
+  # chain per trace, and GCC keeps its eight lanes scalar.)
+  moduleKernels = [
     # NMO: the input columns (sqrt and division; -fno-math-errno there).
     ("moveoutCols", "ZstackZnmo"),
     # The shot fit's normal-equation sums.
