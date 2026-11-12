@@ -60,8 +60,9 @@ except ValueError as e:
 flow.delete(0)
 ```
 
-- Ops are a variant `Op` with public parameter groups (`op.agc`, `op.filter.spec`,
-  `op.mute.taperMs`, ...); a `Pipeline` supports `add`, `insert`, `delete`, `[]`, `[]=`,
+- Ops are a variant `Op` with a parameter group per kind (`op.agc`, `op.filter.spec`,
+  `op.mute.taperMs`, ...), read and edited through accessors that raise `ValueError` for
+  an op of another kind; a `Pipeline` supports `add`, `insert`, `delete`, `[]`, `[]=`,
   `len`, `items` and `pairs`.
 - Compiling is cheap (microseconds to a few ms), so recompile on every slider event. Keep
   one plan per sample interval: a uniform prefetch of a mixed SEG-D file gives chunks at

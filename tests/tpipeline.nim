@@ -107,6 +107,17 @@ block pipeline_editing:
   for op in flow: kinds.add op.kind
   for i, op in flow: doAssert op.kind == kinds[i]
   doAssert kinds == @[opAgc, opGainDb]
+  # The parameters of another kind are a ValueError, in every build mode (a
+  # variant's own field check is off in -d:danger, where this edit used to
+  # land in the other op's memory), and leave the op as it was.
+  doAssertRaises ValueError: flow[0].filter.spec = lowCut(1, 2)
+  doAssertRaises ValueError: flow[1].agc.windowMs = 300
+  doAssertRaises ValueError: discard flow[0].dB
+  let readOnly = flow[1]
+  doAssertRaises ValueError: discard readOnly.mute.taperMs
+  flow[1].dB = 9 # scalars are edited in place too
+  doAssert flow[0].agc.windowMs == 300 and flow[1].dB == 9
+  discard flow.compile(float32, 2, 500)
   flow.clear
   doAssert flow.len == 0
 

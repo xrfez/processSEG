@@ -181,8 +181,10 @@ flow[2].agc.windowMs = 300                # a slider moved: edit the op, recompi
 - **Ops** are plain data: an `Op` variant built by `demeanOp`, `detrendOp`, `scaleOp`,
   `gainDbOp`, `clipOp`, `polarityOp`, `muteTopOp`, `muteBottomOp`, `filterOp`
   (`bandPassOp` for the common case), `iirOp`, `agcOp`, `normalizeOp` and `gainCurveOp`.
-  Their parameters are public fields grouped per kind (`op.agc.windowMs`,
-  `op.filter.spec`, `op.mute.taperMs`), and a `Pipeline` supports `add`, `insert`,
+  Their parameters are grouped per kind (`op.agc.windowMs`, `op.filter.spec`,
+  `op.mute.taperMs`) and edited in place; asking an op for another kind's parameters
+  raises `ValueError` (test `op.kind` when the user can reorder the flow). A `Pipeline`
+  supports `add`, `insert`,
   `delete`, `[]`, `[]=`, `len` and `items`. Nothing is checked until `compile`, whose
   `ValueError` names the op (`op 1 (opFilter): ...`).
 - **Order and cache.** `apply` runs every op on a tile of rows (about 256 KB) while it is

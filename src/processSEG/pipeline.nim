@@ -26,10 +26,12 @@
 ##
 ## **Ops and builders.** Each op kind has a builder named after it with an
 ## `Op` suffix (`demeanOp()`, while `demean(x)` is the kernel). An op's
-## parameters are public fields, grouped per kind (`op.agc.windowMs`,
-## `op.filter.spec`), so a flow can be edited in place; nothing is checked
-## until `compile` (the specs and curves an op holds, such as `bandPass` or
-## `lmoMute`, check themselves when they are built).
+## parameters are grouped per kind (`op.agc.windowMs`, `op.filter.spec`) and
+## can be edited in place; their values are not checked until `compile` (the
+## specs and curves an op holds, such as `bandPass` or `lmoMute`, check
+## themselves when they are built). Asking an op for the parameters of
+## another kind (`flow[0].agc` on a filter) raises `ValueError`, in every
+## build mode: test `flow[i].kind` when the flow's order is the user's.
 ##
 ## **Stale buffers.** A processed buffer is stale when the plan changed (its
 ## `generation`) **or the keys did**: mutes read offsets, gain curves read
@@ -137,18 +139,20 @@ type
 
   Op* = object
     ## One operation of a `Pipeline`, as plain data. Build it with the
-    ## `xOp` builders; its parameters may be edited in place.
-    case kind*: OpKind
+    ## `xOp` builders. Its kind and its parameters are read, and the
+    ## parameters edited in place, through the accessors named after them
+    ## (`op.kind`, `op.agc.windowMs = 300`, `op.dB`), which check the kind.
+    case tag: OpKind
     of opDemean, opDetrend, opPolarity: discard
-    of opScale: factor*: float64
-    of opGainDb: dB*: float64
-    of opClip: clip*: ClipParams
-    of opMuteTop, opMuteBottom: mute*: MuteParams
-    of opFilter: filter*: FilterParams
-    of opIir: iir*: IirParams
-    of opAgc: agc*: AgcParams
-    of opNormalize: norm*: NormalizeParams
-    of opGainCurve: gainCurve*: GainCurveParams
+    of opScale: scaleFactor: float64
+    of opGainDb: gainDb: float64
+    of opClip: clipParams: ClipParams
+    of opMuteTop, opMuteBottom: muteParams: MuteParams
+    of opFilter: filterParams: FilterParams
+    of opIir: iirParams: IirParams
+    of opAgc: agcParams: AgcParams
+    of opNormalize: normParams: NormalizeParams
+    of opGainCurve: curveParams: GainCurveParams
 
   Pipeline* = object
     ## An ordered list of `Op`s; see the module documentation.
@@ -186,44 +190,83 @@ type
 
 var lastGeneration: Atomic[uint64] # numbers plans; see "Generations"
 
+# ---------------------------------------------------------------- accessors --
+#
+# An `Op` is a variant, and a variant's fields are checked only with field
+# checks on: in `-d:danger`, `flow[0].agc.windowMs = 300` on a filter op wrote
+# into the filter's spec and `compile` crashed. So the fields are private and
+# these accessors check the kind in every build mode.
+
+proc wrongKind(have: OpKind, want: string) {.noinline, noreturn.} =
+  raise newException(ValueError, "the op is " & $have & ": it has no " & want &
+    " (check `op.kind` first)")
+
+func kind*(op: Op): OpKind {.inline, raises: [].} =
+  ## The kind of the op, set by its builder.
+  op.tag
+
+template accessors(name, field: untyped, T: typedesc, kinds: set[OpKind],
+    what: string) =
+  func name*(op: Op): lent T {.inline.} =
+    ## The op's parameters of this name, to read. Raises `ValueError` for an
+    ## op of another kind, in every build mode.
+    if op.tag notin kinds: wrongKind(op.tag, what)
+    op.field
+
+  func name*(op: var Op): var T {.inline.} =
+    ## The same, to edit in place (`flow[2].agc.windowMs = 300`); nothing is
+    ## validated until `compile`.
+    if op.tag notin kinds: wrongKind(op.tag, what)
+    op.field
+
+accessors(factor, scaleFactor, float64, {opScale}, "factor")
+accessors(dB, gainDb, float64, {opGainDb}, "gain in dB")
+accessors(clip, clipParams, ClipParams, {opClip}, "clip limits")
+accessors(mute, muteParams, MuteParams, {opMuteTop, opMuteBottom}, "mute")
+accessors(filter, filterParams, FilterParams, {opFilter}, "FFT filter")
+accessors(iir, iirParams, IirParams, {opIir}, "IIR filter")
+accessors(agc, agcParams, AgcParams, {opAgc}, "AGC")
+accessors(norm, normParams, NormalizeParams, {opNormalize}, "normalization")
+accessors(gainCurve, curveParams, GainCurveParams, {opGainCurve}, "gain curve")
+
 # ----------------------------------------------------------------- builders --
 
 func demeanOp*(): Op =
   ## Removes each trace's mean.
-  Op(kind: opDemean)
+  Op(tag: opDemean)
 
 func detrendOp*(): Op =
   ## Removes each trace's least-squares line.
-  Op(kind: opDetrend)
+  Op(tag: opDetrend)
 
 func scaleOp*(factor: float64): Op =
   ## Multiplies by `factor` (finite).
-  Op(kind: opScale, factor: factor)
+  Op(tag: opScale, scaleFactor: factor)
 
 func gainDbOp*(dB: float64): Op =
   ## A fixed gain of `dB` (finite).
-  Op(kind: opGainDb, dB: dB)
+  Op(tag: opGainDb, gainDb: dB)
 
 func clipOp*(lo, hi: float64): Op =
   ## Clips to `lo .. hi` (`lo ≤ hi`, not NaN).
-  Op(kind: opClip, clip: ClipParams(lo: lo, hi: hi))
+  Op(tag: opClip, clipParams: ClipParams(lo: lo, hi: hi))
 
 func polarityOp*(): Op =
   ## Reverses the polarity.
-  Op(kind: opPolarity)
+  Op(tag: opPolarity)
 
 func muteTopOp*(curve: MuteCurve, taperMs = 0.0): Op =
   ## Zeroes each trace before its `curve` time, with a taper of `taperMs`
   ## on the muted side (`muteTop`).
-  Op(kind: opMuteTop, mute: MuteParams(curve: curve, taperMs: taperMs))
+  Op(tag: opMuteTop, muteParams: MuteParams(curve: curve, taperMs: taperMs))
 
 func muteBottomOp*(curve: MuteCurve, taperMs = 0.0): Op =
   ## Zeroes each trace after its `curve` time (`muteBottom`).
-  Op(kind: opMuteBottom, mute: MuteParams(curve: curve, taperMs: taperMs))
+  Op(tag: opMuteBottom, muteParams: MuteParams(curve: curve, taperMs: taperMs))
 
 func filterOp*(spec: FilterSpec, trend = trLinear): Op =
   ## A zero-phase FFT filter with the D4 edge handling (`FilterPlan`).
-  Op(kind: opFilter, filter: FilterParams(spec: spec, trend: trend))
+  Op(tag: opFilter, filterParams: FilterParams(spec: spec, trend: trend))
 
 proc bandPassOp*(corners: Corners, trend = trLinear): Op =
   ## `filterOp(bandPass(corners))`. Raises `ValueError` for corners that
@@ -233,25 +276,25 @@ proc bandPassOp*(corners: Corners, trend = trLinear): Op =
 func iirOp*(spec: FilterSpec, phase = ipZero, trend = trLinear): Op =
   ## A Butterworth biquad filter (`IirPlan`; `spec` from `butterBandPass`,
   ## `butterLowCut` or `butterHighCut`).
-  Op(kind: opIir, iir: IirParams(spec: spec, phase: phase, trend: trend))
+  Op(tag: opIir, iirParams: IirParams(spec: spec, phase: phase, trend: trend))
 
 func agcOp*(windowMs: float64, mode = agcRms, target = 1.0,
     epsilon = 1e-9): Op =
   ## AGC over a centred window of about `windowMs` (`AgcPlan`).
-  Op(kind: opAgc, agc: AgcParams(windowMs: windowMs, mode: mode,
+  Op(tag: opAgc, agcParams: AgcParams(windowMs: windowMs, mode: mode,
     target: target, epsilon: epsilon))
 
 func normalizeOp*(stat: NormStat, scope = perTrace, target = 1.0,
     percentile = 99.0): Op =
   ## Brings `stat` of each trace, or of the panel, to `target`
   ## (`NormalizePlan`).
-  Op(kind: opNormalize, norm: NormalizeParams(stat: stat, scope: scope,
+  Op(tag: opNormalize, normParams: NormalizeParams(stat: stat, scope: scope,
     target: target, percentile: percentile))
 
 func gainCurveOp*(curve: GainCurve, tMinMs = 0.0, tMaxMs = NaN): Op =
   ## A time-variant gain (`GainCurvePlan`), tabulated over `tMinMs ..
   ## tMaxMs` (NaN: to the end of the record).
-  Op(kind: opGainCurve, gainCurve: GainCurveParams(curve: curve,
+  Op(tag: opGainCurve, curveParams: GainCurveParams(curve: curve,
     tMinMs: tMinMs, tMaxMs: tMaxMs))
 
 # ----------------------------------------------------------------- pipeline --
