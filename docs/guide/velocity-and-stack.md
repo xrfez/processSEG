@@ -205,15 +205,23 @@ doAssert fold[1, 50] < 8                # the stretch mute removed far offsets e
 doAssert binning.location(2).cdp == 12
 ```
 
-For threads, give each its own accumulator and `merge` them at the end.
+`stackInto` and `foldInto` copy the stack into your tensors and leave the accumulator
+open for more traces. For a large stack, `acc.finishInto(data, fold, norm)` normalizes in
+place and hands the accumulator's storage over instead, so the stack is held once.
+
+With threads, either correct the traces on the workers and add them on one thread in a
+fixed order (what `bruteStack` does: the sums then do not depend on the threads), or give
+each thread its own accumulator and `merge` them at the end (the last bits of the sums
+then depend on which thread got which trace).
 
 ## A brute stack of a file
 
 `bruteStack` does all of this over a file: it reads through parseSEG's prefetcher
 (`uniform = true`) and, on each decode worker while the chunk is in cache, applies
-optional datum statics, the pre-stack flow (`opts.flow`, a `Pipeline`), NMO onto the
-stack's time axis, and stacks into the trace's bin. Velocities come from a function, or
-from a field read at each bin's location. `writeStack` saves the result as SEG-Y, one
+optional datum statics, the pre-stack flow (`opts.flow`, a `Pipeline`) and NMO onto the
+stack's time axis; the calling thread takes the corrected chunks in file order and stacks
+each trace into its bin. Velocities come from a function, or from a field read at each
+bin's location. `writeStack` saves the result as SEG-Y, one
 trace per bin, whatever the input standard. To write it your own way (other options,
 extra header overrides, some bins only), give parseSEG's `writeTrace(w, keys, samples,
 overrides)` each bin's `stackKeys(res, bin)` and `stackOverrides(res, bin)`: processSEG
@@ -269,13 +277,15 @@ s.close()
 f.close()
 ```
 
-- Run `bruteStack` on a background thread of your own; it blocks until done. With
-  several workers the float sums are added in a varying order: runs agree to rounding,
-  not bit for bit.
+- Run `bruteStack` on a background thread of your own; it blocks until done. The traces
+  are summed in file order whatever `opts.workers` is, so the stack is the same bit for
+  bit for any number of workers (only a `perPanel` normalization in the flow depends on
+  `opts.chunkTraces`).
 - `res.skipped` counts live traces outside every bin or with a NaN offset, `t0Ms` or
   static, no interval, non-finite samples, or fully stretch-muted.
-- Memory: `workers + 1` stacks of bins × samples × (sizeof(T) + 4) bytes, plus the
-  prefetch ring and the flow's scratch; `bruteStackMemory` estimates it. A float32 3D
-  stack of 100 000 bins × 2001 samples is 1.6 GB per copy.
+- Memory: one stack of bins × samples × (sizeof(T) + 4) bytes, whatever the number of
+  workers (the sums are normalized in place and become the result), plus the prefetch
+  ring and each worker's scratch; `bruteStackMemory` estimates it. A float32 3D stack of
+  100 000 bins × 2001 samples is 1.6 GB.
 - 3D: `gridBinning` (a rotated grid of midpoints) or `inlineCrosslineBinning` (header
   numbers), and a 3D `VelocityField`.

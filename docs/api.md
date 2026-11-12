@@ -291,20 +291,21 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 
 | Proc | What |
 |---|---|
-| `StackAccumulator[T]`; `initStackAccumulator[T](bins, samples, dtMs, startMs = 0)`, `stackMemory(T, bins, samples)` | Sums and per-sample folds, `bins × samples × (sizeof(T) + 4)` bytes. |
+| `StackAccumulator[T]`; `initStackAccumulator[T](bins, samples, dtMs, startMs = 0)`, `stackMemory(T, bins, samples)` | Sums and per-sample folds, `bins × samples × (sizeof(T) + 4)` bytes. A copy (`=copy`, `=dup`) is a full copy of the sums. |
 | `acc.bins`, `acc.samples`, `acc.dtMs`, `acc.startMs`, `acc.foldAt(bin, j)`, `acc.sumAt(bin, j)` | Its shape and contents. |
 | `acc.add(bin, x, first = 0, last = -1): bool`, `acc.addLive(bin, x): bool`, `liveSpan(x)` | Add a trace in any order (false: bin < 0 or a non-finite sample, nothing added); `addLive` counts the fold only between the first and last non-zero samples, so mutes do not count. |
 | `acc.merge(other)`, `acc.clear` | Add another thread's share; zero it. |
-| `FoldNorm` (`fnNone`, `fnFold`, `fnSqrtFold`); `acc.stackInto(dst, norm = fnFold)`, `acc.foldInto(dst: var Tensor[int32])` | The normalized stack and the fold into caller tensors `[bins, samples]`. |
+| `FoldNorm` (`fnNone`, `fnFold`, `fnSqrtFold`); `acc.stackInto(dst, norm = fnFold)`, `acc.foldInto(dst: var Tensor[int32])` | The normalized stack and the fold copied into caller tensors `[bins, samples]`; the accumulator stays open. |
+| `acc.finishInto(data, fold, norm = fnFold)` | Ends the accumulation without a copy: the sums are normalized in place and the accumulator's storage is moved into `data` and `fold` (a large stack is held once); `acc` is left with no bins. |
 
 ## batch: brute stack of a file
 
 | Proc | What |
 |---|---|
 | `BruteStackOptions` (`flow`, `useStatics`, `statics`, `staticsInterp`, `nmo`, `norm`, `samples`, `startMs`, `workers`, `chunkTraces`, `maxRingBytes`); `initBruteStackOptions(flow = initPipeline(), nmo = initNmoParams(), norm = fnFold, workers = 1)` | The processing and resources of a job. |
-| `bruteStack(f: SeismicFile, T, [traces: Slice[int],] binning, velocity: VelocityField \| VelocityFunction, opts = initBruteStackOptions(), progress: Progress = nil): StackResult[T]` | Statics, the flow, NMO and stacking inside parseSEG's prefetcher (`uniform = true`), `opts.workers` threads. Blocks; `progress(done, total)` counts traces, and false raises `SegCancelledError`. `ValueError` for a file without keys, mixed intervals, a field that does not suit the binning or bad options. |
+| `bruteStack(f: SeismicFile, T, [traces: Slice[int],] binning, velocity: VelocityField \| VelocityFunction, opts = initBruteStackOptions(), progress: Progress = nil): StackResult[T]` | Statics, the flow and NMO inside parseSEG's prefetcher (`uniform = true`) on `opts.workers` threads; the calling thread stacks the corrected traces in file order, so the result is the same bit for bit for any number of workers. Blocks; `progress(done, total)` counts traces, and false raises `SegCancelledError`. `ValueError` for a file without keys, mixed intervals, a field that does not suit the binning or bad options. |
 | `StackResult[T]` (`data`, `fold`, `binning`, `dtMs`, `startMs`, `stacked`, `skipped`, `failed`) | The stack `[bins, samples]`, its fold and counts. |
-| `bruteStackMemory(T, bins, samples, inSamples, workers, chunkTraces = 256, maxRingBytes = 4 shl 20)` | An estimate of the job's memory in bytes. |
+| `bruteStackMemory(T, bins, samples, inSamples, workers, chunkTraces = 256, maxRingBytes = 4 shl 20)` | An estimate of the job's memory in bytes: one stack (it becomes the result), the prefetch ring and each worker's scratch. |
 | `writeStack(path, res, opts = SegyOutputOptions(traceSorting: 4)): DiagLog` | The stack as SEG-Y, one trace per bin, headers from `TraceKeys` (CDP or bin index, inline/crossline, centre, fold in `numHorzStacked`); empty bins are dead traces. Each trace is `stackKeys` + `stackOverrides`. |
 | `stackKeys(res, bin): TraceKeys` | Bin `bin`'s stacked-trace keys (D14): CDP or bin index, inline/crossline, centre as midpoint, offset 0, `startMs`, `dtMs`, `tsDead` with no fold. For parseSEG's `writeTrace(w, keys, samples, overrides)`. |
 | `stackOverrides(res, bin): array[1, HeaderOverride]` | The fold as `trace.numHorzStacked` (largest per-sample fold, clamped to int16). |

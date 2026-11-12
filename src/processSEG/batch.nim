@@ -8,8 +8,11 @@
 ##
 ## 1. datum statics (optional, `DatumStatics`);
 ## 2. the pre-stack flow, a `Pipeline` (mutes, filters, gain);
-## 3. NMO with a stretch mute, onto the stack's time axis;
-## 4. stacking into the trace's bin, with a per-sample fold (`addLive`).
+## 3. NMO with a stretch mute, onto the stack's time axis.
+##
+## The calling thread takes the corrected chunks in file order and stacks
+## each trace into its bin, with a per-sample fold (the span between its
+## first and last non-zero samples, as `addLive`).
 ##
 ## ```nim
 ## var f = openSeismic("line.sgy", keys = true)
@@ -37,9 +40,11 @@
 ## one channel set), and the stack and the flow are sized by the longest
 ## of them. The traces need not be sorted.
 ##
-## **Reproducibility.** With several workers, which worker stacks which
-## chunk, and so the order of the float sums, changes from run to run: two
-## runs agree to rounding, not bit for bit. One worker is deterministic.
+## **Reproducibility.** The traces are summed in the order of `traces`,
+## whatever the number of workers (the workers correct the traces; one
+## thread stacks them): a stack is the same bit for bit for 1 or 16
+## workers, run after run. A `perPanel` normalization in the flow depends
+## on `chunkTraces`, nothing else does.
 ##
 ## **Cost.** A `VelocityField` is read for a bin whenever a worker moves to
 ## another bin (the last bin's column is cached), so CDP-sorted input reads
@@ -52,13 +57,13 @@
 ## once at the end with `done == total`; returning false stops the workers
 ## and raises parseSEG's `SegCancelledError`.
 ##
-## **Memory.** Each worker owns a full stack accumulator, merged at the
-## end, so the job holds `workers` accumulators, `bins × samples ×
-## (sizeof(T) + 4)` bytes each, plus the result (the same again), the
-## prefetch ring (`maxRingBytes`, at least `workers + 1` chunks, plus the
-## chunk the consumer holds) and each worker's flow scratch
-## (`bruteStackMemory` estimates the total). Use fewer workers for a large
-## 3D stack.
+## **Memory.** The job holds the stack once, `bins × samples × (sizeof(T)
+## + 4)` bytes, whatever the number of workers: the sums are normalized in
+## place and become the result. Besides it: the prefetch ring
+## (`maxRingBytes`, at least `workers + 1` chunks, plus the chunk the
+## consumer holds; a chunk is `chunkTraces` rows of the longer of the input
+## trace and the stack) and each worker's flow scratch (`bruteStackMemory`
+## estimates the total).
 
 import std/[atomics, math]
 import parseSEG
@@ -108,29 +113,29 @@ proc initBruteStackOptions*(flow = initPipeline(), nmo = initNmoParams(),
 
 func bruteStackMemory*(T: typedesc[SampleType], bins, samples, inSamples,
     workers: int, chunkTraces = 256, maxRingBytes = 4 shl 20): int =
-  ## An estimate of the memory a `bruteStack` holds, in bytes: `workers`
-  ## accumulators and the result (`stackMemory` each), the prefetch ring
-  ## and the consumer's chunk, and each worker's scratch (taken as 16 lane
-  ## rows of a 4× padded trace, which bounds the FFT filters' scratch, plus
-  ## 1 MiB for a percentile histogram; a flow of several long filters may
-  ## need more: `plan.workspaceSize` is exact). Raises `OverflowDefect` for
-  ## sizes beyond `int`.
-  let stacks = (workers + 1) * stackMemory(T, bins, samples)
-  let chunk = chunkTraces * inSamples * sizeof(T)
+  ## An estimate of the memory a `bruteStack` holds, in bytes: the stack
+  ## (`stackMemory`, once: it becomes the result), the prefetch ring and
+  ## the consumer's chunk (chunks of `chunkTraces` rows of `max(inSamples,
+  ## samples)` samples), and each worker's scratch (taken as 16 lane rows
+  ## of a 4× padded trace, which bounds the FFT filters' scratch, plus
+  ## 1 MiB for a percentile histogram, a velocity column and an output
+  ## trace; a flow of several long filters may need more:
+  ## `plan.workspaceSize` is exact). Raises `OverflowDefect` for sizes
+  ## beyond `int`.
+  let stack = stackMemory(T, bins, samples)
+  let chunk = chunkTraces * max(inSamples, samples) * sizeof(T)
   let ring = max(maxRingBytes, (workers + 1) * chunk) + chunk
   let scratch = workers * (16 * 4 * inSamples * 8 + (1 shl 20) + 2 * samples * 8)
-  stacks + ring + scratch
+  stack + ring + scratch
 
 type
   VelKind = enum velFunction, velField
 
   WorkerState[T] = object
     ws: Workspace
-    acc: StackAccumulator[T]
-    vel: seq[float64]
-    row: seq[T]
+    vel: seq[float64] # the RMS velocities of bin `lastBin` on the stack's axis
+    row: seq[T]       # one NMO-corrected trace
     lastBin: int
-    stacked, skipped: int
     failed: bool
     msg: array[240, char]
     msgLen: int
@@ -147,6 +152,8 @@ type
     nmo: NmoParams
     dtMs, startMs: float64
     intervalUs: float64
+    inSamples: int          # the flow's row width: the longest live input trace
+    samples: int            # the stack's
     states: ptr UncheckedArray[WorkerState[T]]
     anyFailed: Atomic[bool] # a worker failed: the consumer stops
 
@@ -173,37 +180,74 @@ proc velocityAt[T](job: ptr Job[T], s: var WorkerState[T], bin: int) {.
     of fk3D: job.field[].vrmsInto(loc.inline, loc.crossline, job.startMs,
         job.dtMs, s.vel)
 
-proc stackChunk[T](worker: int, samples: ptr UncheckedArray[T], rows, cols: int,
+func stackable[T](job: ptr Job[T], k: TraceKeys, bin: int): bool {.inline.} =
+  # A live trace is corrected and stacked: it has a bin, an offset, a start
+  # time, the job's interval and, with statics, a static.
+  bin >= 0 and bin < job.binning[].len and not k.offset.isNaN and
+    not k.t0Ms.isNaN and k.intervalUs == job.intervalUs and
+    not (job.useStatics and job.statics.staticMs(k).isNaN)
+
+proc correctChunk[T](worker: int, samples: ptr UncheckedArray[T], rows, cols: int,
     traces: TraceRows, failed: openArray[int], user: pointer) {.nimcall,
     gcsafe, raises: [].} =
+  # The prefetcher's transform, on a decode worker: statics and the flow on
+  # the chunk, then every stackable row NMO-corrected onto the stack's axis,
+  # in place (the first `job.samples` columns of its row). Every other row
+  # is zeroed there, so the consumer finds no live span in it. Nothing here
+  # touches the stack: the consumer adds the rows, in chunk order.
   let job = cast[ptr Job[T]](user)
   template s: untyped = job.states[worker]
   if s.failed or rows == 0: return
   try:
     let meta = initChunkMeta(traces, job.dtMs, 0, failed)
-    let b = rowBlock(samples.toOpenArray(0, rows * cols - 1), rows, cols)
+    let n = job.inSamples
+    # A stack longer than the input widens the rows (cols > n). The flow
+    # sees what it was compiled for, rows of n samples: they are moved to
+    # the front of the chunk first, and corrected from the last row down, so
+    # that a wide output row never covers an input row still to come.
+    if cols > n:
+      for r in 1 ..< rows:
+        moveMem(addr samples[r * n], addr samples[r * cols], n * sizeof(T))
+    let b = rowBlock(samples.toOpenArray(0, rows * n - 1), rows, n)
     if job.useStatics:
       applyStatics(b, meta, job.statics, job.staticsInterp) # NaN: untouched
     {.cast(gcsafe).}:
       job.plan[].apply(b, meta, s.ws)
-    for r in 0 ..< rows:
-      if not meta.isLive(r): continue
+    for r in countdown(rows - 1, 0):
+      let dst = cast[ptr UncheckedArray[T]](addr samples[r * cols])
       let k = meta.keys(r)
-      let bin = job.binning[].binOf(k)
-      if bin < 0 or k.offset.isNaN or k.t0Ms.isNaN or
-          k.intervalUs != job.intervalUs or
-          (job.useStatics and job.statics.staticMs(k).isNaN):
-        inc s.skipped
-        continue
-      {.cast(gcsafe).}:
-        velocityAt(job, s, bin)
-      let n = meta.liveSamples(r, cols)
-      discard nmoInto(b.row(r, n), meta.sampleTimeMs(r, 0), s.row, job.startMs,
-        job.dtMs, k.offset, s.vel, job.nmo)
-      if liveSpan(s.row).len > 0 and s.acc.addLive(bin, s.row): inc s.stacked
-      else: inc s.skipped
+      let bin = if meta.isLive(r): job.binning[].binOf(k) else: -1
+      if job.stackable(k, bin):
+        {.cast(gcsafe).}:
+          velocityAt(job, s, bin)
+        discard nmoInto(b.row(r, meta.liveSamples(r, n)), meta.sampleTimeMs(r, 0),
+          s.row, job.startMs, job.dtMs, k.offset, s.vel, job.nmo)
+        copyMem(dst, addr s.row[0], job.samples * sizeof(T))
+      else:
+        zeroMem(dst, job.samples * sizeof(T))
   except CatchableError as e:
     job.note(s, e.msg)
+
+proc stackChunk[T](acc: var StackAccumulator[T], c: PrefetchChunk[T],
+    binning: Binning, dtMs: float64, stacked, skipped: var int) =
+  # On the calling thread: adds the corrected rows of a chunk to their bins,
+  # in row order. Which rows are live and where they go is decided from the
+  # keys again (the transform has no channel to say so but the samples).
+  if c.count == 0: return
+  let meta = initChunkMeta(c.rows, dtMs, 0, c.failedRows)
+  let b = rowBlock(c.samples)
+  for r in 0 ..< c.count:
+    if meta.isLive(r):
+      let bin = binning.binOf(meta.keys(r))
+      var added = false
+      # No key reaches `add` with a bin outside the stack: its Defect would
+      # end the process.
+      if bin >= 0 and bin < acc.bins:
+        let span = liveSpan(b.row(r, acc.samples))
+        added = span.len > 0 and acc.add(bin, b.row(r, acc.samples), span.a,
+          span.b + 1)
+      if added: inc stacked
+      else: inc skipped
 
 proc liveTraces(f: SeismicFile, traces: Slice[int]): (float64, int) =
   # The one sample interval of the live traces (in µs) and their longest
@@ -254,7 +298,6 @@ proc runStack[T](f: SeismicFile, traces: Slice[int], binning: Binning,
   for s in states.mitems:
     s.ws = initWorkspace()
     s.ws.reserve(plan)
-    s.acc = initStackAccumulator[T](binning.len, samples, dtMs, opts.startMs)
     s.vel = newSeq[float64](samples)
     s.row = newSeq[T](samples)
     s.lastBin = -1
@@ -267,21 +310,29 @@ proc runStack[T](f: SeismicFile, traces: Slice[int], binning: Binning,
   job.dtMs = dtMs
   job.intervalUs = intervalUs
   job.startMs = opts.startMs
+  job.inSamples = inSamples
+  job.samples = samples
   job.states = cast[ptr UncheckedArray[WorkerState[T]]](addr states[0])
+  # One accumulator, on this thread: the workers hand over corrected chunks,
+  # which are added in file order, so the sums are the same for any number
+  # of workers. (An accumulator per worker, merged at the end, held
+  # `workers + 1` stacks and was slower with 8 workers than with 1 on a
+  # stack of 40 000 bins: 846 against 583 ms, 5.7 against 1.3 GB.)
+  var acc = initStackAccumulator[T](binning.len, samples, dtMs, opts.startMs)
+  result = StackResult[T](binning: binning, dtMs: dtMs, startMs: opts.startMs)
   let total = int64(traces.len)
   var done = 0'i64
-  var failed = 0
   block run:
     var p = newPrefetcher[T](f, traces, chunkTraces = opts.chunkTraces,
-      depth = opts.workers + 2, cols = inSamples, workers = opts.workers,
-      maxRingBytes = opts.maxRingBytes, uniform = true,
-      transform = stackChunk[T], user = addr job)
+      depth = opts.workers + 2, cols = max(inSamples, samples),
+      workers = opts.workers, maxRingBytes = opts.maxRingBytes, uniform = true,
+      transform = correctChunk[T], user = addr job)
     defer: p.close()
     var c: PrefetchChunk[T]
-    while p.nextInto(c):
+    while p.nextInto(c) and not job.anyFailed.load:
       done += int64(c.count)
-      failed += c.failed
-      if job.anyFailed.load: break
+      result.failed += c.failed
+      stackChunk(acc, c, binning, dtMs, result.stacked, result.skipped)
       if progress != nil and done < total and not progress(done, total):
         raiseCancelled("bruteStack cancelled")
   for s in states:
@@ -289,17 +340,7 @@ proc runStack[T](f: SeismicFile, traces: Slice[int], binning: Binning,
       var msg = newString(s.msgLen)
       for i in 0 ..< s.msgLen: msg[i] = s.msg[i]
       raise newException(ValueError, "bruteStack: " & msg)
-  for i in 1 ..< states.len:
-    states[0].acc.merge(states[i].acc)
-  result = StackResult[T](binning: binning, dtMs: dtMs, startMs: opts.startMs,
-    data: newTensor[T](binning.len, samples),
-    fold: newTensor[int32](binning.len, samples))
-  states[0].acc.stackInto(result.data, opts.norm)
-  states[0].acc.foldInto(result.fold)
-  result.failed = failed
-  for s in states:
-    result.stacked += s.stacked
-    result.skipped += s.skipped
+  acc.finishInto(result.data, result.fold, opts.norm)
   if progress != nil: discard progress(total, total)
 
 proc checkField(binning: Binning, velocity: VelocityField) =

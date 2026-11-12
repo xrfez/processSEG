@@ -9,6 +9,10 @@
 ##     discard acc.addLive(bins[r], block.row(r))   # block = rowBlock(samples)
 ## var stack = newTensor[float32](acc.bins, acc.samples)
 ## acc.stackInto(stack, fnFold)                  # sum / fold, per sample
+## # or, without a second copy of a large stack:
+## var data: Tensor[float32]
+## var fold: Tensor[int32]
+## acc.finishInto(data, fold, fnFold)            # acc's storage, handed over
 ## ```
 ##
 ## **Fold.** Each bin counts, per sample, the traces that contributed there.
@@ -17,8 +21,9 @@
 ## zeros a top mute, a stretch mute or a bottom mute left (and the zero
 ## padding past a short trace) are not counted as data. Zeros inside the
 ## span count, and so do the samples of a mute's taper, at full weight
-## (a stack under a tapered mute reads a few % low there). A trace with a NaN or infinite sample in its span is not
-## added (it would poison the bin) and `add` returns false.
+## (a stack under a tapered mute reads a few % low there). A trace with a
+## NaN or infinite sample in its span is not added (it would poison the
+## bin) and `add` returns false.
 ##
 ## **Normalization.** `fnFold` divides each sample by its fold (the mean),
 ## `fnSqrtFold` by √fold (balances signal against incoherent noise), and
@@ -27,10 +32,18 @@
 ## **Memory.** A stack costs `bins × samples × (sizeof(T) + 4)` bytes: the
 ## sums in `T` plus an `int32` fold (`stackMemory`). A float32 stack of
 ## 10 000 bins × 2001 samples is 160 MB. Sums of float32 lose about
-## log₂(fold) bits; at fold 1000, 10 of float32's 24.
+## log₂(fold) bits; at fold 1000, 10 of float32's 24. `stackInto` and
+## `foldInto` copy into the caller's tensors (the stack is then held
+## twice); `finishInto` normalizes in place and hands the accumulator's own
+## storage over, so the stack is held once. A copy of an accumulator is a
+## full copy of its sums.
 ##
-## **Threads.** An accumulator is not shared: give each thread its own and
-## `merge` them at the end (`batch.bruteStack` does).
+## **Threads.** An accumulator is not shared. Either one thread adds every
+## trace (`batch.bruteStack`: its workers correct the traces, the calling
+## thread stacks them in file order, so the sums do not depend on the
+## number of workers), or each thread has its own and they are `merge`d at
+## the end (the order of the float sums, and so their last bits, then
+## depends on which thread got which trace).
 
 import std/math
 import parseSEG
@@ -48,8 +61,31 @@ type
     ## documentation. Build it with `initStackAccumulator`.
     bins, samples: int
     dtMs, startMs: float64
-    sum: seq[T]
-    fold: seq[int32]
+    # Tensors, `[bins, samples]`, so that `finishInto` can hand them over.
+    sum: Tensor[T]
+    fold: Tensor[int32]
+
+template ownCopy[U](t: Tensor[U], size: int): Tensor[U] =
+  # Tensors share their storage when copied: an accumulator's copy must not.
+  # (An empty one, or one `finishInto` moved out, has nothing to share.)
+  (if size == 0: t else: t.clone())
+
+proc `=copy`*[T](dst: var StackAccumulator[T], src: StackAccumulator[T]) =
+  ## A copy owns its sums and folds: it is as large as the original.
+  let size = src.bins * src.samples
+  dst.sum = ownCopy(src.sum, size)
+  dst.fold = ownCopy(src.fold, size)
+  dst.bins = src.bins
+  dst.samples = src.samples
+  dst.dtMs = src.dtMs
+  dst.startMs = src.startMs
+
+proc `=dup`*[T](src: StackAccumulator[T]): StackAccumulator[T] =
+  ## As `=copy`.
+  let size = src.bins * src.samples
+  StackAccumulator[T](bins: src.bins, samples: src.samples, dtMs: src.dtMs,
+    startMs: src.startMs, sum: ownCopy(src.sum, size),
+    fold: ownCopy(src.fold, size))
 
 func stackMemory*(T: typedesc[SampleType], bins, samples: int): int =
   ## The bytes a stack of `bins × samples` holds: `sizeof(T) + 4` per sample.
@@ -73,8 +109,14 @@ proc initStackAccumulator*[T: SampleType](bins, samples: int, dtMs: float64,
   if startMs.classify in {fcNan, fcInf, fcNegInf}:
     raise newException(ValueError, "startMs must be finite, got " & $startMs)
   StackAccumulator[T](bins: bins, samples: samples, dtMs: dtMs,
-    startMs: startMs, sum: newSeq[T](bins * samples),
-    fold: newSeq[int32](bins * samples))
+    startMs: startMs, sum: newTensor[T](bins, samples),
+    fold: newTensor[int32](bins, samples))
+
+template sumPtr[T](acc: StackAccumulator[T]): ptr UncheckedArray[T] =
+  cast[ptr UncheckedArray[T]](acc.sum.unsafe_raw_offset(aligned = false))
+
+template foldPtr[T](acc: StackAccumulator[T]): ptr UncheckedArray[int32] =
+  cast[ptr UncheckedArray[int32]](acc.fold.unsafe_raw_offset(aligned = false))
 
 func bins*[T](acc: StackAccumulator[T]): int {.inline, raises: [].} =
   ## The number of bins.
@@ -109,13 +151,13 @@ func foldAt*[T](acc: StackAccumulator[T], bin, sample: int): int {.inline,
   ## outside `0 ..< bins` or a sample outside `0 ..< samples`, with bound
   ## checks on.
   checkAt(acc, bin, sample)
-  int(acc.fold[bin * acc.samples + sample])
+  int(acc.foldPtr[bin * acc.samples + sample])
 
 func sumAt*[T](acc: StackAccumulator[T], bin, sample: int): T {.inline,
     raises: [].} =
   ## The sum at sample `sample` of bin `bin`. An `IndexDefect` as `foldAt`.
   checkAt(acc, bin, sample)
-  acc.sum[bin * acc.samples + sample]
+  acc.sumPtr[bin * acc.samples + sample]
 
 proc accumulate[T](sum: ptr UncheckedArray[T], fold: ptr UncheckedArray[int32],
     x: ptr UncheckedArray[T], n: int) {.noinline, raises: [].} =
@@ -153,8 +195,8 @@ proc add*[T](acc: var StackAccumulator[T], bin: int, x: openArray[T],
   if not allFinite(x, first, last): return false
   if last > first:
     let at = bin * acc.samples + first
-    accumulate(cast[ptr UncheckedArray[T]](addr acc.sum[at]),
-      cast[ptr UncheckedArray[int32]](addr acc.fold[at]),
+    accumulate(cast[ptr UncheckedArray[T]](addr acc.sumPtr[at]),
+      cast[ptr UncheckedArray[int32]](addr acc.foldPtr[at]),
       cast[ptr UncheckedArray[T]](addr x[first]), last - first)
   true
 
@@ -176,6 +218,16 @@ proc addLive*[T](acc: var StackAccumulator[T], bin: int,
   let s = liveSpan(x)
   acc.add(bin, x, s.a, s.b + 1)
 
+proc mergeInto[T](sum {.noalias.}: ptr UncheckedArray[T],
+    fold {.noalias.}: ptr UncheckedArray[int32], other: ptr UncheckedArray[T],
+    otherFold: ptr UncheckedArray[int32], n: int) {.noinline, raises: [].} =
+  ## `sum[i] += other[i]`, `fold[i] += otherFold[i]` for `i < n`.
+  {.push boundChecks: off, overflowChecks: off.}
+  for i in 0 ..< n:
+    sum[i] = sum[i] + other[i]
+    fold[i] = fold[i] + otherFold[i]
+  {.pop.}
+
 proc merge*[T](acc: var StackAccumulator[T], other: StackAccumulator[T]) =
   ## Adds the sums and folds of `other` into `acc` (another thread's share
   ## of the same stack). Raises `ValueError` unless they have the same bins,
@@ -185,17 +237,16 @@ proc merge*[T](acc: var StackAccumulator[T], other: StackAccumulator[T]) =
     raise newException(ValueError, "merging a " & $other.bins & " × " &
       $other.samples & " stack into a " & $acc.bins & " × " & $acc.samples &
       " one, or with another time axis")
-  {.push boundChecks: off, overflowChecks: off.}
-  for i in 0 ..< acc.sum.len:
-    acc.sum[i] = acc.sum[i] + other.sum[i]
-    acc.fold[i] = acc.fold[i] + other.fold[i]
-  {.pop.}
+  let n = acc.bins * acc.samples
+  if n > 0:
+    mergeInto(acc.sumPtr, acc.foldPtr, other.sumPtr, other.foldPtr, n)
 
 proc clear*[T](acc: var StackAccumulator[T]) {.raises: [].} =
   ## Zeroes every sum and fold (the storage is kept).
-  if acc.sum.len > 0:
-    zeroMem(addr acc.sum[0], acc.sum.len * sizeof(T))
-    zeroMem(addr acc.fold[0], acc.fold.len * sizeof(int32))
+  let n = acc.bins * acc.samples
+  if n > 0:
+    zeroMem(acc.sumPtr, n * sizeof(T))
+    zeroMem(acc.foldPtr, n * sizeof(int32))
 
 proc checkDst(acc: StackAccumulator, dst: Tensor) =
   if dst.rank != 2 or dst.shape[0] != acc.bins or dst.shape[1] != acc.samples:
@@ -204,30 +255,56 @@ proc checkDst(acc: StackAccumulator, dst: Tensor) =
   if not dst.is_C_contiguous:
     raise newException(ValueError, "dst must be C-contiguous (row-major)")
 
+proc normalize[T](x {.noalias.}: ptr UncheckedArray[T],
+    fold: ptr UncheckedArray[int32], n: int, norm: FoldNorm) {.noinline,
+    raises: [].} =
+  ## The sums `x` into the stack, in place. A sum of fold 0 is 0 (nothing
+  ## was added there), so dividing by `max(fold, 1)` needs no branch: the
+  ## loops are straight-line and vectorize.
+  {.push boundChecks: off, overflowChecks: off.}
+  case norm
+  of fnNone: discard
+  of fnFold:
+    for i in 0 ..< n:
+      x[i] = T(float64(x[i]) / float64(max(fold[i], 1)))
+  of fnSqrtFold:
+    for i in 0 ..< n:
+      x[i] = T(float64(x[i]) / sqrt(float64(max(fold[i], 1))))
+  {.pop.}
+
 proc stackInto*[T](acc: StackAccumulator[T], dst: var Tensor[T],
     norm = fnFold) =
   ## The stack, `[bins, samples]`, into `dst` (allocated by the caller),
-  ## normalized by `norm`. Raises `ValueError` when `dst` has another shape
-  ## or is not C-contiguous. Allocates nothing.
+  ## normalized by `norm`; `acc` is left as it is, so more traces can be
+  ## added. Raises `ValueError` when `dst` has another shape or is not
+  ## C-contiguous. Allocates nothing.
   checkDst(acc, dst)
-  if acc.sum.len == 0: return
+  let n = acc.bins * acc.samples
+  if n == 0: return
   let d = cast[ptr UncheckedArray[T]](dst.unsafe_raw_offset(aligned = false))
-  {.push boundChecks: off.}
-  for i in 0 ..< acc.sum.len:
-    let f = acc.fold[i]
-    d[i] =
-      case norm
-      of fnNone: acc.sum[i]
-      of fnFold: (if f > 0: T(float64(acc.sum[i]) / float64(f)) else: T(0))
-      of fnSqrtFold: (if f > 0: T(float64(acc.sum[i]) / sqrt(float64(
-          f))) else: T(0))
-  {.pop.}
+  copyMem(d, acc.sumPtr, n * sizeof(T))
+  normalize(d, acc.foldPtr, n, norm)
 
 proc foldInto*[T](acc: StackAccumulator[T], dst: var Tensor[int32]) =
   ## The per-sample fold, `[bins, samples]`, into `dst`. Raises `ValueError`
   ## as `stackInto`.
   checkDst(acc, dst)
-  if acc.fold.len > 0:
-    copyMem(cast[pointer](dst.unsafe_raw_offset(aligned = false)),
-        addr acc.fold[0],
-      acc.fold.len * sizeof(int32))
+  let n = acc.bins * acc.samples
+  if n > 0:
+    copyMem(cast[pointer](dst.unsafe_raw_offset(aligned = false)), acc.foldPtr,
+      n * sizeof(int32))
+
+proc finishInto*[T](acc: var StackAccumulator[T], data: var Tensor[T],
+    fold: var Tensor[int32], norm = fnFold) {.raises: [].} =
+  ## Ends the accumulation without a copy: normalizes the sums in place by
+  ## `norm` (as `stackInto` does into a copy) and moves the stack into
+  ## `data` and its fold into `fold`, both `[bins, samples]`, replacing
+  ## what they held. `acc` is left with no bins (`add` then finds no bin to
+  ## add to). A large stack is thus held once, where `stackInto` with
+  ## `foldInto` holds it twice. Allocates nothing.
+  let n = acc.bins * acc.samples
+  if n > 0:
+    normalize(acc.sumPtr, acc.foldPtr, n, norm)
+  data = move(acc.sum)
+  fold = move(acc.fold)
+  acc.bins = 0

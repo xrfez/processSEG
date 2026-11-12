@@ -1,9 +1,10 @@
 ## Brute stack (batch): a synthetic pre-stack SEG-Y line (split-spread
 ## shots over topography, signed offsets, header CDPs) stacked with NMO,
-## statics and a flow; the fold per bin, the peaks of the reflectors, 1 vs
-## 3 workers, a trace subset, a 2D field, progress and cancel, errors, and
-## parseSEG's demo files (post-stack SEG-Y reproduced exactly, SEG-D and
-## SEG-2 runs). Memory bound arithmetic.
+## statics and a flow; the fold per bin, the peaks of the reflectors, the
+## same bits for 1 to 8 workers and as a stack by hand in file order (also
+## onto a longer time axis), a trace subset, a 2D field, progress and
+## cancel, errors, and parseSEG's demo files (post-stack SEG-Y reproduced
+## exactly, SEG-D and SEG-2 runs). Memory bound arithmetic.
 
 import std/[assertions, math, options, os, random]
 import processSEG
@@ -116,17 +117,91 @@ block stack_of_a_synthetic_line:
         doAssert abs(a - 1) <= 0.03, $b & " " & $t0 & " " & $a
   doAssert res.binning.location(0).cdp == 1
 
-block workers_and_subset:
+block same_bits_for_any_worker_count:
+  # The workers correct the traces; the calling thread stacks them in file
+  # order: the sums, and so the stack, do not depend on how many workers
+  # there are or on which took which chunk (15 chunks here). With an
+  # accumulator per worker they agreed to rounding only.
+  for (path, withFlow) in [(flat.path, false), (topo.path, true)]:
+    var f = openSeismic(path, keys = true)
+    var opts = initBruteStackOptions()
+    opts.chunkTraces = 16
+    if withFlow:
+      opts.flow = initPipeline([bandPassOp(Corners(f1: 3, f2: 6, f3: 60,
+          f4: 80)), agcOp(300)])
+      opts.useStatics = true
+      opts.statics = datumStatics(100, 2000)
+      opts.nmo = initNmoParams(siCubic, maxStretch = 0.5, taperMs = 20)
+      opts.norm = fnSqrtFold
+    let field = initVelocityField([1.0, float64(cdps) / 2, float64(cdps)], [vel,
+        gradientVelocity(1900, 500), vel], dtMs = 4, tMaxMs = 2400)
+    let one = bruteStack(f, float32, binning, vel, opts)
+    let oneField = bruteStack(f, float32, binning, field, opts)
+    doAssert one.stacked == flat.traces and one.data != oneField.data
+    for workers in [2, 4, 8]:
+      opts.workers = workers
+      for run in 0 ..< 2:
+        let res = bruteStack(f, float32, binning, vel, opts)
+        doAssert res.data == one.data and res.fold == one.fold, $workers
+        doAssert res.stacked == one.stacked and res.skipped == one.skipped
+      let byField = bruteStack(f, float32, binning, field, opts)
+      doAssert byField.data == oneField.data and byField.fold == oneField.fold
+
+proc byHand(f: var SeismicFile, flow: Pipeline, chunkTraces, samples: int,
+    startMs: float64, binning: Binning): Tensor[float32] =
+  ## The stack of the whole file with the public kernels, trace by trace in
+  ## file order: datum statics, the flow in blocks of `chunkTraces` rows,
+  ## linear NMO onto the stack's axis, addLive.
+  let n = f.len
+  var raw = newTensor[float32](n, ns)
+  discard f.readTracesInto(0 ..< n, raw)
+  let meta = chunkMeta(f, 0 ..< n)
+  raw.applyStatics(meta, datumStatics(100, 2000))
+  let plan = flow.compile(float32, dt, ns)
+  var ws = initWorkspace()
+  ws.reserve(plan)
+  let b = rowBlock(raw)
+  var a = 0
+  while a < n:
+    let rows = a ..< min(n, a + chunkTraces)
+    plan.apply(b.sub(rows), meta.sub(rows), ws)
+    a += chunkTraces
+  var velocities = newSeq[float64](samples)
+  vel.vrmsInto(startMs, dt, velocities)
+  var row = newSeq[float32](samples)
+  var acc = initStackAccumulator[float32](binning.len, samples, dt, startMs)
+  for r in 0 ..< n:
+    discard nmoInto(b.row(r), meta.sampleTimeMs(r, 0), row, startMs, dt,
+      meta.keys(r).offset, velocities, initNmoParams())
+    doAssert acc.addLive(binning.binOf(meta.keys(r)), row)
+  result = newTensor[float32](binning.len, samples)
+  acc.stackInto(result)
+
+block equals_the_stack_by_hand:
+  # bruteStack is the stack of the traces in file order, bit for bit: on
+  # the input's time axis, and on a longer one that starts earlier (the
+  # chunk rows are then wider than the traces the flow sees).
+  var f = openSeismic(topo.path, keys = true)
+  let flow = initPipeline([bandPassOp(Corners(f1: 3, f2: 6, f3: 60, f4: 80))])
+  for (samples, startMs) in [(ns, 0.0), (ns + 300, -100.0), (ns div 2, 200.0)]:
+    let want = byHand(f, flow, 16, samples, startMs, binning)
+    for workers in [1, 3]:
+      var opts = initBruteStackOptions(flow = flow, workers = workers)
+      opts.chunkTraces = 16
+      opts.useStatics = true
+      opts.statics = datumStatics(100, 2000)
+      opts.samples = samples
+      opts.startMs = startMs
+      let res = bruteStack(f, float32, binning, vel, opts)
+      doAssert res.data.shape == [cdps, samples] and res.startMs == startMs
+      doAssert res.stacked == topo.traces
+      doAssert res.data == want, $samples & " " & $workers
+
+block subset_and_field:
   var f = openSeismic(flat.path, keys = true)
-  var opts = initBruteStackOptions()
+  var opts = initBruteStackOptions(workers = 3)
   opts.chunkTraces = 32 # several chunks per worker
-  let one = bruteStack(f, float32, binning, vel, opts)
-  opts.workers = 3
   let three = bruteStack(f, float32, binning, vel, opts)
-  doAssert three.stacked == one.stacked and three.fold == one.fold
-  for b in 0..<cdps:
-    for j in 0..<ns:
-      doAssert abs(three.data[b, j] - one.data[b, j]) <= 1e-5
   # The first three shots only.
   let part = bruteStack(f, float32, 0 ..< 72, binning, vel, opts)
   doAssert part.stacked == 72
@@ -317,13 +392,19 @@ block skipped_traces:
   doAssert muted.stacked == 0 and muted.skipped == flat.traces
 
 block memory_bound:
+  # One stack, whatever the number of workers (there were workers + 1).
   let m = bruteStackMemory(float32, bins = 1000, samples = 2001,
     inSamples = 2001, workers = 4)
-  doAssert m >= 5 * stackMemory(float32, 1000, 2001)
   let chunk = 256 * 2001 * 4
   let ring = max(4 shl 20, 5 * chunk) + chunk
   let scratch = 4 * (16 * 4 * 2001 * 8 + (1 shl 20) + 2 * 2001 * 8)
-  doAssert m == 5 * stackMemory(float32, 1000, 2001) + ring + scratch
+  doAssert m == stackMemory(float32, 1000, 2001) + ring + scratch
+  let big = stackMemory(float32, 100_000, 2001)
+  doAssert bruteStackMemory(float32, 100_000, 2001, 2001, workers = 8) -
+    bruteStackMemory(float32, 100_000, 2001, 2001, workers = 1) < big div 4
+  # A stack longer than the input widens the chunks.
+  doAssert bruteStackMemory(float32, 10, 4000, 2001, 1) -
+    bruteStackMemory(float32, 10, 2001, 2001, 1) >= 2 * 256 * 1999 * 4
   # The scratch term bounds what a typical flow reserves.
   let plan = initPipeline([bandPassOp(Corners(f1: 4, f2: 8, f3: 60, f4: 80)),
     agcOp(500), normalizeOp(normPercentile, perPanel)]).compile(float32, 2, 2001)

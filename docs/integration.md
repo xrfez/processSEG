@@ -436,19 +436,19 @@ the file through parseSEG's prefetcher (`uniform = true`). On each chunk, in the
 prefetcher's `transform` hook on its decode worker, it runs datum statics (optional,
 `opts.useStatics` and `opts.statics = datumStatics(datumZ, vReplacement)`), the pre-stack
 flow (`opts.flow`, a `Pipeline`: mutes, filters, gain), NMO with a stretch mute
-(`opts.nmo = initNmoParams(interp, maxStretch, taperMs)`) onto the stack's time axis, and
-accumulates each live trace into its bin. Stacking is linear and needs no sort; the fold
-is counted per sample, between each trace's first and last non-zero samples, so muted
-zeros do not count.
+(`opts.nmo = initNmoParams(interp, maxStretch, taperMs)`) onto the stack's time axis. The
+calling thread takes the corrected chunks in file order and adds each live trace to its
+bin. Stacking is linear and needs no sort; the fold is counted per sample, between each
+trace's first and last non-zero samples, so muted zeros do not count.
 
 - **Bins:** `cdpBinning` (header CDP), `lineBinning` (midpoints projected onto a line),
   `gridBinning` (a rotated 3D grid) or `inlineCrosslineBinning` (header numbers).
 - **Velocities:** a `VelocityFunction` for every bin, or a `VelocityField` read at each
   bin's location: its CDP number in 2D, its inline and crossline in 3D
   (`binning.location(bin)`).
-- **Threads:** `opts.workers` prefetch workers, each with its own `Workspace` and
-  `StackAccumulator`, merged at the end; everything is allocated on the calling thread
-  before the workers start.
+- **Threads:** `opts.workers` prefetch workers, each with its own `Workspace`, correct
+  the traces; the calling thread owns the one `StackAccumulator` and adds the chunks in
+  order. Everything is allocated on the calling thread before the workers start.
 - **Progress and cancel:** `progress(done, total)` (parseSEG's `Progress`) after every
   chunk, on the calling thread; returning false stops the workers and raises
   `SegCancelledError`. A viewer runs `bruteStack` on a background thread of its own.
@@ -456,11 +456,12 @@ zeros do not count.
   not), `fold` (`[bins, samples]`, int32), `binning`, `dtMs`, `startMs`, `stacked`,
   `skipped` (live traces outside every bin, with a NaN offset, t0 or static, no
   interval, non-finite samples, or fully stretch-muted) and `failed` (traces that could
-  not be decoded). With several workers the sums are added in a varying order: runs agree
-  to rounding, not bit for bit.
-- **Memory:** `workers + 1` stacks of bins × samples × (sizeof(T) + 4) bytes, plus the
-  prefetch ring and the flow's scratch (`bruteStackMemory`). A float32 3D stack of
-  100 000 bins × 2001 samples is 1.6 GB per copy: use one or two workers for it.
+  not be decoded). The traces are summed in file order: the stack is the same bit for
+  bit for any number of workers, run after run.
+- **Memory:** one stack of bins × samples × (sizeof(T) + 4) bytes, whatever the number
+  of workers (the sums are normalized in place and become the result), plus the prefetch
+  ring and each worker's scratch (`bruteStackMemory`). A float32 3D stack of 100 000
+  bins × 2001 samples is 1.6 GB.
 
 The viewer shows the result as an in-memory dataset; processSEG describes results and
 parseSEG writes them (D14): `stackKeys(res, bin)` and `stackOverrides(res, bin)` give each

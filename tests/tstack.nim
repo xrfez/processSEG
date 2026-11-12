@@ -136,6 +136,52 @@ block normalizations:
   var wrongFold = newTensor[int32](1, 4)
   doAssertRaises ValueError: acc.foldInto(wrongFold)
 
+block finish_without_a_copy:
+  # finishInto gives the stack and fold stackInto and foldInto give, from
+  # the accumulator's own storage, for every normalization and both types.
+  proc check[T](norm: FoldNorm) =
+    var rng = initRand(9)
+    var acc = initStackAccumulator[T](5, 40, dt)
+    var x = newSeq[T](40)
+    for i in 0..<60:
+      for j in 0..<40: x[j] = T(rng.rand(-64..64)) / 16
+      doAssert acc.add(rng.rand(0..3), x, rng.rand(0..15), rng.rand(20..40))
+    var want = newTensor[T](5, 40)
+    var wantFold = newTensor[int32](5, 40)
+    acc.stackInto(want, norm)
+    acc.foldInto(wantFold)
+    let copy = acc # a copy owns its sums: finishing one leaves the other
+    var data = newTensor[T](1, 1) # replaced, whatever it held
+    var fold: Tensor[int32]
+    doAssert allocsIn(acc.finishInto(data, fold, norm)) == 0
+    doAssert data == want and fold == wantFold
+    doAssert data.shape == [5, 40] and wantFold[4, 0] == 0 and data[4, 7] == 0
+    doAssert acc.bins == 0 and not acc.add(-1, x)
+    when not defined(addressSanitizer):
+      doAssertRaises AssertionDefect: discard acc.add(0, x) # no bins left
+    doAssert copy.bins == 5 and copy.sumAt(1, 20) != 0
+    var again = newTensor[T](5, 40)
+    copy.stackInto(again, norm)
+    doAssert again == want
+    var finished = acc # a finished accumulator still copies and clears
+    finished.clear
+    doAssert finished.bins == 0
+  for norm in [fnNone, fnFold, fnSqrtFold]:
+    check[float32](norm)
+    check[float64](norm)
+  # A copy does not share the original's sums.
+  var a = initStackAccumulator[float32](1, 3, dt)
+  doAssert a.add(0, [1'f32, 2, 3])
+  var b = a
+  doAssert b.add(0, [1'f32, 1, 1])
+  doAssert a.sumAt(0, 0) == 1 and a.foldAt(0, 0) == 1
+  doAssert b.sumAt(0, 0) == 2 and b.foldAt(0, 0) == 2
+  var none = initStackAccumulator[float32](0, 3, dt)
+  var data: Tensor[float32]
+  var fold: Tensor[int32]
+  none.finishInto(data, fold)
+  doAssert data.size == 0 and fold.size == 0
+
 block refused_traces:
   var acc = initStackAccumulator[float32](2, 4, dt)
   doAssert not acc.add(-1, [1'f32, 1, 1, 1]) # no bin
