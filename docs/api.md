@@ -361,6 +361,19 @@ Data in: a parseSEG `SurveyGeometry` (R and S records for the grid; X or O relat
 | `addFold(m, meta \| rows)` | Adds the live traces (D12: live or unknown status, not a failed row), in any order and chunking: midpoint `cmpX/cmpY`, else half-way between `srcX/srcY` and `rcvX/rcvY` (parseSEG `applySurvey` fills them); offset from the coordinates, else `\|offset\|`; bearing from the coordinates only. Header binnings use `binOf`. No allocation; the rows overload raises `ValueError` without keys. |
 | `foldDifference(preplot, actual): Tensor[int32]` | Pre-plot − actual per bin (`[inlines, crosslines]`): positive where traces are missing, negative where traces fall that the pre-plot has fewer of (geometry errors). `ValueError` for maps over different bins. |
 
+## qc/record: field records against the XPS
+
+Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (`ChunkMeta` or `TraceRows`).
+
+| Proc | What |
+|---|---|
+| `RecordMatch` (`rmAuto`, `rmSourceStation`, `rmFieldRecord`), `TraceMatch` (`tmAuto`, `tmStation`, `tmChannel`) | How the X record is found (header source station via `recordsAt`, the FFID choosing among repeats; or the FFID) and how traces match it (receiver station; or channel). Auto: by station when the headers have one. |
+| `StationRange` (`line`, `firstPoint`, `lastPoint`, `count`), `LineCompleteness` (`line`, `expected`, `live`, `missing`) | Consecutive missing X stations on a line; one receiver line's counts. |
+| `RecordCompleteness` (`fieldRecord`, `source`, `hasSource`, `recordMatch`, `traceMatch`, `xpsRecord`, `candidates`, `xpsSource`, `recordMismatch`, `sourceMismatch`, `traces`, `live`, `dead`, `aux`, `failed`, `expected`, `present`, `presentLive`, `unlisted`, `duplicates`, `channelMismatch`, `noStation`, `missing`, `lines`), `missingStations(c)`, `$` | One record: the X record (−1: none or ambiguous) with the other key checked (`recordMismatch`: X number ≠ FFID; `sourceMismatch`: X source ≠ header source), trace counts, station counts (multi-component channels count once), missing ranges, per-line counts; differing channel numbers are informational. |
+| `recordCompleteness(g, meta \| rows, recordMatch = rmAuto, traceMatch = tmAuto)` | Hashes the data's stations once, walks the X record's stations once. Failed rows (meta) are present, not live. The rows overload raises `ValueError` without keys. |
+| `CompletenessSummary` (`records`, `matched`, `unmatched`, `ambiguous`, `recordMismatches`, `sourceMismatches`, `xpsWithoutData`, `expected`, `present`, `presentLive`, `missing`, `unlisted`, `duplicates`), `summarize(g, records)` | Totals over many records, and the X records none matched. |
+| `$`(StationKey) | `line/point`, `.index` when above 1. |
+
 ## pipeline: `Op`, `Pipeline`, `PipelinePlan`
 
 | Proc | What |
