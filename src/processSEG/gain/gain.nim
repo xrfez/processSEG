@@ -287,8 +287,9 @@ proc initAgcPlan*(windowMs, dtMs: float64, samples: int, mode = agcRms,
   if h < 1:
     badArg("an AGC window of " & $windowMs & " ms is under 3 samples at " &
       $dtMs & " ms")
-  if h > float64(int32.high):
-    badArg("an AGC window of " & $windowMs & " ms is too long")
+  if h > float64(1 shl 26): # its two tables hold 2h + 2 values each
+    badArg("an AGC window of " & $windowMs & " ms is too long (" & $h &
+      " samples each side; at most 2²⁶)")
   if not target.finitePositive:
     badArg("an AGC target must be finite and positive, got " & $target)
   if not epsilon.finitePositive:

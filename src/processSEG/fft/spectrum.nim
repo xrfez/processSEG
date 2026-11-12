@@ -118,6 +118,10 @@ func windowLen*[T](sp: SpectrumPlan[T]): int {.inline, raises: [].} =
   ## The window length in samples.
   sp.taper.len
 
+func dtMs*[T](sp: SpectrumPlan[T]): float64 {.inline, raises: [].} =
+  ## The sample interval the plan was built for.
+  sp.dtMs
+
 func nfft*[T](sp: SpectrumPlan[T]): int {.inline, raises: [].} =
   ## The FFT length (the window plus zero padding).
   sp.fft.len

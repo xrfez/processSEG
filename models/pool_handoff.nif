@@ -2,8 +2,8 @@
  (H1) a worker misses a job or runs one twice, so the caller returns early or a
  job runs on stale context; (H2) a wake-up is lost, so the caller waits forever
  on done, or destroy joins a worker that sleeps forever on wake.
- Source: src/processSEG/core/pool.nim: workerLoop 96-116, run 143-154,
- =destroy 72-82. Every lock-held region is one action; waiting on a condition
+ Source: src/processSEG/core/pool.nim: workerLoop, run,
+ =destroy. Every lock-held region is one action; waiting on a condition
  releases the lock atomically, and a woken thread contends for it again (pc 4 for
  workers, cpc 2 for the caller). Spurious wake-ups are allowed everywhere.
  Two workers, at most J jobs; the caller may destroy at any idle point (also
@@ -47,7 +47,7 @@
           (unchanged wpc.0.)))
       (prime wpc.0. WakeAll.0.)))
 
-  (def :CallerPost.0.#run 146-153: under the lock, publish the job, broadcast, and wait on done (pending > 0).#
+  (def :CallerPost.0.#run: under the lock, publish the job, broadcast, and wait on done (pending > 0).#
     (and Ok.0. (eq cpc.0. 0) (not stop.0.) (lt jobId.0. J.0.)
       (prime pending.0. 2) (prime jobId.0. (plus jobId.0. 1))
       Wake.0. (prime cpc.0. 1)))
@@ -55,7 +55,7 @@
   (def :CallerWoken.0.#A spurious wake-up of the caller (signals come from WorkerDone).#
     (and Ok.0. (eq cpc.0. 1) (prime cpc.0. 2)))
 
-  (def :CallerRecheck.0.#run 152-154: woken, holds the lock: wait again while pending > 0 (Mut 3: return).#
+  (def :CallerRecheck.0.#run: woken, holds the lock: wait again while pending > 0 (Mut 3: return).#
     (and Ok.0. (eq cpc.0. 2)
       (if (and (gt pending.0. 0) (not (eq Mut.0. 3)))
         (prime cpc.0. 1)
@@ -63,16 +63,16 @@
           (if (forall :w.0 Workers.0. (eq (apply runs.0. w.0) jobId.0.))
             (unchanged err.0.) (prime err.0. 1))))))
 
-  (def :CallerStop.0.#=destroy 77-80: under the lock, stop and broadcast; then join.#
+  (def :CallerStop.0.#=destroy: under the lock, stop and broadcast; then join.#
     (and Ok.0. (eq cpc.0. 0) (not stop.0.)
       (prime stop.0. (true)) Wake.0. (prime cpc.0. 3)))
 
-  (def :CallerJoined.0.#=destroy 81-82: every joinThread returns.#
+  (def :CallerJoined.0.#=destroy: every joinThread returns.#
     (and Ok.0. (eq cpc.0. 3)
       (forall :w.0 Workers.0. (eq (apply wpc.0. w.0) 9))
       (prime cpc.0. 4)))
 
-  (def :WorkerCheck.0.#workerLoop 101-110, holding the lock: wait while no stop and no new job; exit on stop; else take the job.#
+  (def :WorkerCheck.0.#workerLoop, holding the lock: wait while no stop and no new job; exit on stop; else take the job.#
     (and (or (eq (apply wpc.0. W.0.) 0) (eq (apply wpc.0. W.0.) 4))
       (if (and (or (not stop.0.) (eq Mut.0. 2)) (eq jobId.0. (apply seen.0. W.0.)))
         (prime wpc.0. (except wpc.0. (mapsto W.0. 2)))
@@ -88,14 +88,14 @@
           (prime wpc.0. (except wpc.0. (mapsto W.0. 3))))
         (prime wpc.0. (except wpc.0. (mapsto W.0. 4))))))
 
-  (def :WorkerRun.0.#workerLoop 111: fn runs unlocked, on the job it took.#
+  (def :WorkerRun.0.#workerLoop: fn runs unlocked, on the job it took.#
     (and (eq (apply wpc.0. W.0.) 3)
       (prime runs.0. (except runs.0. (mapsto W.0. (plus (apply runs.0. W.0.) 1))))
       (prime wpc.0. (except wpc.0. (mapsto W.0. 5)))
       (if (gt (plus (apply runs.0. W.0.) 1) jobId.0.) (prime err.0. 2)
         (if stop.0. (prime err.0. 4) (unchanged err.0.)))))
 
-  (def :WorkerDone.0.#workerLoop 112-116, holding the lock: dec pending; the last one signals done (Mut 4: no signal).#
+  (def :WorkerDone.0.#workerLoop, holding the lock: dec pending; the last one signals done (Mut 4: no signal).#
     (and (eq (apply wpc.0. W.0.) 5)
       (prime pending.0. (minus pending.0. 1))
       (prime wpc.0. (except wpc.0. (mapsto W.0. 0)))

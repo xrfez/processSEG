@@ -114,6 +114,25 @@ block workspace_grows_only:
   doAssert a + b == WorkspaceSize(f32: 7, f64: 6)
   doAssert max(a, b) == WorkspaceSize(f32: 4, f64: 5)
 
+block reserve_for_any_plan:
+  # `ws.reserve(plan)` is `ws.reserve(plan.workspaceSize)` for every plan
+  # type, not the pipeline's alone.
+  var ws = initWorkspace()
+  let fft = initFftPlan(float32, 1024)
+  ws.reserve(fft)
+  doAssert ws.fits(fft.workspaceSize)
+  let filter = initFilterPlan(float32, lowCut(2, 4), 2, 1000)
+  let iir = initIirPlan(float32, butterLowCut(3), 2, 1000)
+  let agc = initAgcPlan(500, 2, 1000)
+  let flow = initPipeline([demeanOp(), agcOp(windowMs = 300)]).compile(float32, 2, 1000)
+  ws.reserve(filter)
+  ws.reserve(iir)
+  ws.reserve(agc)
+  ws.reserve(flow)
+  doAssert ws.fits(filter.workspaceSize) and ws.fits(iir.workspaceSize) and
+    ws.fits(agc.workspaceSize) and ws.fits(flow.workspaceSize)
+  doAssert iir.dtMs == 2
+
 block scratch_regions:
   var ws = initWorkspace()
   ws.reserve(WorkspaceSize(f32: 10, f64: 8))

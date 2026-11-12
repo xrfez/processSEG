@@ -100,7 +100,7 @@ and the failed rows. It copies no header value.
 |---|---|
 | `WorkspaceSize` (`f32`, `f64`, `u32`: element counts); `a + b`, `max(a, b)` | The scratch a plan needs; `+` for buffers used together, `max` for steps run one after another. |
 | `Workspace`; `initWorkspace()` | Grow-only per-thread scratch; cannot be copied (move it into its thread). |
-| `ws.reserve(size)`, `ws.capacity`, `ws.fits(size)` | Grow to hold `size` (a no-op when it does; contents not kept; `ValueError` for a negative size); what it holds; whether `reserve` would allocate. |
+| `ws.reserve(size)`, `ws.reserve(plan)`, `ws.capacity`, `ws.fits(size)` | Grow to hold `size`, or what any plan with a `workspaceSize` needs (a no-op when it does; contents not kept; `ValueError` for a negative size); what it holds; whether `reserve` would allocate. |
 | `ws.scratch(float32 \| float64 \| uint32, n, at = 0): ptr UncheckedArray[T]` | `n` elements from element `at`, for your own kernels; valid until the next `reserve`. |
 
 ## core/basic: demean, detrend, scale, clip, polarity, pad taper
@@ -397,7 +397,7 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 | `demeanOp()`, `detrendOp()`, `scaleOp(factor)`, `gainDbOp(dB)`, `clipOp(lo, hi)`, `polarityOp()`, `muteTopOp(curve, taperMs = 0)`, `muteBottomOp(curve, taperMs = 0)`, `filterOp(spec, trend = trLinear)`, `bandPassOp(corners, trend)`, `iirOp(spec, phase = ipZero, trend)`, `agcOp(windowMs, mode, target, epsilon)`, `normalizeOp(stat, scope, target, percentile)`, `gainCurveOp(curve, tMinMs = 0, tMaxMs = NaN)` | The builders; nothing is checked until `compile` (`bandPassOp` checks its corners). |
 | `Pipeline`; `initPipeline(ops = [])`, `p.len`, `p[i]` (`[]`, also `var`), `p[i] = op` (`[]=`), `p.add(op)`, `p.insert(op, i)`, `p.delete(i)`, `p.clear`, `items`, `pairs` | An ordered, editable list of ops. |
 | `PipelinePlan[T]`; `p.compile(T, dtMs, samples, recordSamples = 0)` | Validate and precompute every op for blocks up to `samples` wide; `ValueError` names the op (`op 1 (opFilter): ...`). `recordSamples`: the trace length when `samples` is a zoom window's width, so that gain-curve tables cover the whole record (`plan.recordSamples`). |
-| `plan.generation`, `plan.dtMs`, `plan.samples`, `plan.len`, `plan.requiredMargin`, `plan.workspaceSize`, `ws.reserve(plan)` | A plan's id (never 0, increasing), size, zoom margin (sum of the ops'), scratch. Any block up to `samples` wide works. |
+| `plan.generation`, `plan.dtMs`, `plan.samples`, `plan.recordSamples`, `plan.len`, `plan.requiredMargin`, `plan.workspaceSize`, `ws.reserve(plan)` | A plan's id (never 0, increasing), size, zoom margin (sum of the ops'), scratch. Any block up to `samples` wide works. |
 | `p.requiredMargin(dtMs)`, `decodeWindow(shown, margin, traceLen)` | The margin without compiling; the samples to decode for a zoom (shown ± margin, clamped). |
 | `plan.apply(b \| samples, meta, ws)`, `plan.apply(src, dst, meta, ws)` (blocks or tensors) | Run in place, or `src → dst` with the copy fused into the first op; tiles of about 256 KB. Never grows `ws`; `dst` is not resized. |
 | `checkApply(plan, src, dst, meta)`, `plan.partCount`, `plan.partNeedsPanel(part)`, `plan.panelFactorOf(part, b, meta, ws)`, `plan.runPart(part, src, dst, meta, factor, ws)` | The pieces of `apply`, for a caller's own threads: a per-panel normalization splits the plan into parts. |

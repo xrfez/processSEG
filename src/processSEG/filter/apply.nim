@@ -6,7 +6,7 @@
 ## let plan = initFilterPlan(float32, lowCut(0.5, 1), dtMs = 2, samples = 2001)
 ## var ws = initWorkspace()
 ## ws.reserve(plan.workspaceSize)
-## samples.applyFilter(plan, meta, ws)      # in place, live rows, each to its live length
+## samples.applyFilter(meta, plan, ws)      # in place, live rows, each to its live length
 ## let m = plan.requiredMargin              # samples to decode on each side of a zoom window
 ## ```
 ##

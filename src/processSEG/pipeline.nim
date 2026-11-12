@@ -539,11 +539,6 @@ func workspaceSize*[T](plan: PipelinePlan[T]): WorkspaceSize {.inline,
   ## The scratch `apply` needs.
   plan.ws
 
-proc reserve*[T](ws: var Workspace, plan: PipelinePlan[T]) =
-  ## `ws.reserve(plan.workspaceSize)`: grows `ws` for `plan`, a no-op when
-  ## it already fits.
-  ws.reserve(plan.ws)
-
 # -------------------------------------------------------------------- apply --
 #
 # The parts API below is what `ProcessPool` uses, and what a caller that splits

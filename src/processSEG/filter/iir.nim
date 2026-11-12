@@ -249,6 +249,10 @@ func samples*[T](plan: IirPlan[T]): int {.inline, raises: [].} =
   ## The longest trace the plan takes.
   plan.samples
 
+func dtMs*[T](plan: IirPlan[T]): float64 {.inline, raises: [].} =
+  ## The sample interval the plan was built for.
+  plan.dtMs
+
 func phase*[T](plan: IirPlan[T]): IirPhase {.inline, raises: [].} =
   ## Zero or minimum phase.
   plan.phase

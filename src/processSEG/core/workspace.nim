@@ -87,6 +87,14 @@ proc reserve*(ws: var Workspace, size: WorkspaceSize) =
   if ws.f64.len < size.f64: ws.f64.grow(size.f64)
   if ws.u32.len < size.u32: ws.u32.grow(size.u32)
 
+proc reserve*[P: not WorkspaceSize](ws: var Workspace, plan: P) =
+  ## `ws.reserve(plan.workspaceSize)` for any plan that has a
+  ## `workspaceSize` (`PipelinePlan`, `FilterPlan`, `IirPlan`, `AgcPlan`,
+  ## `FftPlan`, `SpectrumPlan`, ...): grows `ws` for `plan`, a no-op when it
+  ## already fits.
+  mixin workspaceSize
+  ws.reserve(plan.workspaceSize)
+
 proc scratchOutside(at, n, cap: int) {.noinline, noreturn.} =
   raise newException(IndexDefect, "scratch of " & $n & " elements from element " & $at &
     " is outside the reserved 0 ..< " & $cap & " (reserve the plan first)")
