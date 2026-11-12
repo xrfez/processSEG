@@ -22,9 +22,25 @@
 ## every pre-plot midpoint, whatever the X records say): along each grid
 ## axis a midpoint `(s + r) / 2` lies between half the sum of the source and
 ## receiver minima and half the sum of their maxima, which is the grid's
-## extent. Only stations with coordinates count. The grid's origin is that
-## minimum corner, a midpoint itself on a regular survey, so bins are centred
-## on the midpoints there.
+## extent. Only stations with coordinates count.
+##
+## **Centring.** The grid is one fixed lattice over the whole survey, and
+## by default (`centre = true`) its bins are centred where the midpoints
+## cluster. Along each axis, with `p` a position and `b` the bin, a
+## midpoint `(s + r) / 2` has the bin phase `2π·p / b = π·s / b + π·r / b`:
+## half a source's angle `π·s / b` plus half a receiver's. Each station
+## set's dominant angle is its circular mean (the mean of the unit vectors
+## `exp(iπ·p / b)`), taken again without the stations more than π/4 from
+## it, so a few stray stations do not pull it; the bin centres go at the
+## sum of the two. That is O(stations), not O(pairs), and on a regular
+## survey it puts every midpoint at a bin centre. A station set whose
+## angles show no preference (the Rayleigh test: `n·R² ≤ ln 1000`, for `n`
+## stations and a mean vector of length `R`; uniform angles pass one time in
+## 1000) has none, and then the grid keeps the minimum corner as its first
+## centre: midpoints of irregular source points scatter over the bins
+## whatever their phase. Either way the first centre is within half a bin
+## of the corner, and the grid covers every midpoint. `centre = false`
+## always starts at the corner.
 ##
 ## **Defaults.** The azimuth is the receiver-line azimuth: the median
 ## bearing between consecutive stations of a receiver line, in point order
@@ -120,17 +136,58 @@ proc extent(t: Table[StationKey, Coordinates], azimuthDeg: float64,
       lo = [min(lo[0], a), min(lo[1], x)]
       hi = [max(hi[0], a), max(hi[1], x)]
 
+proc halfPhase(t: Table[StationKey, Coordinates], azimuthDeg: float64, axis: int,
+    bin: float64, angle: var float64): bool =
+  ## The dominant `π·p / bin` of the stations (module documentation), `p`
+  ## the position along (axis 0) or across (1) the azimuth: half a
+  ## midpoint's bin phase. False when the stations show none.
+  let (s, c) = (sin(degToRad(azimuthDeg)), cos(degToRad(azimuthDeg)))
+  template eachAngle(body: untyped) =
+    for q {.inject.} in t.values:
+      if finite(q.x) and finite(q.y):
+        let p = (if axis == 0: q.x * s + q.y * c else: q.x * c - q.y * s)
+        let a {.inject.} = PI * p / bin
+        body
+  var (re, im, n) = (0.0, 0.0, 0)
+  eachAngle:
+    re += cos(a)
+    im += sin(a)
+    inc n
+  # Rayleigh test: uniform phases give n·R² > ln 1000 one time in 1000.
+  if n == 0 or (re * re + im * im) / float64(n) <= ln(1000.0): return false
+  let mean = arctan2(im, re)
+  (re, im) = (0.0, 0.0)
+  eachAngle: # again, without the stations more than π/4 from the mean
+    if abs(floorMod(a - mean + PI, 2 * PI) - PI) <= PI / 4:
+      re += cos(a)
+      im += sin(a)
+  angle = arctan2(im, re)
+  true
+
+proc centred(g: SurveyGeometry, azimuthDeg: float64, axis: int, bin, lo: float64): float64 =
+  ## The bin centre within half a bin of `lo` at the midpoints' dominant
+  ## phase (module documentation); `lo` itself when there is none.
+  var ar, br: float64
+  if not halfPhase(g.table.receivers, azimuthDeg, axis, bin, ar) or
+      not halfPhase(g.table.sources, azimuthDeg, axis, bin, br):
+    return lo
+  let phase = (ar + br) / (2 * PI) * bin # a centre, modulo bin
+  result = phase + bin * round((lo - phase) / bin)
+  if result - lo > 0.5 * bin * (1 - 1e-9): result -= bin # lo must round into bin 0
+
 proc badGrid(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, "surveyGrid: " & msg)
 
 proc surveyGrid*(g: SurveyGeometry, binInline = NaN, binCrossline = NaN,
-    azimuthDeg = NaN): Binning =
+    azimuthDeg = NaN, centre = true): Binning =
   ## The bin grid covering every source–receiver midpoint of `g` (see the
   ## module documentation): inlines along `azimuthDeg`, bins `binInline`
   ## along them (`gridBinning`'s `crosslineSpacing`) by `binCrossline`
   ## across (its `inlineSpacing`). NaN arguments take their defaults: the
   ## receiver-line azimuth, half the receiver interval, half the source
-  ## interval. Raises `ValueError` for a given value that is not finite (or
+  ## interval. `centre` places the bin centres on the midpoints' dominant
+  ## positions (module documentation); `false` starts the grid at the
+  ## minimum corner. Raises `ValueError` for a given value that is not finite (or
   ## not positive, for the bins), when there are no receivers or no sources
   ## with coordinates, or when a default cannot be measured (no line with
   ## two stations at distinct positions).
@@ -161,8 +218,10 @@ proc surveyGrid*(g: SurveyGeometry, binInline = NaN, binCrossline = NaN,
   extent(g.table.sources, azimuth, sLo, sHi)
   if rLo[0] == Inf: badGrid("no receiver has coordinates")
   if sLo[0] == Inf: badGrid("no source has coordinates")
-  let lo = [(rLo[0] + sLo[0]) / 2, (rLo[1] + sLo[1]) / 2]
+  var lo = [(rLo[0] + sLo[0]) / 2, (rLo[1] + sLo[1]) / 2]
   let hi = [(rHi[0] + sHi[0]) / 2, (rHi[1] + sHi[1]) / 2]
+  if centre:
+    lo = [centred(g, azimuth, 0, binI, lo[0]), centred(g, azimuth, 1, binC, lo[1])]
   # Nearest-bin assignment: position u (in bins) needs u < n − 0.5.
   let crosslines = int(floor((hi[0] - lo[0]) / binI + 0.5)) + 1
   let inlines = int(floor((hi[1] - lo[1]) / binC + 0.5)) + 1

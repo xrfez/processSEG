@@ -91,6 +91,45 @@ block natural_grid:
     let (sx, sy) = o.sourceAt(o.sourceLines - 1, o.sourcePoints - 1)
     doAssert b.binOf(midKeys((rx + sx) / 2, (ry + sy) / 2)) == b.len - 1
 
+block centring:
+  # A stray receiver off the lattice moves the extent's corner by 7 along
+  # and 11 across: the centred grid keeps every midpoint at a bin centre,
+  # the corner grid does not; both cover every midpoint.
+  for az in [90.0, 30.0]:
+    let o = initOrtho(az)
+    var g = o.geometry
+    let (sx, sy) = o.at(-14, -22)
+    g.addReceiver(1999, 1, 1, sx, sy, 0)
+    let centred = surveyGrid(g)
+    let corner = surveyGrid(g, centre = false)
+    var offCentre = 0
+    for i in 0 ..< o.receiverLines:
+      for k in 0 ..< o.stations:
+        let (rx, ry) = o.receiverAt(i, k)
+        for m in 0 ..< o.sourceLines:
+          for q in 0 ..< o.sourcePoints:
+            let (qx, qy) = o.sourceAt(m, q)
+            let (mx, my) = ((rx + qx) / 2, (ry + qy) / 2)
+            let bin = centred.binOf(midKeys(mx, my))
+            doAssert bin >= 0
+            let l = centred.location(bin)
+            doAssert close(l.x, mx, 1e-5) and close(l.y, my, 1e-5)
+            let b2 = corner.binOf(midKeys(mx, my))
+            doAssert b2 >= 0
+            if not close(corner.location(b2).x, mx, 1e-5): inc offCentre
+    doAssert offCentre > 0
+    # the stray receiver's midpoints are covered too
+    for m in [0, o.sourceLines - 1]:
+      for q in [0, o.sourcePoints - 1]:
+        let (qx, qy) = o.sourceAt(m, q)
+        doAssert centred.binOf(midKeys((sx + qx) / 2, (sy + qy) / 2)) >= 0
+  # A regular survey: centring changes nothing.
+  let r = initOrtho(30).geometry
+  let (c0, k0) = (surveyGrid(r), surveyGrid(r, centre = false))
+  doAssert c0.len == k0.len
+  doAssert close(c0.location(0).x, k0.location(0).x, 1e-6), $c0.location(0) & " " & $k0.location(0)
+  doAssert close(c0.location(0).y, k0.location(0).y, 1e-6)
+
 block overrides:
   let o = initOrtho(30)
   let g = o.geometry
