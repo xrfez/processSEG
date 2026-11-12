@@ -353,7 +353,7 @@ Data in: a parseSEG `SurveyGeometry` (R and S records for the grid; X or O relat
 
 | Proc | What |
 |---|---|
-| `surveyGrid(g, binInline = NaN, binCrossline = NaN, azimuthDeg = NaN): Binning` | A `gridBinning` covering the midpoint of every source–receiver pair: inlines along `azimuthDeg` (default: the receiver-line azimuth, median bearing between consecutive stations), bins `binInline` along them (`gridBinning`'s `crosslineSpacing`; default half the median receiver interval) by `binCrossline` across (default half the median source interval: the natural bin of an orthogonal survey). Extent: half the sum of the source and receiver extents on each axis; origin at its minimum corner; numbers from 1. `ValueError` for a bad given value, no stations with coordinates, or a default that cannot be measured. |
+| `surveyGrid(g, binInline = NaN, binCrossline = NaN, azimuthDeg = NaN, centre = true): Binning` | A `gridBinning` covering the midpoint of every source–receiver pair: inlines along `azimuthDeg` (default: the receiver-line azimuth, median bearing between consecutive stations), bins `binInline` along them (`gridBinning`'s `crosslineSpacing`; default half the median receiver interval) by `binCrossline` across (default half the median source interval: the natural bin of an orthogonal survey). Extent: half the sum of the source and receiver extents on each axis; numbers from 1. `centre`: bin centres at the midpoints' dominant phase per axis (trimmed circular mean of source and receiver phases, Rayleigh test; none significant: the minimum corner), within half a bin of the corner; `false`: the corner. `ValueError` for a bad given value, no stations with coordinates, or a default that cannot be measured. |
 | `FoldOptions` (`offsetBounds`, `azimuthSectors`, `sectorStartDeg`, `offsetRange`) | What is counted besides the fold: offset classes (ascending edges, n edges → n − 1 classes `[e_k, e_k+1)`), source → receiver bearing sectors (sector k from `sectorStartDeg + k·360°/n`), each bin's offset range. |
 | `FoldMap`; `initFoldMap(binning, opts = FoldOptions())` | Pairs per bin of a `Binning`, empty. `ValueError` for bad options. |
 | `m.binning`, `m.options`, `m.fold` (`[inlines, crosslines]` int32), `m.offsetFold` (`[classes, inlines, crosslines]`), `m.azimuthFold` (`[sectors, inlines, crosslines]`), `m.offsetMin`, `m.offsetMax` (float32, NaN: empty bin), `m.binned`, `m.outside`, `m.noCoordinates`, `m.notLive`; `clear(m)` | The counts (tensors not asked for are empty); `clear` zeroes them, keeping the storage. |
@@ -373,6 +373,17 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 | `recordCompleteness(g, meta \| rows, recordMatch = rmAuto, traceMatch = tmAuto)` | Hashes the data's stations once, walks the X record's stations once. Failed rows (meta) are present, not live. The rows overload raises `ValueError` without keys. |
 | `CompletenessSummary` (`records`, `matched`, `unmatched`, `ambiguous`, `recordMismatches`, `sourceMismatches`, `xpsWithoutData`, `expected`, `present`, `presentLive`, `missing`, `unlisted`, `duplicates`), `summarize(g, records)` | Totals over many records, and the X records none matched. |
 | `$`(StationKey) | `line/point`, `.index` when above 1. |
+
+## qc/amplitude: amplitude QC of field records
+
+| Proc | What |
+|---|---|
+| `AmplitudeFlag` (`afNonFinite`, `afDead`, `afConstant`, `afClipped`, `afSpiky`, `afDcOffset`, `afWeak`, `afNoisy`) | Why a trace stands out: NaN/Inf samples; every finite sample 0, or one non-zero value; runs at the maximum magnitude; samples far above their neighbours; a large mean; RMS far below or above the record's. |
+| `AmplitudeParams` (`startMs`, `endMs`, `clipRun = 3`, `clipTolerance = 0`, `spikeFactor = 10`, `spikeWindowMs = 20`, `dcRatio = 0.2`, `outlierZ = 3.5`), `validate(params)` | The window on the trace axis (default: the whole trace) and the thresholds: a clip is `clipRun` samples at `≥ (1 − clipTolerance)·max`; a spike deviates from the mean by more than `spikeFactor` × its neighbours' RMS deviation within ±`spikeWindowMs` (itself left out); DC: `\|mean\| > dcRatio·σ`; outliers: `\|robustZ\| > outlierZ`. Inf turns `spikeFactor`, `dcRatio`, `outlierZ` off. `validate` raises `ValueError`. |
+| `TraceAmplitude` (`samples`, `rmsDb`, `maxDb`, `mean`, `nonFinite`, `clipped`, `spikes`, `robustZ`, `flags`) | One trace over its finite samples; `samples = 0` and NaN for a non-live row or an empty window (a finite window needs `t0Ms`). |
+| `traceAmplitude(x, dtMs, params = AmplitudeParams())` | One trace's samples (the window is not applied). |
+| `traceAmplitudeInto(b \| samples, meta, params, dst)`; `traceAmplitudeInto(pool, b \| samples, meta, params, dst)` | Every row into `dst[row]`, the live samples in the window; with a `ProcessPool`, rows split across its workers (identical results). No allocation. |
+| `RecordAmplitude` (`traces`, `medianRmsDb`, `madDb`, `counts`, `flagged`), `recordAmplitudeWorkspace(traces)`, `recordAmplitude(traces, params, ws)` | One record: median and MAD of `rmsDb` over the traces with samples, a finite RMS and neither dead nor constant; each one's `robustZ = (rmsDb − median) / (1.4826·MAD)` and `afWeak` / `afNoisy` (set or cleared), counts per flag. No allocation. |
 
 ## pipeline: `Op`, `Pipeline`, `PipelinePlan`
 
@@ -396,6 +407,7 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 | `pool.apply(plan, b \| samples, meta)`, `pool.apply(plan, src, dst, meta)` (blocks or tensors) | `plan.apply` with the rows split across the workers; blocks until done, identical results. One job at a time; a second caller waits. |
 | `pool.ping` | An empty job: the per-job overhead. |
 | `correlateInto(pool, plan: CorrelationPlan[T], src, dst: RowBlock[T] \| Tensor[T], meta)` | Vibroseis correlation with the rows split across the workers; checks as `checkCorrelate` on the caller's thread. |
+| `traceAmplitudeInto(pool, b \| samples, meta, params, dst)` | Amplitude QC (`qc/amplitude`) with the rows split across the workers. |
 
 ## adapters: metas from parseSEG reads
 
