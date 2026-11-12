@@ -41,8 +41,9 @@
 ## zero (muted) stretch does not divide by zero. A pick needs data before
 ## it: one and a half windows (STA/LTA: the STA and an LTA cut by the
 ## trace's start to no less than half a window), half a window (energy
-## ratio, whose windows are cut by both trace ends), or one sample
-## (Coppens).
+## ratio, whose windows are cut by both trace ends), or one window
+## (Coppens: until its numerator window is whole, the ratio rises with the
+## window, not with the data).
 ##
 ## **Windows and noise.** Short windows follow the break closely; at low
 ## SNR the noise in a short "before" window sets the maximum, so lengthen
@@ -286,10 +287,13 @@ proc argmaxAttribute(m: PickMethod, p, a: ptr UncheckedArray[float64], n, lo, hi
         best = r
         result = i
   of pmCoppens:
-    # CR(i): the w samples ending at i over the energy up to i.
+    # CR(i): the w samples ending at i over the energy up to i. Over the
+    # first w samples the numerator window is cut by the trace's start, so
+    # the ratio climbs from 0 to about 1 whatever the data: no pick there
+    # (in noise a tenth of the onset, 81 of 200 traces picked it).
     for i in 0 ..< n:
       a[i] = energy(max(0, i + 1 - w), i + 1) / (p[i + 1] + beta + eps)
-    risePick(1, w div 2)
+    risePick(w, w div 2)
 
 {.pop.}
 

@@ -1,9 +1,10 @@
 ## First-break picking (qc/firstbreak): STA/LTA, energy ratio and modified
 ## Coppens on noisy synthetic shots, picks within a tolerance, confidence
 ## against SNR, the LMO-guided and fixed search windows, the band-pass, a
-## window block, no-pick cases and errors.
+## window block, no-pick cases and errors; the example SEG-D record
+## (skipped when absent).
 
-import std/[algorithm, assertions, math]
+import std/[algorithm, assertions, math, os]
 import processSEG
 import parseSEG
 import utils/[allocs, synth]
@@ -120,21 +121,23 @@ block confidence_against_snr:
   doAssert last < 0.5 # sigma 1: the break is buried
 
 block guided_and_fixed_windows:
-  # A burst before the first break is picked without a guide, avoided with one.
-  var g = shot(0.02, 3)
+  # A burst before the first break is picked without a guide, avoided with
+  # one. The burst comes a window after the trace's start (Coppens picks
+  # nothing before that) and the nearest first break 100 ms later.
+  var g = shot(0.02, 3, splitSpread(24, 25, 200))
   for r in 0 ..< g.len:
     var row = newSeq[float32](cols)
-    row.addOnset(dt, 4, 40, amp = 3, decayMs = 5)
+    row.addOnset(dt, 24, 40, amp = 3, decayMs = 5)
     for j in 0 ..< cols: g.data[r, j] += row[j]
   let free = picks(g, FirstBreakParams(pickMethod: pmCoppens))
   var early = 0
   for r in 0 ..< g.len:
-    if free[r].timeMs < 12: inc early
+    if free[r].timeMs < 32: inc early
   doAssert early > g.len div 2
   doAssert max(errorsMs(g, picks(g, guided))) <= 2 * dt
   # A fixed window that starts after the burst works too.
   doAssert max(errorsMs(g, picks(g, FirstBreakParams(pickMethod: pmCoppens,
-    searchStartMs: 25)))) <= 2 * dt
+    searchStartMs: 60)))) <= 2 * dt
   # A window after every first break picks inside it.
   for q in picks(g, FirstBreakParams(searchStartMs: 600, searchEndMs: 700)):
     doAssert q.timeMs >= 600 and q.timeMs <= 700
@@ -300,3 +303,48 @@ block filtered_batch_allocates_nothing_and_infinite_t0:
     ws.reserve(open.workspaceSize)
     let q = open.pick(x, ws, NaN, t0)
     doAssert not q.col.isNaN and q.timeMs.isNaN, $q
+
+const shotFile = currentSourcePath().parentDir.parentDir / "exampleFiles" /
+  "00000151_12900_11300.sgd"
+
+block coppens_does_not_pick_its_own_warm_up:
+  # Unguided, in noise a tenth of the onset: over the first window the
+  # ratio's numerator is cut by the trace's start and rises from 0 with it,
+  # which is no arrival.
+  const rows = 200
+  let w = int(FirstBreakParams().windowMs / dt)
+  var g = shotGather[float32](0, endOn(rows, 25, 25), cols, dt)
+  for r in 0 ..< rows:
+    var row = newSeq[float32](cols)
+    row.addOnset(dt, 300 + 0.37 * float64(r), 30)
+    row.addNoise(0.1, 700 + r)
+    for j in 0 ..< cols: g.data[r, j] = row[j]
+  var good = 0
+  for r, q in picks(g, FirstBreakParams(pickMethod: pmCoppens)):
+    doAssert q.col >= float64(w), "row " & $r & ": " & $q
+    if abs(q.timeMs - (300 + 0.37 * float64(r))) <= 3 * dt: inc good
+  doAssert good >= rows * 95 div 100, $good
+
+block coppens_on_the_example_record:
+  if not fileExists(shotFile):
+    echo "  skipped: the example SEG-D record is not present"
+  else:
+    var f = openSeismic(shotFile, keys = true)
+    defer: f.close()
+    let data = f.readTraces(0 ..< f.len, float32)
+    let meta = chunkMeta(f, 0 ..< f.len)
+    let plan = initFirstBreakPlan(float32, FirstBreakParams(pickMethod: pmCoppens),
+      meta.dtMs, data.shape[1])
+    var ws = initWorkspace()
+    ws.reserve(plan.workspaceSize)
+    var ps = newSeq[FirstBreakPick](meta.len)
+    plan.pickInto(data, meta, ws, ps)
+    let w = int(FirstBreakParams().windowMs / meta.dtMs)
+    var early, picked = 0
+    for q in ps:
+      if not q.col.isNaN:
+        inc picked
+        if q.col < float64(w): inc early
+    echo "  example record: ", picked, " Coppens picks, ", early, " in the first window (",
+      w, " samples)"
+    doAssert picked > 3900 and early == 0 # 3210 of 3954 picked the warm-up
