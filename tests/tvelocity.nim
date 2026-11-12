@@ -363,6 +363,44 @@ block csv:
   raisesWith("line 1: '' is not a number"): discard parseVelocityCsv(",0,1500\n")
   raisesWith("line 1: a NaN location"): discard parseVelocityCsv("nan,0,1500\n")
 
+block refused_locations_and_velocities:
+  # A location that is not a finite number is refused in every format, on
+  # its line (HANDVEL and VELF took `nan` as a location and 1e400 as inf).
+  raisesWith("line 1: a NaN location"): discard parseHandvel("HANDVEL nan\n0 1500\n")
+  raisesWith("line 3: a NaN location"):
+    discard parseHandvel("HANDVEL 7\n0 1500\nHANDVEL 12 nan\n0 1500\n")
+  raisesWith("line 1: an infinite location"):
+    discard parseHandvel("HANDVEL 1e400\n0 1500\n")
+  raisesWith("line 1: a NaN location"): discard parseVelf("VELF nan 0 1500\n")
+  raisesWith("line 2: a NaN location"):
+    discard parseVelf("VELF 7 0 1500\nVELF nan 0 1500\n")
+  raisesWith("line 1: an infinite location"): discard parseVelf("VELF -inf 0 1500\n")
+  raisesWith("line 1: an infinite location"): discard parseVelocityCsv("inf,0,1500\n")
+  raisesWith("line 2: an infinite location"):
+    discard parseVelocityCsv("cdp,tMs,vrms\n1e400,0,1500\n")
+  raisesWith("line 1: a NaN location"): discard parseVelocityCsv("5,nan,0,1500\n")
+  raisesWith("line 1: a NaN location"): discard parseVelocities("HANDVEL nan\n0 1500\n")
+  # A velocity below any medium's is a misread file: a decimal comma in a
+  # CSV without a header (`100,0,1500,5` is cdp 100, 0 ms, 1500.5 m/s, and
+  # read as a 3D pick of 5 m/s at 1500 ms), a time and a velocity swapped.
+  doAssert MinPickVelocity == 100
+  raisesWith("line 1: inline 100, crossline 0: a velocity of 5 is below 100"):
+    discard parseVelocityCsv("100,0,1500,5\n100,500,1800,5\n")
+  raisesWith("decimal comma"): discard parseVelocities("100,0,1500,5\n")
+  raisesWith("line 2: cdp 7: a velocity of 99.5 is below 100"):
+    discard parseHandvel("HANDVEL 7\n0 99.5\n")
+  raisesWith("line 1: cdp 7: a velocity of 0.5 is below 100"):
+    discard parseVelf("VELF 7 1500 0.5\n")
+  doAssert parseHandvel("HANDVEL 7\n0 100\n")[0].velocity.vrmsAt(0) == 100
+  doAssert parseVelocityCsv("7,0,100\n").len == 1
+  # A VELF continuation card that lost a number reads as one more function
+  # when no function follows it (its first time is the "CDP"): documented,
+  # not detectable. With a function after it, the CDP order reports it.
+  let lost = parseVelf("VELF 101 0 1500 500 1800\nVELF 2000 2500 3000\n")
+  doAssert lost.len == 2 and lost[1].cdp == 2000
+  raisesWith("line 3: cdp 121 after cdp 2000"):
+    discard parseVelf("VELF 101 0 1500 500 1800\nVELF 2000 2500 3000\nVELF 121 0 1500\n")
+
 block byte_order_mark:
   # A UTF-8 BOM (Windows editors) before the first card or header.
   const bom = "\xEF\xBB\xBF"

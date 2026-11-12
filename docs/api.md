@@ -239,7 +239,8 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 
 | Proc | What |
 |---|---|
-| `parseVelf(text)`, `parseHandvel(text)`, `parseVelocityCsv(text)` | Picks from Western VELF cards, ProMAX HANDVEL blocks, or `cdp,tMs,vrms` / `inline,crossline,tMs,vrms` CSV. `ValueError` naming the line. |
+| `parseVelf(text)`, `parseHandvel(text)`, `parseVelocityCsv(text)` | Picks from Western VELF cards, ProMAX HANDVEL blocks, or `cdp,tMs,vrms` / `inline,crossline,tMs,vrms` CSV. `ValueError` naming the line: a bad number, times that do not increase, a NaN or infinite location, a velocity below `MinPickVelocity`. |
+| `MinPickVelocity` (100) | The least velocity a pick file may hold, in distance units per second: a smaller one is a misread file (a decimal comma in a CSV, a time and a velocity swapped, km/s). |
 | `parseVelocities(text)`, `readVelocities(path)` | The format detected (HANDVEL, VELF, else CSV); from a file (`IOError` when unreadable). |
 
 ## velocity/moveout: overlays and LMO

@@ -7,8 +7,19 @@
 ## ```
 ##
 ## Every pick's pairs are RMS knots `(tMs, vrms)` (see `rmsVelocity`); a
-## time that does not increase is reported with its line and location. Errors raise `ValueError` naming the line (1-based).
-## Lines starting with `*` or `#`, and blank lines, are comments everywhere.
+## time that does not increase is reported with its line and location.
+## Errors raise `ValueError` naming the line (1-based). Lines starting with
+## `*` or `#`, and blank lines, are comments everywhere.
+##
+## **Refused values.** A location (CDP, inline, crossline) that is NaN or
+## infinite is refused in every format. So is a velocity below
+## `MinPickVelocity` (100 distance units per second, under any medium's in
+## m/s or ft/s): it means a misread file, not a slow rock. The usual cause
+## is a CSV written with decimal commas (`100,0,1500,5` is CDP 100, 0 ms,
+## 1500.5 m/s, and reads as a 3D pick of 5 m/s at 1500 ms); others are a
+## time and a velocity swapped, or velocities in km/s (convert them: the
+## library works in the file's coordinate units per second). Velocity
+## functions built in code (`rmsVelocity`) have no such bound.
 ##
 ## **HANDVEL** (ProMAX-style export): a `HANDVEL` card with the location,
 ## one number (a CDP) or two (inline, crossline), followed by lines of
@@ -21,8 +32,12 @@
 ## **VELF** (Western cards): `VELF` cards of whitespace-separated numbers.
 ## A card with an odd count starts a new function, its first number the
 ## CDP; a card with an even count continues the previous one. CDPs must
-## increase through the file, which catches a continuation card that lost a
-## number (its first time would read as a CDP). Other cards
+## increase through the file. That catches a continuation card that lost a
+## number (its first time reads as a CDP) when a function with a smaller
+## CDP follows it. It cannot catch one that no function follows (the
+## file's last card) or whose first time is below the next CDP: the card
+## then reads as one more function, at a "CDP" that is a time. The count of
+## picks and their CDPs show it; compare them with the line's. Other cards
 ## (`SPNT`, `LINE`, …) are skipped. Fixed-column cards whose fields touch
 ## (a 5-digit time next to a 5-digit velocity) and card sequence numbers in
 ## columns 73–80 are not supported:
@@ -38,6 +53,11 @@
 
 import std/[math, strutils, tables]
 import model
+
+const MinPickVelocity* = 100.0
+  ## The least velocity a pick file may hold, in distance units per second:
+  ## the parsers refuse a smaller one as a misread file (see the module
+  ## documentation).
 
 proc parseError(line: int, msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, "line " & $line & ": " & msg)
@@ -77,6 +97,7 @@ type Builder = object
   line: int
   knots: seq[VelocityKnot]
   open: bool
+  csv: bool ## From a CSV: a too small velocity is most likely a decimal comma.
 
 proc addKnot(b: var Builder, tMs, vrms: float64, line: int) =
   ## Checks the knot here, so that an error names its own line.
@@ -89,6 +110,12 @@ proc addKnot(b: var Builder, tMs, vrms: float64, line: int) =
       " (times must increase)")
   if vrms.classify in {fcNan, fcInf, fcNegInf} or vrms <= 0:
     parseError(line, at & ": a velocity must be finite and positive, got " & $vrms)
+  if vrms < MinPickVelocity:
+    parseError(line, at & ": a velocity of " & num(vrms) & " is below " &
+      num(MinPickVelocity) & ": " & (if b.csv: "a decimal comma (fields are " &
+      "separated by commas, decimals written with a point), " else: "") &
+      "a time and a velocity swapped, or velocities not in distance units " &
+      "per second?")
   b.knots.add VelocityKnot(tMs: tMs, vrms: vrms)
 
 proc addPairs(b: var Builder, xs: openArray[float64], line: int) =
@@ -112,6 +139,11 @@ proc finish(b: var Builder, picks: var seq[VelocityPick]) =
   b.knots.setLen 0
 
 proc start(b: var Builder, loc: openArray[float64], line: int) =
+  # A NaN or infinite location is not a place: `nan` and `1e400` parse as
+  # numbers, and would only fail later, in the field, without a line.
+  for x in loc:
+    if x.isNaN: parseError(line, "a NaN location")
+    if x.classify in {fcInf, fcNegInf}: parseError(line, "an infinite location")
   b.open = true
   b.line = line
   b.cdp = NaN
@@ -167,7 +199,7 @@ proc parseVelf*(text: string): seq[VelocityPick] =
     let xs = numbers(tokens.toOpenArray(1, tokens.high), lineNo)
     if xs.len == 0: continue # a bare card
     if xs.len mod 2 == 1:
-      if b.open and not (xs[0] > b.cdp):
+      if b.open and xs[0] <= b.cdp: # a NaN cdp: reported by `start`
         parseError(lineNo, "cdp " & num(xs[0]) & " after cdp " & num(b.cdp) &
           ": VELF cdps must increase (or is this a continuation card with an " &
           "odd count of numbers?)")
@@ -208,15 +240,15 @@ proc parseVelocityCsv*(text: string): seq[VelocityPick] =
     if fields.len != cols:
       parseError(lineNo, $fields.len & " columns, the file has " & $cols)
     let xs = numbers(fields, lineNo)
-    let key = if cols == 3: (xs[0], 0.0) else: (xs[0], xs[1]) # NaN ≠ NaN as a key
-    for x in xs.toOpenArray(0, cols - 3):
-      if x.isNaN: parseError(lineNo, "a NaN location")
-    var i = index.getOrDefault(key, -1)
+    let key = if cols == 3: (xs[0], 0.0) else: (xs[0], xs[1])
+    var i = -1
+    if not (key[0].isNaN or key[1].isNaN): # NaN ≠ NaN as a key: `start` reports it
+      i = index.getOrDefault(key, -1)
     if i < 0:
       i = builders.len
-      index[key] = i
-      builders.add Builder()
+      builders.add Builder(csv: true)
       builders[i].start(xs.toOpenArray(0, cols - 3), lineNo)
+      index[key] = i
     builders[i].addKnot(xs[cols - 2], xs[cols - 1], lineNo)
   for b in builders.mitems:
     b.finish(result)
