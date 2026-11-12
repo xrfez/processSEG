@@ -205,3 +205,21 @@ block validation:
   var bad = linearSweep(8, 80, 8000, 2)
   bad.amplitude = NaN
   doAssertRaises(ValueError): bad.validate
+
+block specs_built_as_objects:
+  # A spec made as an object, not by a constructor, is checked before
+  # anything is sized from it: no defect for a zero interval, no attempt
+  # at 2·10¹² samples.
+  for spec in [SweepSpec(), SweepSpec(law: slLinear, f1Hz: 10, f2Hz: 80, lengthMs: 4e12, dtMs: 2),
+      SweepSpec(law: slLinear, f1Hz: 10, f2Hz: 80, lengthMs: NaN, dtMs: 2),
+      SweepSpec(law: slLinear, f1Hz: 10, f2Hz: 80, lengthMs: 8000, dtMs: -2),
+      SweepSpec(law: slLinear, f1Hz: 10, f2Hz: 80, lengthMs: Inf, dtMs: 2),
+      SweepSpec(law: slLinear, f1Hz: 10, f2Hz: 80, lengthMs: 1, dtMs: 2)]:
+    doAssert spec.sweepLen == 0, $spec.lengthMs
+    doAssertRaises(ValueError): discard spec.sweepSamples(float32)
+    doAssertRaises(ValueError): discard generatePilot(spec)
+    var x = newSeq[float64](4)
+    doAssertRaises(ValueError): spec.sweepInto(x)
+  let ok = SweepSpec(law: slLinear, f1Hz: 10, f2Hz: 80, lengthMs: 8000, dtMs: 2,
+    maxNyquistFraction: 0.8)
+  doAssert ok.sweepLen == 4001 and generatePilot(ok, float32).len == 4001

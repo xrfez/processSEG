@@ -78,8 +78,12 @@ proc badSweep(msg: string) {.noinline, noreturn.} =
 
 func sweepLen*(spec: SweepSpec): int {.raises: [].} =
   ## The number of samples, `lengthMs / dtMs + 1` (a valid spec's length is
-  ## a whole number of samples).
-  int(round(spec.lengthMs / spec.dtMs)) + 1
+  ## a whole number of samples); 0 for a spec `validate` rejects for its
+  ## length or interval (an interval that is not finite and positive, a
+  ## length under one interval, not finite, or of 2³¹ samples and more).
+  if not (spec.dtMs > 0 and spec.dtMs < Inf): return 0
+  let steps = spec.lengthMs / spec.dtMs
+  if steps >= 1 and steps <= float64(high(int32)): int(round(steps)) + 1 else: 0
 
 func nyquistOf(dtMs: float64): float64 {.inline.} = 500 / dtMs
 
@@ -287,7 +291,8 @@ proc sweepInto*[T: SampleType](spec: SweepSpec, x: var openArray[T]) =
 
 proc sweepSamples*(spec: SweepSpec, T: typedesc[SampleType] = float64): seq[T] =
   ## The sweep's samples (`spec.sweepLen` of them). Raises `ValueError` for
-  ## an invalid spec.
+  ## an invalid spec, before anything is allocated.
+  spec.validate
   result = newSeq[T](spec.sweepLen)
   spec.sweepInto(result)
 
