@@ -10,6 +10,8 @@ when defined(release) or defined(danger): import std/times
 import parseSEG
 import processSEG/stack/binning
 import processSEG/qc/fold
+import processSEG/core/types
+import utils/allocs
 
 proc close(a, b: float64, tol = 1e-6): bool = abs(a - b) <= tol
 
@@ -269,6 +271,136 @@ block fold_options:
     doAssertRaises(ValueError): discard initFoldMap(b, FoldOptions(offsetBounds: bad))
   doAssertRaises(ValueError): discard initFoldMap(b, FoldOptions(azimuthSectors: -1))
   doAssertRaises(ValueError): discard initFoldMap(b, FoldOptions(sectorStartDeg: NaN))
+
+# Traces of the swath, one per pre-plot pair (keys as parseSEG's applySurvey
+# leaves them); `drop` decides each pair's fate.
+type Fate = enum fLive, fOmitted, fDead, fAux, fFailed
+
+proc swathTraces(o: Ortho, fateOf: proc (n: int): Fate, keys: var seq[TraceKeys],
+    failed: var seq[int], dropped: var seq[(float64, float64)]) =
+  var n = 0
+  for r in o.swathFile.relations:
+    let m = int(r.srcLine) - 5001
+    let q = int(r.srcPoint) - 301
+    let (sx, sy) = o.at(swSource(m, q)[0], swSource(m, q)[1])
+    for kk in int(r.fromReceiver) - 101 .. int(r.toReceiver) - 101:
+      let i = int(r.rcvLine) - 2001
+      let (rx, ry) = o.at(swReceiver(i, kk)[0], swReceiver(i, kk)[1])
+      let fate = fateOf(n)
+      inc n
+      if fate != fLive: dropped.add ((sx + rx) / 2, (sy + ry) / 2)
+      if fate == fOmitted: continue
+      var k = initTraceKeys()
+      (k.srcLine, k.srcPoint, k.srcX, k.srcY) = (r.srcLine, r.srcPoint, sx, sy)
+      (k.rcvLine, k.rcvPoint, k.rcvX, k.rcvY) = (r.rcvLine, float64(101 + kk), rx, ry)
+      k.offset = hypot(rx - sx, ry - sy)
+      if n mod 2 == 0: (k.cmpX, k.cmpY) = ((sx + rx) / 2, (sy + ry) / 2) # else NaN: from coordinates
+      k.status = case fate
+                 of fDead: tsDead
+                 of fAux: tsAuxiliary
+                 else: (if n mod 3 == 0: tsUnknown else: tsLive)
+      if fate == fFailed: failed.add keys.len
+      keys.add k
+
+proc sameMaps(a, b: FoldMap): bool =
+  a.fold.toFlatSeq == b.fold.toFlatSeq and a.offsetFold.toFlatSeq == b.offsetFold.toFlatSeq and
+    a.azimuthFold.toFlatSeq == b.azimuthFold.toFlatSeq and
+    $a.offsetMin.toFlatSeq == $b.offsetMin.toFlatSeq and
+    $a.offsetMax.toFlatSeq == $b.offsetMax.toFlatSeq and a.binned == b.binned
+
+block actual_fold:
+  let opts = FoldOptions(offsetBounds: @[0.0, 300, 800, 1500], azimuthSectors: 6,
+    offsetRange: true)
+  let o = Ortho(azimuthDeg: 30, x0: 512_000, y0: 4_300_000)
+  var g = initSurveyGeometry()
+  g.addSps(o.swathFile)
+  let b = surveyGrid(g)
+  let pre = g.preplotFold(b, opts)
+  # every pair live: actual equals pre-plot, counts and all
+  block:
+    var keys: seq[TraceKeys]
+    var failed: seq[int]
+    var dropped: seq[(float64, float64)]
+    o.swathTraces(proc (n: int): Fate = fLive, keys, failed, dropped)
+    var a = initFoldMap(b, opts)
+    let counts = newSeq[int](keys.len)
+    a.addFold(rowsOf(keys, counts))
+    doAssert sameMaps(a, pre) and a.notLive == 0 and a.outside == 0
+    doAssert max(foldDifference(pre, a).toFlatSeq) == 0 and min(foldDifference(pre, a).toFlatSeq) == 0
+  # dropped channels: omitted, dead, auxiliary, failed rows
+  let fate = proc (n: int): Fate =
+    if n mod 37 == 5: fOmitted
+    elif n mod 101 == 7: fDead
+    elif n mod 211 == 3: fAux
+    elif n mod 89 == 11: fFailed
+    else: fLive
+  var keys: seq[TraceKeys]
+  var failed: seq[int]
+  var dropped: seq[(float64, float64)]
+  o.swathTraces(fate, keys, failed, dropped)
+  var expected = newSeq[int32](b.len)
+  for (x, y) in dropped: inc expected[b.binAt(x, y)]
+  # one extra live trace whose midpoint is in the wrong place (a geometry
+  # error), in a bin with no dropped trace
+  let empty = expected.find(0'i32)
+  doAssert empty >= 0
+  var wrong = keys[100]
+  (wrong.cmpX, wrong.cmpY) = (b.location(empty).x, b.location(empty).y)
+  wrong.status = tsLive
+  keys.add wrong
+  dec expected[empty]
+  let counts = newSeq[int](keys.len)
+  let rows = rowsOf(keys, counts)
+  # in order, in one block
+  var whole = initFoldMap(b, opts)
+  let meta = initChunkMeta(rows, dtMs = 2, failed = failed)
+  doAssert allocsIn(whole.addFold(meta)) == 0
+  var notLive = 0
+  for k in keys:
+    if k.status notin {tsLive, tsUnknown}: inc notLive
+  doAssert whole.notLive == notLive + failed.len and whole.noCoordinates == 0
+  # reversed, in uneven chunks (each with its own failed rows)
+  var chunked = initFoldMap(b, opts)
+  var hi = keys.len
+  var size = 1
+  while hi > 0:
+    let lo = max(0, hi - size)
+    var sub: seq[int]
+    for r in failed:
+      if r in lo ..< hi: sub.add r - lo
+    chunked.addFold(initChunkMeta(rowsOf(keys.toOpenArray(lo, hi - 1),
+      counts.toOpenArray(lo, hi - 1)), dtMs = 2, failed = sub))
+    hi = lo
+    size = size * 3 + 1
+  doAssert sameMaps(whole, chunked) and whole.notLive == chunked.notLive
+  let diff = foldDifference(pre, whole).toFlatSeq
+  doAssert diff == expected
+  doAssert diff[empty] == -1 # the misplaced trace
+  # clear: back to empty, storage kept
+  whole.clear
+  doAssert max(whole.fold.toFlatSeq) == 0 and whole.binned == 0 and whole.notLive == 0
+  doAssert whole.offsetMin.toFlatSeq[0].isNaN
+  # no midpoint and no coordinates: counted, not binned
+  var bare = initFoldMap(b)
+  var lone = @[initTraceKeys()]
+  bare.addFold(rowsOf(lone, @[0]))
+  doAssert bare.noCoordinates == 1 and bare.binned == 0
+  # different binnings are refused
+  doAssertRaises(ValueError): discard foldDifference(pre, initFoldMap(surveyGrid(g, binInline = 10)))
+
+block actual_header_binning:
+  let b = inlineCrosslineBinning(101, 3, 1001, 4)
+  var keys = newSeq[TraceKeys](5)
+  for i, k in keys.mpairs:
+    k = initTraceKeys()
+    (k.inline, k.crossline, k.offset) = (101.0 + float64(i mod 3), 1001.0 + float64(i), -250.0)
+  var m = initFoldMap(b, FoldOptions(offsetBounds: @[0.0, 200, 400], azimuthSectors: 4))
+  m.addFold(rowsOf(keys, newSeq[int](5)))
+  doAssert m.binned == 4 and m.outside == 1 # crossline 1005 is outside
+  doAssert m.fold.toFlatSeq == @[1'i32, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 0]
+  # |offset| from the header; no coordinates: no bearing
+  doAssert m.offsetFold.toFlatSeq[12 ..< 24] == m.fold.toFlatSeq
+  doAssert max(m.azimuthFold.toFlatSeq) == 0
 
 const
   dir = currentSourcePath().parentDir.parentDir / "exampleFiles" / "sps"

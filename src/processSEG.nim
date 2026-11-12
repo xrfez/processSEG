@@ -42,7 +42,7 @@
 ##   (`planSlices`, `extractInto`);
 ## - `processSEG/survey/patch`: receiver patches of an X survey, template and distance box
 ##   (`describePatches`, `receiverLayout`);
-## - `processSEG/qc/fold`: fold maps of a survey: its bin grid (`surveyGrid`), pre-plot fold (`preplotFold`).
+## - `processSEG/qc/fold`: fold maps of a survey: its bin grid (`surveyGrid`), pre-plot and actual fold (`preplotFold`, `addFold`, `foldDifference`).
 
 import processSEG/core/[types, rows, workspace, basic, mute, shift]
 import processSEG/fft/[plan, spectrum]

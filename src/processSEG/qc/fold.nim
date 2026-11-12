@@ -6,6 +6,9 @@
 ## for ext in [".sps", ".rps", ".xps"]: g.addSps(base & ext)
 ## let grid = surveyGrid(g)                       # natural bins at the receiver azimuth
 ## let fine = surveyGrid(g, binInline = 25, binCrossline = 25)
+## var actual = initFoldMap(grid)
+## for chunk in chunks: actual.addFold(chunkMeta(chunk))   # any order
+## let missing = foldDifference(pre, actual)       # pre-plot − actual
 ## let pre = g.preplotFold(grid, FoldOptions(offsetBounds: @[0.0, 1000, 2000, 4000],
 ##                                           azimuthSectors: 8, offsetRange: true))
 ## echo pre.fold.shape                            # [inlines, crosslines]
@@ -54,9 +57,23 @@
 ## follows each run of consecutive stations, so a pair costs no hash
 ## lookup. Pairs whose stations have no coordinates are counted
 ## (`noCoordinates`), as are pairs outside the bins (`outside`).
+##
+## **Actual.** `addFold` adds a block of traces (a `ChunkMeta` or a
+## `TraceRows` view) to a map, chunk by chunk and in any order (counts
+## only add up): every **live** trace (D12: status live or unknown, and not
+## a failed row of the meta) is one pair. Its midpoint is the keys' `cmpX`,
+## `cmpY`, or half-way between `srcX/srcY` and `rcvX/rcvY` when the headers
+## have no midpoint (fill both with parseSEG's `applySurvey` first, from
+## the survey). Its offset comes from the coordinates, else from
+## `|offset|`; its bearing from the coordinates only (none: in no sector).
+## Header binnings (`bnCdp`, `bnInlineCrossline`) bin by `binOf` (CDP,
+## inline and crossline keys). `foldDifference(preplot, actual)` is
+## pre-plot − actual per bin: positive where traces are missing, negative
+## where traces fall where the pre-plot has fewer (geometry errors).
 
 import std/[algorithm, math, tables]
 import parseSEG
+import ../core/types
 import ../stack/binning
 
 func finite(x: float64): bool {.inline.} = x.classify notin {fcNan, fcInf, fcNegInf}
@@ -171,7 +188,7 @@ type
     options: FoldOptions
     fold, offsetFold, azimuthFold: Tensor[int32]
     offsetMin, offsetMax: Tensor[float32]
-    binned, outside, noCoordinates: int
+    binned, outside, noCoordinates, notLive: int
 
 proc initFoldMap*(binning: Binning, opts = FoldOptions()): FoldMap =
   ## An empty fold map over `binning`. Raises `ValueError` when the offset
@@ -238,11 +255,57 @@ func outside*(m: FoldMap): int {.inline.} =
   m.outside
 
 func noCoordinates*(m: FoldMap): int {.inline.} =
-  ## Pairs left out because a station has no coordinates.
+  ## Pairs left out because a station has no coordinates (traces: no
+  ## midpoint, and no source and receiver coordinates to make one).
   m.noCoordinates
+
+func notLive*(m: FoldMap): int {.inline.} =
+  ## Traces left out by `addFold` as not live (dead, auxiliary, failed).
+  m.notLive
 
 template raw[T](t: Tensor[T]): ptr UncheckedArray[T] =
   cast[ptr UncheckedArray[T]](t.unsafe_raw_offset(aligned = false))
+
+proc clear*(m: var FoldMap) {.raises: [].} =
+  ## Zeroes every count (offset ranges back to NaN); the storage is kept.
+  template zero(t: Tensor[int32]) =
+    if t.size > 0: zeroMem(t.raw, t.size * sizeof(int32))
+  template unset(t: Tensor[float32]) =
+    for i in 0 ..< t.size: t.raw[i] = NaN
+  zero(m.fold)
+  zero(m.offsetFold)
+  zero(m.azimuthFold)
+  unset(m.offsetMin)
+  unset(m.offsetMax)
+  (m.binned, m.outside, m.noCoordinates, m.notLive) = (0, 0, 0, 0)
+
+proc addToBin(m: var FoldMap, bin: int, offset, bearing: float64) {.raises: [].} =
+  ## Counts one pair in bin `bin` (≥ 0); a NaN offset or bearing is in no
+  ## class, range or sector.
+  inc m.binned
+  let size = m.binning.len
+  {.push boundChecks: off, overflowChecks: off.}
+  inc m.fold.raw[bin]
+  template b: untyped = m.options.offsetBounds
+  if b.len > 1 and offset >= b[0] and offset < b[^1]:
+    let k = upperBound(b, offset) - 1 # b[k] <= offset < b[k + 1]
+    inc m.offsetFold.raw[k * size + bin]
+  if m.options.offsetRange and not offset.isNaN:
+    let f = float32(offset)
+    let lo = m.offsetMin.raw
+    let hi = m.offsetMax.raw
+    if not (lo[bin] <= f): lo[bin] = f
+    if not (hi[bin] >= f): hi[bin] = f
+  let n = m.options.azimuthSectors
+  if n > 0 and not bearing.isNaN:
+    let k = min(n - 1, int(floorMod(bearing - m.options.sectorStartDeg, 360.0) *
+      float64(n) / 360.0))
+    inc m.azimuthFold.raw[k * size + bin]
+  {.pop.}
+
+func bearingOf(sx, sy, rx, ry: float64): float64 {.inline.} =
+  ## Source → receiver bearing in degrees (NaN when a coordinate is).
+  radToDeg(arctan2(rx - sx, ry - sy))
 
 proc addPair(m: var FoldMap, sx, sy, rx, ry: float64) {.raises: [].} =
   ## Counts one pair with known coordinates.
@@ -250,29 +313,8 @@ proc addPair(m: var FoldMap, sx, sy, rx, ry: float64) {.raises: [].} =
   if bin < 0:
     inc m.outside
     return
-  inc m.binned
-  let size = m.binning.len
-  {.push boundChecks: off, overflowChecks: off.}
-  inc m.fold.raw[bin]
-  template o: untyped = m.options
-  if o.offsetBounds.len > 1 or o.offsetRange:
-    let offset = hypot(rx - sx, ry - sy)
-    template b: untyped = m.options.offsetBounds
-    if b.len > 1 and offset >= b[0] and offset < b[^1]:
-      let k = upperBound(b, offset) - 1 # b[k] <= offset < b[k + 1]
-      inc m.offsetFold.raw[k * size + bin]
-    if o.offsetRange:
-      let f = float32(offset)
-      let lo = m.offsetMin.raw
-      let hi = m.offsetMax.raw
-      if not (lo[bin] <= f): lo[bin] = f
-      if not (hi[bin] >= f): hi[bin] = f
-  if o.azimuthSectors > 0:
-    let bearing = radToDeg(arctan2(rx - sx, ry - sy))
-    let n = o.azimuthSectors
-    let k = min(n - 1, int(floorMod(bearing - o.sectorStartDeg, 360.0) * float64(n) / 360.0))
-    inc m.azimuthFold.raw[k * size + bin]
-  {.pop.}
+  let bearing = if m.options.azimuthSectors > 0: bearingOf(sx, sy, rx, ry) else: NaN
+  m.addToBin(bin, hypot(rx - sx, ry - sy), bearing)
 
 type
   StationAt = object
@@ -366,3 +408,66 @@ proc preplotFold*(g: SurveyGeometry, binning: Binning, opts = FoldOptions(),
         let s = sources.lines[sc.li][i]
         let r = receivers.lines[rc.li][j]
         result.addPair(s.x, s.y, r.x, r.y)
+
+proc addTrace(m: var FoldMap, k: TraceKeys) {.raises: [].} =
+  let coords = finite(k.srcX) and finite(k.srcY) and finite(k.rcvX) and finite(k.rcvY)
+  var bin: int
+  if m.binning.kind in {bnLine, bnGrid}:
+    var (x, y) = (k.cmpX, k.cmpY)
+    if not (finite(x) and finite(y)):
+      if not coords:
+        inc m.noCoordinates
+        return
+      (x, y) = ((k.srcX + k.rcvX) * 0.5, (k.srcY + k.rcvY) * 0.5)
+    bin = m.binning.binAt(x, y)
+  else:
+    bin = m.binning.binOf(k)
+  if bin < 0:
+    inc m.outside
+    return
+  let offset = if coords: hypot(k.rcvX - k.srcX, k.rcvY - k.srcY) else: abs(k.offset)
+  let bearing = if coords and m.options.azimuthSectors > 0:
+                  bearingOf(k.srcX, k.srcY, k.rcvX, k.rcvY)
+                else: NaN
+  m.addToBin(bin, offset, bearing)
+
+proc addFold*(m: var FoldMap, meta: ChunkMeta) {.raises: [].} =
+  ## Adds the live rows of `meta` (see the module documentation). Allocates
+  ## nothing.
+  for row in 0 ..< meta.len:
+    if meta.isLive(row): m.addTrace(meta.keys(row))
+    else: inc m.notLive
+
+proc addFold*(m: var FoldMap, rows: TraceRows) =
+  ## Adds the live rows of `rows` (status live or unknown). Raises
+  ## `ValueError` when the view has no keys. Allocates nothing.
+  if not rows.hasKeys:
+    raise newException(ValueError, "the rows have no keys: open the file with " &
+      "keys = true (or call ensureKeys) before making the view")
+  for row in 0 ..< rows.len:
+    let k = rows.keysAt(row)
+    if k.status in {tsLive, tsUnknown}: m.addTrace(k)
+    else: inc m.notLive
+
+func sameValue(a, b: float64): bool {.inline.} = a == b or (a.isNaN and b.isNaN)
+
+func sameBins(a, b: Binning): bool =
+  if a.kind != b.kind or a.inlines != b.inlines or a.crosslines != b.crosslines: return false
+  for bin in [0, a.len - 1]:
+    let (p, q) = (a.location(bin), b.location(bin))
+    if not (sameValue(p.cdp, q.cdp) and sameValue(p.inline, q.inline) and
+        sameValue(p.crossline, q.crossline) and sameValue(p.x, q.x) and
+        sameValue(p.y, q.y)): return false
+  true
+
+proc foldDifference*(preplot, actual: FoldMap): Tensor[int32] =
+  ## Pre-plot − actual fold per bin, `[inlines, crosslines]`. Raises
+  ## `ValueError` when the two maps are not over the same bins (kind,
+  ## counts, first and last bin).
+  if not sameBins(preplot.binning, actual.binning):
+    raise newException(ValueError, "foldDifference: the maps have different binnings")
+  result = newTensor[int32](preplot.fold.shape[0], preplot.fold.shape[1])
+  let (p, a, d) = (preplot.fold.raw, actual.fold.raw, result.raw)
+  {.push overflowChecks: off.}
+  for i in 0 ..< result.size: d[i] = p[i] - a[i]
+  {.pop.}
