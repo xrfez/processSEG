@@ -111,7 +111,9 @@ lattice over the whole survey, its inlines along the receiver lines (the median 
 between consecutive receivers), the natural bin of half the receiver interval by half the
 source interval, and an extent that covers the midpoint of every source–receiver pair.
 Any of the three can be given instead (`binInline`, `binCrossline`, `azimuthDeg`), and a
-`Binning` of your own works everywhere a grid does.
+`Binning` of your own works everywhere a grid does. A grid and a fold map hold at most
+`maxBins` bins (2²⁶ unless you pass more): a bin size typed as 0.01 for 10 raises a
+`ValueError` that names the bin sizes and the extent, instead of running out of memory.
 
 **Centring.** The grid is placed so that its bin centres fall where the midpoints cluster.
 On a regular survey every midpoint then sits at a bin centre. Where the midpoints scatter
