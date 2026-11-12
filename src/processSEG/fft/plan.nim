@@ -42,17 +42,28 @@ const fftLanes* = 8
   ## Traces per batch in the batched path (`forwardLanes`, `inverseLanes`).
   ## Eight float32 lanes fill one AVX2 register.
 
-const staggerBytes = 17472
-  # The gap left between the four work arrays of a transform. Without it they
-  # lie a whole number of pages apart whenever `m·lanes·sizeof(T)` is a
-  # multiple of 4096 (every power-of-two length), and so do the `r` input
-  # streams of a radix-`r` pass inside each array: all the streams of a pass
-  # then compete for the same cache sets (L1: 8 ways of 4 KiB; L2: 8 ways of
-  # 64 KiB for long transforms) and evict each other on every butterfly. The
-  # gap is 17 cache lines more than 4 pages, so the four arrays sit about a
-  # quarter of a page apart in L1 and a quarter of 64 KiB apart in L2.
-  # Measured, 8 lanes of float32: n = 2048 1.7× faster, 65536 4.5×, 131072
-  # 15× (bench/README).
+const
+  waySpan = 65536  # bytes of one way of an L2 cache (512 KiB, 8 ways)
+  wayPhase = 17472 # 4 pages and 17 cache lines: 1088 bytes into an L1 way
+
+func workStride(elems: int, T: typedesc): int {.inline.} =
+  ## The distance, in elements, between the starts of the four work arrays
+  ## of a transform, each `elems` long: the least whole number of cache
+  ## lines that holds an array and is `wayPhase` more than a multiple of
+  ## `waySpan`.
+  ##
+  ## Laid end to end, the arrays are a whole number of pages apart whenever
+  ## `elems·sizeof(T)` is a multiple of 4096 (every power-of-two length),
+  ## and so are the `r` input streams of a radix-`r` pass inside each array:
+  ## all the streams of a pass then compete for the same cache sets (L1: 8
+  ## ways of 4 KiB; L2: 8 ways of 64 KiB for long transforms) and evict each
+  ## other on every butterfly. With this stride the arrays sit a quarter of a
+  ## way apart in L2 and 17 lines apart in L1, whatever the length. The gaps
+  ## are never touched: they cost address space, not memory. Measured, 8
+  ## lanes of float32: n = 2048 1.7× faster, 65536 4.5×, 131072 15×
+  ## (bench/README).
+  let base = (elems * sizeof(T) + 63) div 64 * 64
+  (base + (wayPhase - base mod waySpan + waySpan) mod waySpan) div sizeof(T)
 
 type
   FftPlan*[T: SampleType] = object
@@ -138,8 +149,8 @@ func workspaceSize*[T](p: FftPlan[T], batched = true): WorkspaceSize {.raises: [
   ## this also covers the one-trace path) or of one lane (`batched = false`,
   ## enough for `forward` and `inverse` only), plus the gaps that keep their
   ## four arrays out of each other's cache sets.
-  let elems = 4 * p.m * (if batched: fftLanes else: 1) +
-    3 * (staggerBytes div sizeof(T))
+  let each = p.m * (if batched: fftLanes else: 1)
+  let elems = 3 * workStride(each, T) + each
   when T is float32: WorkspaceSize(f32: elems)
   else: WorkspaceSize(f64: elems)
 
@@ -463,13 +474,13 @@ proc forwardImpl[T; L: static int](p: FftPlan[T], x: Buf[T], re, im: Buf[T],
     ws: var Workspace) {.raises: [].} =
   ## Real forward transform of `L` interleaved sequences.
   let mL = p.m * L
-  let g = staggerBytes div sizeof(T) # the gap between the work arrays
-  let w = ws.scratch(T, 4 * mL + 3 * g)
+  let stride = workStride(mL, T)
+  let w = ws.scratch(T, 3 * stride + mL)
   let
     ar = w
-    ai = w +@ (mL + g)
-    br = w +@ (2 * mL + 2 * g)
-    bi = w +@ (3 * mL + 3 * g)
+    ai = w +@ stride
+    br = w +@ (2 * stride)
+    bi = w +@ (3 * stride)
     m = p.m
   if p.n mod 2 == 1:
     for i in 0..<mL:
@@ -508,13 +519,13 @@ proc inverseImpl[T; L: static int](p: FftPlan[T], re, im: Buf[T], x: Buf[T],
   ## inverse complex FFT is the forward one on swapped real and imaginary
   ## parts: ifft(Z) = swap(fft(swap(Z))).
   let mL = p.m * L
-  let g = staggerBytes div sizeof(T) # the gap between the work arrays
-  let w = ws.scratch(T, 4 * mL + 3 * g)
+  let stride = workStride(mL, T)
+  let w = ws.scratch(T, 3 * stride + mL)
   let
     ar = w
-    ai = w +@ (mL + g)
-    br = w +@ (2 * mL + 2 * g)
-    bi = w +@ (3 * mL + 3 * g)
+    ai = w +@ stride
+    br = w +@ (2 * stride)
+    bi = w +@ (3 * stride)
     scale = T(1) / T(p.n)
     m = p.m
   # ai receives Re Z and ar Im Z, i.e. (ar, ai) is swap(Z).
