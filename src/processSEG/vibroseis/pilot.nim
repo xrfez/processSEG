@@ -403,10 +403,7 @@ proc toSpec(f: InstrumentFilter): FilterSpec =
   let hi = hasFreq(f.highCutHz)
   let lo = hasFreq(f.lowCutHz)
   if hi and lo:
-    if f.lowSlopeDbPerOctave != f.highSlopeDbPerOctave:
-      badPilot("an instrument band-pass needs equal slopes here, got " &
-        $f.lowSlopeDbPerOctave & " and " & $f.highSlopeDbPerOctave & " dB/octave")
-    butterBandPass(f.lowCutHz, f.highCutHz, f.highSlopeDbPerOctave)
+    butterBandPass(f.lowCutHz, f.highCutHz, f.lowSlopeDbPerOctave, f.highSlopeDbPerOctave)
   elif hi: butterHighCut(f.highCutHz, f.highSlopeDbPerOctave)
   elif lo: butterLowCut(f.lowCutHz, f.lowSlopeDbPerOctave)
   else: badPilot("an instrument filter needs a high-cut or a low-cut frequency")
@@ -416,9 +413,9 @@ proc applyInstrumentFilter*[T: SampleType](p: Pilot[T], f: InstrumentFilter): Pi
   ## placed before and after it, so a minimum-phase filter starts from a
   ## zero state and its response is causal, and the result keeps `p`'s
   ## samples and start time (the filtered tail past the pilot's end is cut,
-  ## as the record is). Raises `ValueError` for a filter without a
-  ## frequency, unequal band-pass slopes, or a spec the Butterworth design
-  ## rejects (slopes, frequencies above Nyquist).
+  ## as the record is). The two cuts of a band-pass keep their own slopes.
+  ## Raises `ValueError` for a filter without a frequency, or a spec the
+  ## Butterworth design rejects (slopes, frequencies above Nyquist).
   p.validate
   let spec = f.toSpec
   let n = p.len
