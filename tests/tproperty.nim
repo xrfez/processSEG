@@ -434,11 +434,11 @@ block random_first_breaks:
     let t0 = r.uniform(-50, 50)
     let p = plan.pick(x, ws, offset = r.uniform(-3000, 3000), t0Ms = t0)
     doAssert p.confidence >= 0 and p.confidence <= 1, $p
-    if p.col.isNaN:
+    if p.col < 0:
       doAssert p.timeMs.isNaN and p.confidence == 0
     else:
-      doAssert p.col >= 0 and p.col < float64(len), $p & " len " & $len
-      doAssert abs(p.timeMs - (t0 + p.col * dtMs)) < 1e-9
+      doAssert p.col < len, $p & " len " & $len
+      doAssert abs(p.timeMs - (t0 + float64(p.col) * dtMs)) < 1e-9
       doAssert p.snrDb.isNaN or p.snrDb.classify != fcInf
 
 # -------------------------------------------------------- velocity parsers --

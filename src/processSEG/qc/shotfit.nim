@@ -46,7 +46,7 @@
 ## `localMs` is the residual minus the median residual of the nearest
 ## `localTraces` traces with a residual on each side (itself excluded; at
 ## least 2 in all, else NaN), which removes the smooth part. A trace is suspect when `|localMs|` exceeds
-## `max(residualMs, madFactor · 1.4826 · MAD)` of the shot's local
+## `max(maxResidualMs, madFactor · 1.4826 · MAD)` of the shot's local
 ## residuals.
 ##
 ## **Cross-correlation** (the form with samples, `correlate`): each trace's
@@ -57,7 +57,10 @@
 ## `maxLagMs`. Windows at the model times align the break when the
 ## geometry is right; `lagMs` is the lag to the neighbour with the smaller
 ## `|lag|` (the better correlation breaks a tie), `coherence` that pair's
-## correlation coefficient. A trace is suspect also when it is the odd one out: its
+## correlation coefficient. The lag is the neighbour's arrival minus the
+## trace's, each counted from its own model time: negative for a trace
+## that arrives late against its neighbour (its header puts it nearer the
+## source than it is), positive for one that arrives early. A trace is suspect also when it is the odd one out: its
 ## lags to both neighbours exceed `lagToleranceMs` while the two
 ## neighbours, correlated with each other, agree within it with a
 ## correlation coefficient of at least `minCoherence`. (The neighbour
@@ -82,7 +85,7 @@
 ## **What a swap must exceed.** A trace whose header is `Δx` along the line
 ## from its true station is off the model by about `Δx / v` (`v` the
 ## velocity of the arrival there), and off by `Δx / v` from its neighbours'
-## lags. It is flagged when that exceeds `residualMs` (12 ms) or
+## lags. It is flagged when that exceeds `maxResidualMs` (12 ms) or
 ## `lagToleranceMs` (8 ms): with 25 m groups, an adjacent-channel swap on a
 ## 3000 m/s refractor (8 ms) is below both and is missed, while swaps of
 ## two stations or more, or on slower arrivals, are found. Lower the
@@ -108,7 +111,7 @@ type
     minConfidence*: float64 = 0.5 ## Picks below it are not used.
     binWidth*: float64 = 100      ## `rmOffsetBinned`: the offset bin width.
     localTraces*: int = 3         ## Neighbours on each side for the local median.
-    residualMs*: float64 = 12     ## The smallest `|localMs|` that flags a trace.
+    maxResidualMs*: float64 = 12  ## The largest `|localMs|` that does not flag a trace.
     madFactor*: float64 = 4       ## Robust threshold, in MADs of `localMs`.
     correlate*: bool = true       ## Cross-correlate neighbours (the form with samples).
     windowMs*: float64 = 80       ## Correlation window.
@@ -129,7 +132,7 @@ type
     modelMs*: seq[float64]             ## The model time at the header offset; NaN unknown.
     residualMs*: seq[float64]          ## Pick − model; NaN without a used pick.
     localMs*: seq[float64]             ## Residual − neighbours' median; NaN without one.
-    lagMs*: seq[float64]               ## Best neighbour lag; NaN without correlation.
+    lagMs*: seq[float64]               ## Best neighbour lag (sign: module docs); NaN without.
     coherence*: seq[float64]           ## Its correlation coefficient; NaN without.
     suspect*: seq[bool]                ## Geometry suspect.
     # Scratch, kept for reuse.
@@ -147,8 +150,9 @@ proc checkParams(p: ShotFitParams) =
   if not (p.binWidth > 0 and p.binWidth < Inf):
     badParams("binWidth must be finite and positive, got " & $p.binWidth)
   if p.localTraces < 1: badParams("localTraces must be ≥ 1, got " & $p.localTraces)
-  if not (p.residualMs >= 0 and p.residualMs < Inf and p.madFactor >= 0 and p.madFactor < Inf):
-    badParams("residualMs and madFactor must be finite and ≥ 0")
+  if not (p.maxResidualMs >= 0 and p.maxResidualMs < Inf and p.madFactor >= 0 and
+      p.madFactor < Inf):
+    badParams("maxResidualMs and madFactor must be finite and ≥ 0")
   if not (p.windowMs > 0 and p.windowMs < Inf and p.maxLagMs >= 0 and p.maxLagMs < Inf and
       p.lagToleranceMs >= 0 and p.lagToleranceMs < Inf):
     badParams("correlation windows must be finite (windowMs > 0, the others ≥ 0)")
@@ -544,7 +548,7 @@ proc fitPicks(meta: ChunkMeta, picks: openArray[FirstBreakPick], p: ShotFitParam
   let mid = median(fit.tmp)
   for v in fit.tmp.mitems: v = abs(v - mid)
   let mad = median(fit.tmp)
-  fit.threshold = max(p.residualMs, p.madFactor * 1.4826 * (if mad.isNaN: 0.0 else: mad))
+  fit.threshold = max(p.maxResidualMs, p.madFactor * 1.4826 * (if mad.isNaN: 0.0 else: mad))
   for r in 0 ..< n:
     if abs(fit.localMs[r]) > fit.threshold: fit.suspect[r] = true
   # Symmetry: negative side minus positive side.

@@ -94,7 +94,7 @@
 ## (the pick comes late or not at all, without confidence). Its break is
 ## `liveSpan(x).a`; to exercise the pickers, add noise.
 ##
-## **No pick** (`timeMs`, `col`, `snrDb` NaN, `confidence` 0): a non-live
+## **No pick** (`timeMs` and `snrDb` NaN, `col` −1, `confidence` 0): a non-live
 ## row, an empty search window or a trace without energy there. A trace
 ## whose `t0Ms` is NaN takes no time window (no guide, no search bounds:
 ## else no pick) and its pick has a `col` but a NaN `timeMs`, as
@@ -163,11 +163,11 @@ type
     highDb*: float64 = 20 ## SNR of confidence 1.
 
   FirstBreakPick* = object
-    ## One trace's pick.
-    timeMs*: float64     ## Pick time (`t0Ms` based); NaN: no pick, or no `t0Ms`.
-    col*: float64        ## The pick's column in the block, a whole number; NaN: no pick.
-    snrDb*: float64      ## Energy after / before the pick, in dB; NaN: none.
-    confidence*: float64 ## 0 .. 1 from `snrDb` (`lowDb` .. `highDb`); 0 without a pick.
+    ## One trace's pick; as built, `FirstBreakPick()`, no pick.
+    timeMs*: float64 = NaN ## Pick time (`t0Ms` based); NaN: no pick, or no `t0Ms`.
+    col*: int = -1         ## The pick's column in the block; −1: no pick.
+    snrDb*: float64 = NaN  ## Energy after / before the pick, in dB; NaN: none.
+    confidence*: float64   ## 0 .. 1 from `snrDb` (`lowDb` .. `highDb`); 0 without a pick.
 
   FirstBreakPlan*[T: SampleType] = object
     ## A compiled picker for traces of up to `samples` samples at `dtMs`.
@@ -182,7 +182,7 @@ type
 
 func noPick*(): FirstBreakPick {.inline, raises: [].} =
   ## A trace without a pick.
-  FirstBreakPick(timeMs: NaN, col: NaN, snrDb: NaN, confidence: 0)
+  FirstBreakPick(timeMs: NaN, col: -1, snrDb: NaN, confidence: 0)
 
 proc badParams(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
@@ -440,7 +440,7 @@ proc pickStretch[T](plan: FirstBreakPlan[T], x: ptr UncheckedArray[T], s: Stretc
   let col = argmaxAttribute(pr.pickMethod, p, a, m, s.lo, s.hi, plan.w, plan.lta, beta, eps)
   if col < 0: return
   let gapEnd = max(0, col - plan.w div 2) # guard gap: a pick a little late
-  result.col = float64(s.first + col)
+  result.col = s.first + col
   result.timeMs = s.originMs + float64(s.first + col) * plan.dtMs
   # Nothing before the gap (an empty noise window), or no energy at all
   # there (a dropout: zeros are no noise level, and with the stabilization

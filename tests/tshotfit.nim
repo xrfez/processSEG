@@ -122,6 +122,22 @@ block correlation_without_picks:
   doAssert fit.residualMs[30].isNaN and fit.localMs[30].isNaN
   doAssert suspects(fit) == @[30, 36], $suspects(fit)
 
+block the_sign_of_a_lag:
+  # A trace whose data come 10 ms late against its neighbours' (its header
+  # as it was) has a negative lag; one that comes early, a positive one.
+  for shift in [5, -5]: # samples
+    var s = makeShot(5000)
+    let picks = pickAll(s.g)
+    var row = newSeq[float32](cols)
+    for j in 0 ..< cols:
+      if j - shift in 0 ..< cols: row[j] = s.g.data[60, j - shift]
+    for j in 0 ..< cols: s.g.data[60, j] = row[j]
+    let meta = initChunkMeta(s.g.rows, dt)
+    var fit: ShotFit
+    fitShot(s.g.data, meta, picks, ShotFitParams(), fit)
+    doAssert abs(fit.lagMs[60] + float64(shift) * dt) <= dt, $shift & ": " & $fit.lagMs[60]
+    doAssert abs(fit.lagMs[40]) <= dt
+
 block noisy_picks:
   # Noisier traces and a few wild picks: the wild ones are flagged by the
   # residuals (a bad pick looks like bad geometry, which is why the lags

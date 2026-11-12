@@ -150,11 +150,11 @@ block no_picks:
   g.keys[3].t0Ms = NaN
   let ps = picks(g, guided)
   for r in 0..3:
-    doAssert ps[r].timeMs.isNaN and ps[r].col.isNaN and ps[r].confidence == 0, $r
+    doAssert ps[r].timeMs.isNaN and ps[r].col == -1 and ps[r].confidence == 0, $r
   # Unguided, a NaN offset is not needed; a NaN t0 gives a column, no time.
   let pf = picks(g, FirstBreakParams(pickMethod: pmCoppens))
   doAssert not pf[1].timeMs.isNaN and pf[2].timeMs.isNaN
-  doAssert pf[3].timeMs.isNaN and abs(pf[3].col * dt - onsetMs(g.keys[3].offset)) <= 2 * dt
+  doAssert pf[3].timeMs.isNaN and abs(float64(pf[3].col) * dt - onsetMs(g.keys[3].offset)) <= 2 * dt
   # The same in a window (firstSample 10): the column is the block's.
   let w = g.window(10, 400)
   let wmeta = initChunkMeta(w.rows, dt, firstSample = w.firstSample)
@@ -184,7 +184,7 @@ block window_block_and_single_trace:
   doAssert w.data == before # the samples are not changed
   for r in 0 ..< g.len:
     doAssert abs(ps[r].timeMs - full[r].timeMs) <= dt
-    doAssert ps[r].col == (ps[r].timeMs - 10 * dt) / dt
+    doAssert float64(ps[r].col) == (ps[r].timeMs - 10 * dt) / dt
   var row = newSeq[float32](cols)
   for j in 0 ..< cols: row[j] = g.data[5, j]
   let one = plan.pick(row, ws, g.keys[5].offset, 0.0)
@@ -271,12 +271,12 @@ block batched_filter_matches_single_trace:
     plan.pickInto(g.data, meta, ws, got)
     for r in 0 ..< g.len:
       if not meta.isLive(r):
-        doAssert got[r].col.isNaN
+        doAssert got[r].col == -1
         continue
       var x = newSeq[float32](g.liveCols(r))
       for j in 0 ..< x.len: x[j] = g.data[r, j]
       let want = plan.pick(x, ws, g.keys[r].offset, g.keys[r].t0Ms)
-      doAssert got[r].col == want.col or (got[r].col.isNaN and want.col.isNaN),
+      doAssert got[r].col == want.col,
         $m & " row " & $r & ": " & $got[r] & " vs " & $want
       doAssert abs(got[r].confidence - want.confidence) < 1e-4
 
@@ -298,11 +298,11 @@ block filtered_batch_allocates_nothing_and_infinite_t0:
   var x = newSeq[float32](cols)
   for j in 0 ..< cols: x[j] = g.data[4, j]
   for t0 in [Inf, -Inf]:
-    doAssert plan.pick(x, ws, g.keys[4].offset, t0).col.isNaN
+    doAssert plan.pick(x, ws, g.keys[4].offset, t0).col == -1
     let open = initFirstBreakPlan(float32, FirstBreakParams(), dt, cols)
     ws.reserve(open.workspaceSize)
     let q = open.pick(x, ws, NaN, t0)
-    doAssert not q.col.isNaN and q.timeMs.isNaN, $q
+    doAssert q.col >= 0 and q.timeMs.isNaN, $q
 
 const shotFile = currentSourcePath().parentDir.parentDir / "exampleFiles" /
   "00000151_12900_11300.sgd"
@@ -321,7 +321,7 @@ block coppens_does_not_pick_its_own_warm_up:
     for j in 0 ..< cols: g.data[r, j] = row[j]
   var good = 0
   for r, q in picks(g, FirstBreakParams(pickMethod: pmCoppens)):
-    doAssert q.col >= float64(w), "row " & $r & ": " & $q
+    doAssert q.col >= w, "row " & $r & ": " & $q
     if abs(q.timeMs - (300 + 0.37 * float64(r))) <= 3 * dt: inc good
   doAssert good >= rows * 95 div 100, $good
 
@@ -342,9 +342,9 @@ block coppens_on_the_example_record:
     let w = int(FirstBreakParams().windowMs / meta.dtMs)
     var early, picked = 0
     for q in ps:
-      if not q.col.isNaN:
+      if q.col >= 0:
         inc picked
-        if q.col < float64(w): inc early
+        if q.col < w: inc early
     echo "  example record: ", picked, " Coppens picks, ", early, " in the first window (",
       w, " samples)"
     doAssert picked > 3900 and early == 0 # 3210 of 3954 picked the warm-up
@@ -366,13 +366,13 @@ block zeros_before_the_data_are_not_noise:
       let ps = picks(g, FirstBreakParams(pickMethod: m, highCutHz: hc))
       var atOnset = 0
       for r, q in ps:
-        doAssert q.col.isNaN or abs(q.col - edge) > 4 or q.confidence == 0,
+        doAssert q.col < 0 or abs(q.col - edge) > 4 or q.confidence == 0,
           $m & " row " & $r & ": " & $q
         if abs(q.timeMs - 400) <= 8 * dt: inc atOnset
       doAssert atOnset >= rows * 95 div 100, $m & " " & $hc & ": " & $atOnset
     # A search window on the edge alone finds nothing to pick.
     for q in picks(g, FirstBreakParams(pickMethod: m, searchStartMs: 196, searchEndMs: 204)):
-      doAssert q.col.isNaN and q.confidence == 0, $m & ": " & $q
+      doAssert q.col == -1 and q.confidence == 0, $m & ": " & $q
   # Zeros inside the trace (a dropout): the pick on their end has no noise
   # power before it, so no SNR and no confidence.
   var d = shotGather[float32](0, endOn(4, 25, 25), cols, dt)
@@ -410,7 +410,7 @@ block a_windowed_pick_reads_only_its_stretch:
 func same(a, b: FirstBreakPick): bool =
   # Equal picks, a NaN equal to a NaN.
   template eq(x, y: float64): bool = x == y or (x.isNaN and y.isNaN)
-  eq(a.timeMs, b.timeMs) and eq(a.col, b.col) and eq(a.snrDb, b.snrDb) and
+  eq(a.timeMs, b.timeMs) and a.col == b.col and eq(a.snrDb, b.snrDb) and
     a.confidence == b.confidence
 
 block a_zoom_window_with_the_required_margin_picks_the_same:
@@ -441,9 +441,9 @@ block a_zoom_window_with_the_required_margin_picks_the_same:
       var got = newSeq[FirstBreakPick](w.len)
       plan.pickInto(w.data, wmeta, ws, got)
       for r in 0 ..< g.len:
-        doAssert not full[r].col.isNaN
+        doAssert full[r].col >= 0
         var want = full[r]
-        want.col -= float64(zoom.a)
+        want.col -= zoom.a
         doAssert same(got[r], want), $m & " " & $lc & " row " & $r & ": " & $got[r] &
           " vs " & $want
   # A plan that reads whole traces says so.

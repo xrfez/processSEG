@@ -287,7 +287,7 @@ block errors:
   var x = newSeq[float32](10)
   for p in [AmplitudeParams(startMs: 10, endMs: 0), AmplitudeParams(startMs: NaN),
       AmplitudeParams(clipRun: 1), AmplitudeParams(clipTolerance: 1),
-      AmplitudeParams(spikeFactor: 0), AmplitudeParams(spikeWindowMs: Inf),
+      AmplitudeParams(spikeFactor: 0), AmplitudeParams(spikeHalfWindowMs: Inf),
       AmplitudeParams(dcRatio: NaN), AmplitudeParams(outlierZ: 0)]:
     doAssertRaises(ValueError): discard traceAmplitude(x, 1, p)
   doAssertRaises(ValueError): discard traceAmplitude(x, 0)

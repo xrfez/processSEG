@@ -43,7 +43,7 @@
 ##   runs, still reads as clipped);
 ## - `afSpiky`: `spikes` counts the samples whose deviation from the mean is
 ##   more than `spikeFactor` times the RMS deviation of their neighbours
-##   within `±spikeWindowMs` (the sample itself left out, so a spike does not
+##   within `±spikeHalfWindowMs` (the sample itself left out, so a spike does not
 ##   hide itself; two spikes closer than the window can). A non-zero sample
 ##   among zeros is a spike;
 ## - `afDcOffset`: `|mean| > dcRatio × σ`, σ the standard deviation.
@@ -89,7 +89,7 @@ type
     clipRun*: int = 3 ## Shortest run at the maximum that is a clip (≥ 2).
     clipTolerance*: float64 = 0 ## Relative: `|x| ≥ (1 − tol)·max` is at the maximum.
     spikeFactor*: float64 = 10 ## A spike: deviation > factor × the neighbours' RMS.
-    spikeWindowMs*: float64 = 20 ## Half-width of the neighbourhood, ms.
+    spikeHalfWindowMs*: float64 = 20 ## The neighbours: those within this many ms, each side.
     dcRatio*: float64 = 0.2 ## DC offset: `|mean| > dcRatio × σ` (Inf: off).
     outlierZ*: float64 = 3.5 ## Weak / noisy: `|robustZ| > outlierZ` (Inf: off).
 
@@ -119,7 +119,7 @@ proc badAmplitude(msg: string) {.noinline, noreturn.} =
 proc validate*(p: AmplitudeParams) =
   ## Raises `ValueError` when `p` is not valid: a NaN or reversed window,
   ## `clipRun < 1`, `clipTolerance` outside `0 ..< 1`, a `spikeFactor`,
-  ## `dcRatio` or `outlierZ` not above 0, or a `spikeWindowMs` not positive
+  ## `dcRatio` or `outlierZ` not above 0, or a `spikeHalfWindowMs` not positive
   ## and finite. Every proc taking `AmplitudeParams` checks it.
   if p.startMs.isNaN or p.endMs.isNaN or not (p.startMs <= p.endMs):
     badAmplitude("the window must have startMs ≤ endMs, got " & $p.startMs &
@@ -129,8 +129,8 @@ proc validate*(p: AmplitudeParams) =
     badAmplitude("clipTolerance must be in 0 ..< 1, got " & $p.clipTolerance)
   if not (p.spikeFactor > 0): # Inf: no spikes
     badAmplitude("spikeFactor must be > 0, got " & $p.spikeFactor)
-  if not (p.spikeWindowMs > 0 and p.spikeWindowMs < Inf):
-    badAmplitude("spikeWindowMs must be > 0 and finite, got " & $p.spikeWindowMs)
+  if not (p.spikeHalfWindowMs > 0 and p.spikeHalfWindowMs < Inf):
+    badAmplitude("spikeHalfWindowMs must be > 0 and finite, got " & $p.spikeHalfWindowMs)
   if not (p.dcRatio > 0): badAmplitude("dcRatio must be > 0, got " & $p.dcRatio)
   if not (p.outlierZ > 0): badAmplitude("outlierZ must be > 0, got " & $p.outlierZ)
 
@@ -229,7 +229,7 @@ func traceAmplitudeImpl[T](x: openArray[T], half: int,
 {.pop.}
 
 func spikeHalf(p: AmplitudeParams, dtMs: float64): int {.inline.} =
-  max(int(floor(p.spikeWindowMs / dtMs + 1e-9)), 1)
+  max(int(floor(p.spikeHalfWindowMs / dtMs + 1e-9)), 1)
 
 proc traceAmplitude*[T: SampleType](x: openArray[T], dtMs: float64,
     params = AmplitudeParams()): TraceAmplitude =
