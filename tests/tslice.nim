@@ -2,7 +2,7 @@
 ## A synthetic stream with known samples is split into segments (rows), and
 ## every window is checked against a direct slice of the unsegmented stream.
 
-import std/[assertions, math, random]
+import std/[assertions, math, os, random]
 import parseSEG, processSEG
 import utils/allocs
 
@@ -401,6 +401,53 @@ block doc_example:
   let plan = planSlices(meta, shots, SliceWindow(startMs: 0, lengthMs: 1000))
   doAssert plan.len == 1 and plan.samples == 1000
   doAssert plan.rowsNeeded == @[0, 1]
+
+block traces_needed_of_a_view_inside_the_file:
+  # Four segments of three receivers on disk (trace = 3 · segment +
+  # receiver). The plan is made on a view that skips the first segment, so
+  # its rows are not the file's trace numbers.
+  const segLen = 500
+  let path = getTempDir() / "processseg_tslice_continuous.sgy"
+  block:
+    var w = openSeismicWriter(path, SegyOutputOptions())
+    var x = newSeq[float32](segLen)
+    for s in 0 ..< 4:
+      for r in 0 ..< 3:
+        var k = initTraceKeys()
+        k.status = tsLive
+        (k.rcvLine, k.rcvPoint, k.channel) = (10.0, float64(100 + r), float64(r + 1))
+        k.time = 1.7e9 + float64(s * segLen) * Dt / 1000
+        k.t0Ms = 0
+        k.intervalUs = Dt * 1000
+        for j in 0 ..< segLen: x[j] = float32(r * 100_000 + s * segLen + j)
+        w.writeTrace(k, x)
+    discard w.close()
+  var f = openSeismic(path, keys = true)
+  let meta = chunkMeta(f, 3 ..< 12)
+  # A window of 100 samples from 30 samples before the end of segment 1.
+  let shot = initSliceShot(meta.keys(0).time + float64(segLen - 30) * Dt / 1000, id = 1)
+  let plan = planSlices(meta, [shot], window(100), soShotRecords)
+  doAssert plan.rowsNeeded == @[0, 1, 2, 3, 4, 5], "rows of the planning view"
+  doAssert plan.tracesNeeded == @[3, 4, 5, 6, 7, 8], "their traces in the file"
+  # The whole view as one block ...
+  var all = zeros[float32](meta.len, segLen)
+  doAssert f.readTracesInto(3 ..< 12, all) == 0
+  var report = initSliceReport(plan)
+  var ws = initWorkspace()
+  var want = zeros[float32](plan.len, plan.samples)
+  extractInto(plan, all, meta, want, report, ws)
+  for r in 0 ..< plan.len:
+    for j in 0 ..< plan.samples:
+      doAssert want[r, j] == float32(r * 100_000 + 2 * segLen - 30 + j)
+  # ... and a read of the traces needed alone give the same records.
+  let need = plan.tracesNeeded
+  var some = zeros[float32](need.len, segLen)
+  doAssert f.readTracesInto(need, some) == 0
+  var got = zeros[float32](plan.len, plan.samples)
+  extractInto(plan, some, chunkMeta(f, need), got, report, ws)
+  doAssert got == want, "the compact read"
+  f.close()
+  removeFile(path)
 
 block slice_keys:
   var s = segmentsOf[float32]([(0, 100)], line = 4, point = 2)

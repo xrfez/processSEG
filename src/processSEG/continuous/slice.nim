@@ -15,7 +15,7 @@
 ## let meta = initChunkMeta(rowsOf(keys, numSamples), dtMs = 2)
 ## let shots = @[initSliceShot(time = 1.7e9 + 12.5, id = 101)]
 ## let plan = planSlices(meta, shots, SliceWindow(startMs: 0, lengthMs: 4000))
-## # plan.rowsNeeded: the only rows to read (or read them all)
+## # plan.tracesNeeded: the only traces to read (or read them all)
 ## var dst = zeros[float32](plan.len, plan.samples)
 ## var report = initSliceReport(plan)
 ## var ws = initWorkspace()
@@ -154,6 +154,7 @@ type
     fraction: seq[float64]
     gapSamples: seq[int]
     rowsNeeded: seq[int]
+    tracesNeeded: seq[int] ## `traceOf` of `rowsNeeded`, in that order.
     dataIndex: seq[int] ## Per row: its index in `rowsNeeded`, or −1.
     overlaps: seq[SliceOverlap]
     issues: seq[SliceTimingIssue]
@@ -392,6 +393,7 @@ proc planCore(meta: ChunkMeta, times: openArray[float64], recv: openArray[int],
     if used[row]:
       result.dataIndex[row] = result.rowsNeeded.len
       result.rowsNeeded.add row
+      result.tracesNeeded.add meta.rows.traceOf(row)
     else:
       result.dataIndex[row] = -1
 
@@ -513,9 +515,20 @@ iterator pieces*(plan: SlicePlan, trace: int): SlicePiece =
     yield plan.spans[i]
 
 func rowsNeeded*(plan: SlicePlan): lent seq[int] {.inline, raises: [].} =
-  ## The rows any output trace reads, ascending: read only these (as a block
-  ## of their own, see `extractInto`) or all rows.
+  ## The rows any output trace reads, ascending: rows of the planning meta
+  ## (as `SlicePiece.row`), for taking them out of a block already in memory
+  ## or out of the caller's own per-row arrays. They are **not** trace
+  ## numbers unless the planning view starts at trace 0 of its file: read
+  ## from a file with `tracesNeeded`.
   plan.rowsNeeded
+
+func tracesNeeded*(plan: SlicePlan): lent seq[int] {.inline, raises: [].} =
+  ## The traces any output trace reads: the trace of each of `rowsNeeded`
+  ## (`TraceRows.traceOf`), in that order. Read only these, as a block of
+  ## their own (`readTracesInto(f, plan.tracesNeeded, data)` with
+  ## `chunkMeta(f, plan.tracesNeeded)`, see `extractInto`), or every row of
+  ## the planning meta.
+  plan.tracesNeeded
 
 func maxColumn*(plan: SlicePlan): int {.inline, raises: [].} =
   ## One past the highest column read from any row: the narrowest block
@@ -612,10 +625,11 @@ proc extractInto*[T: SampleType](plan: SlicePlan, data: RowBlock[T], meta: Chunk
   ## Cuts the traces of `plan` from the segments `data` into `dst`
   ## (`plan.len` rows of `plan.samples`), zero-filling and reporting gaps, and
   ## compares overlaps (see the module documentation). `data` and `meta` hold
-  ## either every row of the planning meta, or only `plan.rowsNeeded`, in that
-  ## order (`rowsOf(f, plan.rowsNeeded)`); a row not live in `meta` (failed)
-  ## is a gap. `ws` must hold `sliceWorkspace(T, plan)` (an
-  ## `AssertionDefect` otherwise). Allocates nothing.
+  ## either every row of the planning meta, or only the rows
+  ## `plan.rowsNeeded`, in that order: read from a file, those are the traces
+  ## `plan.tracesNeeded` (`chunkMeta(f, plan.tracesNeeded)`). A row not live
+  ## in `meta` (failed) is a gap. `ws` must hold `sliceWorkspace(T, plan)`
+  ## (an `AssertionDefect` otherwise). Allocates nothing.
   ##
   ## Raises `ValueError` when `meta` and `data` disagree, `meta` has neither
   ## row count, another `dtMs` or `firstSample` than the planning meta,
