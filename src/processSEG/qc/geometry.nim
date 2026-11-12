@@ -23,7 +23,8 @@
 ## **Tolerance.** An offset or midpoint mismatches when it is off by more
 ## than `max(tolerance, relTolerance · distance)` (in the coordinates'
 ## units): coordinates are often rounded, and the header offset to whole
-## units.
+## units. An infinite coordinate is not an unknown one (NaN): its distance
+## is infinite, which no offset or midpoint matches.
 ##
 ## **Units.** The comparison is in the coordinates' units, which must be
 ## those of the offset: parseSEG does not convert SEG-Y coordinates given
@@ -97,7 +98,9 @@ func checkGeometry*(k: TraceKeys, qc = GeometryQc()): GeometryCheck {.raises: []
     return
   let d = hypot(k.rcvX - k.srcX, k.rcvY - k.srcY)
   result.distance = d
-  let tol = max(qc.tolerance, qc.relTolerance * d)
+  # An infinite coordinate makes the distance infinite: the relative part
+  # would then accept any offset, so only the absolute one applies.
+  let tol = if d < Inf: max(qc.tolerance, qc.relTolerance * d) else: qc.tolerance
   if d <= qc.tolerance: result.flags.incl gfZeroOffset
   if not k.offset.isNaN:
     result.offsetError = abs(k.offset) - d

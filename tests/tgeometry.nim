@@ -83,3 +83,21 @@ block single_trace_and_errors:
   var one = newSeq[GeometryCheck](1)
   doAssertRaises(ValueError): checkGeometryInto(meta, one, GeometryQc(tolerance: -1))
   doAssertRaises(ValueError): checkGeometryInto(meta, one, GeometryQc(relTolerance: NaN))
+
+block infinite_coordinates:
+  # An infinite coordinate is not an unknown one: no header offset matches
+  # the distance, and the relative tolerance must not grow with it.
+  for rx in [Inf, -Inf]:
+    let c = checkGeometry(station(0, 0, rx, 0, offset = 100))
+    doAssert gfOffsetMismatch in c.flags and gfNoCoordinates notin c.flags, $c.flags
+    doAssert c.distance == Inf and c.offsetError == -Inf
+  # Both ends at infinity: the distance is undefined, which is no match.
+  let both = checkGeometry(station(Inf, 0, Inf, 0, offset = 100))
+  doAssert gfOffsetMismatch in both.flags, $both.flags
+  # A midpoint at infinity is not the midpoint of finite ends.
+  var k = station(0, 0, 300, 400)
+  k.cmpY = Inf
+  doAssert checkGeometry(k).flags == {gfMidpointMismatch}
+  # With no relative tolerance either (0 × Inf is NaN).
+  let strict = checkGeometry(station(0, 0, Inf, 0, offset = 100), GeometryQc(relTolerance: 0))
+  doAssert gfOffsetMismatch in strict.flags
