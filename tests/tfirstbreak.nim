@@ -383,3 +383,26 @@ block zeros_before_the_data_are_not_noise:
       if j notin 60 ..< 200: d.data[r, j] = row[j]
   for q in picks(d, FirstBreakParams(searchStartMs: 380, searchEndMs: 420)):
     doAssert q.col == 200 and q.snrDb.isNaN and q.confidence == 0, $q
+
+block a_windowed_pick_reads_only_its_stretch:
+  # With a search window, STA/LTA and the energy ratio read (and band-pass)
+  # the window and what its picks depend on, no more: a burst a hundred
+  # times the data, from the first sample they do not need, changes
+  # nothing, bit for bit. (Read to its end, the trace would give another
+  # stabilization and so another SNR.)
+  var g = shot(0.1, 11)
+  var loud = g.clone
+  for r in 0 ..< g.len:
+    # The window ends 80 ms after the guide; a pick on its last column reads
+    # the longer of windowMs (20) and snrWindowMs (40) from there on.
+    let first = int(ceil((onsetMs(g.keys[r].offset) + 80 + 40) / dt)) + 1
+    var burst = newSeq[float32](cols)
+    burst.addNoise(50, 300 + r)
+    for j in first ..< cols: loud.data[r, j] += burst[j]
+  for m in [pmStaLta, pmEnergyRatio]:
+    for (lc, hc) in [(0.0, Inf), (8.0, 70.0)]:
+      var p = guided
+      p.pickMethod = m
+      p.lowCutHz = lc
+      p.highCutHz = hc
+      doAssert picks(loud, p) == picks(g, p), $m & " " & $lc

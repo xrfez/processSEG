@@ -236,3 +236,34 @@ What changed (each measured, cachegrind first):
 `tvectorized` now also checks `moveoutCols` and `l1Fit` for packed instructions in release
 and danger builds. `nim testRelease` passed (34 files, release and danger) after these
 changes.
+
+### First-break picking in a search window
+
+`bench/bprestack.nim`, the same shot, every pick guided by the refraction
+(`guideVelocity` 2500, 50 ms before and 100 ms after it: 76 of the 2001 columns), one
+thread.
+
+2026-11-12, AMD Ryzen 9 3950X, Nim 2.4.0, gcc 12.2.0,
+`-d:danger --opt:speed --debuginfo:on --linedir:on -march=x86-64-v3`, medians:
+
+| `pickInto`, guided | whole traces read | the window's stretch read |
+|---|---|---|
+| STA/LTA, MER, Coppens | 20.1 / 5.7 / 10.3 ms | 1.36 / 1.04 / 5.55 ms |
+| the same with a 5–60 Hz band-pass | 42.9 / 28.4 / 33.1 ms | 5.84 / 5.21 / 28.1 ms |
+
+- With a search window, STA/LTA and the energy ratio depend on the window's columns and a
+  bounded stretch around them (the STA and LTA or the ratio's windows, the confidence's
+  windows, the causal band-pass's `requiredMargin` before them). `pickInto` and `pick` now
+  copy, band-pass and scan that stretch alone, where they read every trace to its end; the
+  band-pass runs in the same lanes as before, on the stretches. On 2000 traces of 3000
+  samples with a 150 ms window (the reviewer's case, minima of 9): energy ratio 8.2 → 1.0 ms,
+  with an 8–60 Hz band-pass 40.7 → 4.0 ms; STA/LTA 30.1 → 1.3 ms and 62.7 → 4.3 ms.
+- The picks: without a band-pass, the same column on every trace of that case and of
+  21 600 others (three shots, three noise levels, with and without ground roll, guided and
+  fixed windows); the SNR within 0.002 dB (its stabilization is now relative to the stretch).
+  With a band-pass the filter starts at the stretch, not at the trace, and is not preceded
+  by a detrend: 5 of 12 000 picks of the reviewer's case move (four by one sample, one by
+  four, on flat maxima), the mean pick error stays the same to 0.01 ms.
+- Coppens reads the whole trace (its ratio is cumulative from the trace's start and its
+  stabilization relative to the whole trace): same picks, bit for bit. It gains only from
+  its ratio being computed about the window instead of everywhere.
