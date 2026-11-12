@@ -136,6 +136,26 @@ block scratch_regions:
   var empty = initWorkspace()
   doAssert empty.scratch(float32, 0) == nil
 
+block scratch_starts_on_a_cache_line:
+  # Element 0 of every region is 64-byte aligned, at any size and after a
+  # move (a kernel lays its SIMD buffers out from there), and all of the
+  # reserved elements are usable from it.
+  for n in [1, 3, 16, 17, 1000, 4097]:
+    var ws = initWorkspace()
+    ws.reserve(WorkspaceSize(f32: n, f64: n, u32: n))
+    doAssert cast[int](ws.scratch(float32, n)) mod 64 == 0, "f32, " & $n
+    doAssert cast[int](ws.scratch(float64, n)) mod 64 == 0, "f64, " & $n
+    doAssert cast[int](ws.scratch(uint32, n)) mod 64 == 0, "u32, " & $n
+    let f = ws.scratch(float32, n)
+    let d = ws.scratch(float64, n)
+    let u = ws.scratch(uint32, n)
+    for i in 0..<n: # every element writable (ASan checks the bounds)
+      f[i] = 1
+      d[i] = 2
+      u[i] = 3
+    var moved = move ws
+    doAssert moved.scratch(float64, n) == d and moved.scratch(float64, n)[n - 1] == 2
+
 block workspace_used_from_a_thread:
   # As the pool will do: the workspace stays in its owner's storage and the
   # worker uses it through a pointer (createThread copies its argument, and a
