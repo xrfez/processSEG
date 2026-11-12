@@ -43,6 +43,21 @@ f.applySurvey(g, stats)        # by station; `overwrite = true` refreshes coordi
 echo stats                     # traces joined by stations, via the source, by record, ...
 ```
 
+**One rule for a receiver.** Everywhere a trace's receiver is its *station*, as parseSEG's
+`stationKey(rcvLine, rcvPoint, rcvIndex)` makes it: the line and the point rounded to 1/100
+(the resolution of survey files, so a point decoded from a binary fraction and the same
+point typed in decimal are one station), together with the point index. Two traces at one
+line and point with different indices are two receivers. This is how `applySurvey` joins
+traces, how record completeness matches them (below), and how `planSlices` groups the
+segments of a continuous recording ([vibroseis.md](vibroseis.md#continuous-recordings));
+slicing then keeps each channel and component of a station as a stream of its own, and
+record QC counts a station's components once. Against a survey file, index 0 means
+unknown: a header index 0 matches any X index, and an X index 0 matches index 1. Rows that
+are not live (dead, auxiliary, or failed to decode) are no receiver's data: slicing does
+not use them, `addFold` does not count them, `checkGeometryInto` does not check them
+(given a `ChunkMeta` or a `TraceRows` view alike), and auxiliary traces take no part in
+record matching.
+
 ## Patches: describing and generating X records
 
 `describePatches(g)` walks every X record: its receiver lines and stations, its channels,

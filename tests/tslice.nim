@@ -462,6 +462,35 @@ block traces_needed_of_a_view_inside_the_file:
   f.close()
   removeFile(path)
 
+block a_receiver_is_its_station_with_the_index:
+  # The receiver of a row is its station as parseSEG's `stationKey` makes
+  # it: line and point to 1/100, with the point index.
+  # Two deployments at one line and point (index 1 and 2) record the same
+  # span: two receivers, not one stream overlapping itself.
+  var s = segmentsOf[float32]([(0, 100)], point = 7).join(segmentsOf[float32]([(0, 100)],
+    point = 7, value = proc (k: int): float64 = -streamValue(k)))
+  (s.keys[0].rcvIndex, s.keys[1].rcvIndex) = (1'i16, 2'i16)
+  let meta = initChunkMeta(rowsOf(s.keys, s.counts), dtMs = Dt)
+  let plan = planSlices(meta, [shotAt(10)], window(20), soShotRecords)
+  doAssert plan.receiverCount == 2 and plan.overlaps.len == 0
+  doAssert plan.receiverKeys(0).rcvIndex == 1 and plan.receiverKeys(1).rcvIndex == 2
+  var report: SliceReport
+  let dst = cut(s, meta, plan, report)
+  doAssert dst[0, 0] == float32(streamValue(10)) and dst[1, 0] == float32(-streamValue(10))
+  # A point decoded from a binary fraction (SEG-D: sixteen fraction bits) and
+  # the same point in decimal are one station: two segments, one stream.
+  var t = segmentsOf[float32]([(0, 100), (100, 100)], line = 12, point = 100.1)
+  t.keys[1].rcvPoint = 100.0 + 6554.0 / 65536.0
+  doAssert t.keys[0].rcvPoint != t.keys[1].rcvPoint
+  let one = planSlices(initChunkMeta(rowsOf(t.keys, t.counts), dtMs = Dt), [shotAt(90)],
+    window(20))
+  doAssert one.receiverCount == 1 and one.gapSamples(0) == 0
+  # Channel and component still tell the streams of one station apart.
+  var c = segmentsOf[float32]([(0, 100)]).join(segmentsOf[float32]([(0, 100)]))
+  c.keys[1].component = 2
+  doAssert planSlices(initChunkMeta(rowsOf(c.keys, c.counts), dtMs = Dt), [shotAt(0)],
+    window(10)).receiverCount == 2
+
 block slice_keys:
   var s = segmentsOf[float32]([(0, 100)], line = 4, point = 2)
   s.keys[0].channel = 3

@@ -41,9 +41,13 @@
 ##
 ## **Receivers.** Segments are grouped per receiver and never stitched
 ## across receivers, even when their times line up. By default a receiver is
-## a distinct (`rcvLine`, `rcvPoint`, `channel`, `component`) (NaN equal to
-## NaN); a caller array of group ids overrides that. Receivers are numbered
-## in ascending key (or id) order, so the output does not depend on the order
+## its station as parseSEG's `stationKey` makes it, the rule of the survey
+## join and of record QC: `rcvLine` and `rcvPoint` rounded to 1/100, with the
+## point index `rcvIndex` (two deployments at one point are two receivers).
+## At one station each `channel` and `component` is a stream of its own, and
+## without a station (NaN, equal to NaN) they alone tell the streams apart.
+## A caller array of group ids overrides that. Receivers are numbered in
+## ascending key (or id) order, so the output does not depend on the order
 ## of the rows.
 ##
 ## **Sample grid.** Within a receiver, segment positions are whole samples
@@ -224,8 +228,13 @@ func cmpNaN(a, b: float64): int =
   else: cmp(a, b)
 
 func cmpReceiver(a, b: TraceKeys): int =
-  result = cmpNaN(a.rcvLine, b.rcvLine)
-  if result == 0: result = cmpNaN(a.rcvPoint, b.rcvPoint)
+  # By station as parseSEG keys it (line and point to 1/100, then the point
+  # index), then by the channel and component at that station.
+  let x = stationKey(a.rcvLine, a.rcvPoint, a.rcvIndex)
+  let y = stationKey(b.rcvLine, b.rcvPoint, b.rcvIndex)
+  result = cmpNaN(x.line, y.line)
+  if result == 0: result = cmpNaN(x.point, y.point)
+  if result == 0: result = cmp(x.index, y.index)
   if result == 0: result = cmpNaN(a.channel, b.channel)
   if result == 0: result = cmp(a.component, b.component)
 
@@ -432,7 +441,7 @@ proc planSlices*(meta: ChunkMeta, times: openArray[float64], receivers: openArra
   planCore(meta, times, receivers, shots, window, order, align)
 
 proc defaultReceivers(meta: ChunkMeta): seq[int] =
-  # Group ids in ascending (rcvLine, rcvPoint, channel, component) order.
+  # Group ids in ascending (station, channel, component) order.
   var idx = newSeq[int](meta.len)
   for i in 0 ..< idx.len: idx[i] = i
   idx.sort do (a, b: int) -> int: cmpReceiver(meta.keys(a), meta.keys(b))
@@ -444,8 +453,9 @@ proc defaultReceivers(meta: ChunkMeta): seq[int] =
 
 proc planSlices*(meta: ChunkMeta, times: openArray[float64], shots: openArray[SliceShot],
     window: SliceWindow, order = soReceiverGathers, align = saNearest): SlicePlan =
-  ## `planSlices` with caller times and the receivers from the keys
-  ## (`rcvLine`, `rcvPoint`, `channel`, `component`).
+  ## `planSlices` with caller times and the receivers from the keys (the
+  ## station `rcvLine`, `rcvPoint`, `rcvIndex`, then `channel` and
+  ## `component`; see the module documentation).
   if times.len != meta.len:
     badSlice("times has " & $times.len & " entries, the meta " & $meta.len & " rows")
   planCore(meta, times, defaultReceivers(meta), shots, window, order, align)
@@ -453,7 +463,8 @@ proc planSlices*(meta: ChunkMeta, times: openArray[float64], shots: openArray[Sl
 proc planSlices*(meta: ChunkMeta, shots: openArray[SliceShot], window: SliceWindow,
     order = soReceiverGathers, align = saNearest): SlicePlan =
   ## `planSlices` with the times and receivers from the keys: `TraceKeys.time`
-  ## and (`rcvLine`, `rcvPoint`, `channel`, `component`).
+  ## and the station (`rcvLine`, `rcvPoint`, `rcvIndex`), then `channel` and
+  ## `component`.
   var times = newSeq[float64](meta.len)
   for row in 0 ..< meta.len: times[row] = meta.keys(row).time
   planCore(meta, times, defaultReceivers(meta), shots, window, order, align)

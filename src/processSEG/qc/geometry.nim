@@ -36,7 +36,9 @@
 ## `gfMidpointMismatch` is not in `badGeometry`.
 ##
 ## Non-live rows (dead, auxiliary, failed) are not checked: their flags are
-## empty and their values NaN.
+## empty and their values NaN. That holds for a `ChunkMeta` and for a
+## `TraceRows` view alike (a view has no failed rows); `checkGeometry` on a
+## trace's keys checks them whatever its status.
 
 import std/math
 import parseSEG
@@ -125,14 +127,19 @@ proc checkGeometryInto*(meta: ChunkMeta, dst: var openArray[GeometryCheck],
 
 proc checkGeometryInto*(rows: TraceRows, dst: var openArray[GeometryCheck],
     qc = GeometryQc()) =
-  ## `checkGeometry` of every row of `rows`, whatever its status. Raises
-  ## `ValueError` as the `ChunkMeta` form, and when the view has no keys.
+  ## `checkGeometry` of every live row of `rows` (status live or unknown)
+  ## into `dst[row]`, as the `ChunkMeta` form: dead and auxiliary rows get no
+  ## flags and NaN values. Raises `ValueError` as that form, and when the
+  ## view has no keys.
   qc.checkTolerances
   if not rows.hasKeys: raise newException(ValueError, "the rows have no keys")
   if dst.len != rows.len:
     raise newException(ValueError, "dst holds " & $dst.len & " checks, the view " &
       $rows.len & " rows")
-  for row in 0 ..< rows.len: dst[row] = checkGeometry(rows.keysAt(row), qc)
+  for row in 0 ..< rows.len:
+    let k = rows.keysAt(row)
+    dst[row] = if k.status in {tsLive, tsUnknown}: checkGeometry(k, qc)
+               else: uncheckedGeometry()
 
 func flaggedRows*(checks: openArray[GeometryCheck], flags = badGeometry): seq[int] =
   ## The rows whose findings include one of `flags`, ascending.

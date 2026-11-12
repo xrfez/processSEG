@@ -62,10 +62,14 @@ block flags_on_synthetic_geometry:
   doAssert flaggedRows(checks) == @[5, 10, 11]
   doAssert flaggedRows(checks, badGeometry + {gfMidpointMismatch}) == @[5, 10, 11, 13]
   doAssert flaggedRows(checks, {gfNegativeOffset}) == @[0, 1, 2, 3, 4]
-  # The view form checks every row, dead ones too.
+  # The view form agrees row for row: a dead trace is not checked there
+  # either (`checkGeometry` on its keys checks it, whatever its status).
   var all = newSeq[GeometryCheck](meta.len)
   checkGeometryInto(meta.rows, all)
-  doAssert all[14].flags == {gfOffsetMismatch}
+  for row in 0 ..< meta.len:
+    doAssert all[row].flags == checks[row].flags, $row
+  doAssert all[14].flags == {} and all[14].distance.isNaN
+  doAssert checkGeometry(keys[14]).flags == {gfOffsetMismatch}
   # Tighter and looser tolerances.
   checkGeometryInto(meta, checks, GeometryQc(tolerance: 0.1, relTolerance: 0))
   doAssert gfOffsetMismatch in checks[15].flags and gfOffsetMismatch in checks[0].flags
@@ -101,3 +105,19 @@ block infinite_coordinates:
   # With no relative tolerance either (0 × Inf is NaN).
   let strict = checkGeometry(station(0, 0, Inf, 0, offset = 100), GeometryQc(relTolerance: 0))
   doAssert gfOffsetMismatch in strict.flags
+
+block both_forms_skip_rows_that_are_not_live:
+  # Dead and auxiliary rows have no geometry to check, in a meta and in a
+  # view alike; a view has no failed rows.
+  var keys = @[station(0, 0, 250, 0, offset = 400), station(0, 0, 250, 0, offset = 400),
+    station(0, 0, 250, 0, offset = 400), station(0, 0, 250, 0, offset = 400)]
+  (keys[0].status, keys[1].status, keys[3].status) = (tsAuxiliary, tsDead, tsUnknown)
+  let counts = @[10, 10, 10, 10]
+  let rows = rowsOf(keys, counts)
+  var a = newSeq[GeometryCheck](4)
+  var b = newSeq[GeometryCheck](4)
+  checkGeometryInto(initChunkMeta(rows, dtMs = 2), a)
+  checkGeometryInto(rows, b)
+  doAssert flaggedRows(a) == @[2, 3] and flaggedRows(b) == @[2, 3]
+  for row in 0 .. 1:
+    doAssert b[row].flags == {} and b[row].distance.isNaN and b[row].offsetError.isNaN

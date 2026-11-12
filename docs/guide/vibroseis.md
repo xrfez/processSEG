@@ -206,14 +206,17 @@ rows. For threads, give each its own `RecordStack` and `merge` them at the end.
 
 Nodes record continuously, as consecutive segments per receiver. `planSlices` lays out
 one trace per (receiver, shot) from the segments' start times (`TraceKeys.time`, or your
-own array) and a window around each shot time; `extractInto` copies and stitches the
-segments into a new block. The plan lists `tracesNeeded`, so only those traces are read
-(`rowsNeeded` are the same rows counted in the planning view, which are trace numbers only
-when the view starts at trace 0); gaps are zero-filled and reported; overlapping segments
-are trimmed (the later one wins) and checked. Each output trace's keys (`sliceKeys`) carry the shot time as `time` and the
-window start as `t0Ms`, so its time axis is relative to the source, as a shot record's
-is. For uncorrelated data, make the window the listen time plus the sweep length, then
-correlate.
+own array) and a window around each shot time. A receiver is its station (line and point
+to 1/100 with the point index, the rule of [survey-qc.md](survey-qc.md)), and at one
+station each channel and component is a stream of its own; your own array of receiver
+ids overrides that. `extractInto` copies and stitches the segments into a new block. The
+plan lists `tracesNeeded`, so only those traces are read (`rowsNeeded` are the same rows
+counted in the planning view, which are trace numbers only when the view starts at trace
+0); gaps are zero-filled and reported; overlapping segments are trimmed (the later one
+wins) and checked. Each output trace's keys (`sliceKeys`) carry the shot time as `time`
+and the window start as `t0Ms`, so its time axis is relative to the source, as a shot
+record's is. For uncorrelated data, make the window the listen time plus the sweep
+length, then correlate.
 
 ```nim
 import parseSEG, processSEG
