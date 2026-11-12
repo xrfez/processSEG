@@ -486,6 +486,43 @@ block skipped_traces:
   let muted = bruteStack(f, float32, binning, vel, opts)
   doAssert muted.stacked == 0 and muted.skipped == flat.traces
 
+block interval_kept_exact:
+  # A whole-microsecond interval whose value in ms is not a binary fraction
+  # (1001 µs: 1.001 ms · 1000 is 1000.9999999999999, and 1472 of the 65535
+  # SEG-Y intervals are like it): the stack keeps the input's µs and
+  # stackKeys hands those to the writer.
+  let path = dir / "odd.sgy"
+  block:
+    var w = openSeismicWriter(path, SegyOutputOptions())
+    var x = newSeq[float32](200)
+    x[50] = 1
+    for cdp in 1 .. 2:
+      for i in 0 ..< 3:
+        var k = initTraceKeys()
+        k.ensemble = float64(cdp)
+        k.offset = 10 * float64(i)
+        k.t0Ms = 0
+        k.intervalUs = 1001
+        k.status = tsLive
+        w.writeTrace(k, x)
+    doAssert not w.close().isFatal
+  var f = openSeismic(path, keys = true)
+  doAssert f.traceKeys(0).intervalUs == 1001
+  let res = bruteStack(f, float32, cdpBinning(1, 2), constantVelocity(2000))
+  doAssert res.stacked == 6 and res.dtMs == 1.001 and res.dtMs * 1000 != 1001
+  doAssert res.intervalUs == 1001
+  doAssert res.stackKeys(0).intervalUs == 1001
+  let stackPath = dir / "odd_stack.sgy"
+  doAssert not writeStack(stackPath, res).isFatal
+  var st = openSeismic(stackPath, keys = true)
+  doAssert st.len == 2 and st.traceKeys(1).intervalUs == 1001
+  st.close()
+  f.close()
+  # A result built by hand, with no intervalUs: from its dtMs.
+  let hand = StackResult[float32](binning: cdpBinning(1, 2), dtMs: 2,
+    data: newTensor[float32](2, 3), fold: newTensor[int32](2, 3))
+  doAssert hand.intervalUs == 0 and hand.stackKeys(0).intervalUs == 2000
+
 block memory_bound:
   # One stack, whatever the number of workers (there were workers + 1).
   let m = bruteStackMemory(float32, bins = 1000, samples = 2001,

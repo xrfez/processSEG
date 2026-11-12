@@ -106,6 +106,10 @@ type
     fold*: Tensor[int32] ## `[bins, samples]`, the per-sample fold.
     binning*: Binning    ## The bins (`location` gives each bin's numbers).
     dtMs*: float64       ## Sample interval, in ms.
+    intervalUs*: float64 ## The same in µs, as the input's keys hold it, for
+                         ## the writer (`stackKeys`): `dtMs · 1000` is not
+                         ## always the whole microseconds `dtMs` came from.
+                         ## 0 (a result built by hand): `dtMs · 1000` is used.
     startMs*: float64    ## Time of sample 0, in ms.
     stacked*: int        ## Traces stacked.
     skipped*: int        ## Live traces not stacked (see the module documentation).
@@ -366,7 +370,8 @@ proc runStack[T](f: SeismicFile, sel: TraceSel, binning: Binning,
   # `workers + 1` stacks and was slower with 8 workers than with 1 on a
   # stack of 40 000 bins: 846 against 583 ms, 5.7 against 1.3 GB.)
   var acc = initStackAccumulator[T](binning.len, samples, dtMs, opts.startMs)
-  result = StackResult[T](binning: binning, dtMs: dtMs, startMs: opts.startMs)
+  result = StackResult[T](binning: binning, dtMs: dtMs, intervalUs: intervalUs,
+    startMs: opts.startMs)
   let total = int64(sel.len)
   var done = 0'i64
   block run:
@@ -511,7 +516,9 @@ proc keysOf[T](res: StackResult[T], bin: int, fold: int32): TraceKeys =
   result.cmpY = loc.y
   result.offset = 0
   result.t0Ms = res.startMs
-  result.intervalUs = res.dtMs * 1000
+  # The input's own microseconds: 1001 µs is 1.001 ms, and 1.001 · 1000 is
+  # 1000.9999999999999.
+  result.intervalUs = if res.intervalUs > 0: res.intervalUs else: res.dtMs * 1000
   result.status = if fold > 0: tsLive else: tsDead
 
 func overridesOf(fold: int32): array[1, HeaderOverride] =
@@ -521,9 +528,10 @@ proc stackKeys*[T](res: StackResult[T], bin: int): TraceKeys =
   ## The keys of bin `bin`'s stacked trace (decision D14: processSEG
   ## describes its results, parseSEG writes them): the CDP number (or the
   ## 1-based bin index for 3D bins), inline and crossline, the bin centre as
-  ## the midpoint, offset 0, `startMs` as `t0Ms`, `dtMs` as the interval,
-  ## and `tsDead` for a bin with no fold, else `tsLive`; every other key
-  ## unknown. Pass them, with `stackOverrides`, to parseSEG's
+  ## the midpoint, offset 0, `startMs` as `t0Ms`, `intervalUs` as the
+  ## interval (`dtMs · 1000` when it is 0), and `tsDead` for a bin with no
+  ## fold, else `tsLive`; every other key unknown. Pass them, with
+  ## `stackOverrides`, to parseSEG's
   ## `writeTrace(w, keys, samples, overrides)` to write a stack your own way
   ## (other options, extra overrides, a selection of bins); `writeStack`
   ## does exactly that for every bin. Raises `ValueError` as `maxFold`.
@@ -542,7 +550,8 @@ proc writeStack*[T](path: string, res: StackResult[T],
   ## `TraceKeys`; `opts` sets the revision, byte order, sample format and
   ## textual header). Each trace holds its bin's location (CDP number, or
   ## the 1-based bin index for 3D bins; inline and crossline; the bin
-  ## centre as the CDP X/Y), offset 0, `startMs` as the delay, `dtMs`, and
+  ## centre as the CDP X/Y), offset 0, `startMs` as the delay, the interval
+  ## (`intervalUs`, exact for the input's whole microseconds), and
   ## as the fold (`numHorzStacked`, bytes 33-34) the largest per-sample fold;
   ## a bin with no fold is a dead trace (code 2). The binary header's trace
   ## sorting is `opts.traceSorting`, and 4 (CDP stack) when that is 0 (so

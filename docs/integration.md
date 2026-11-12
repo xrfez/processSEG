@@ -457,7 +457,8 @@ trace's first and last non-zero samples, so muted zeros do not count.
   chunk, on the calling thread; returning false stops the workers and raises
   `SegCancelledError`. A viewer runs `bruteStack` on a background thread of its own.
 - **Result:** a `StackResult`: `data` (`[bins, samples]`, normalized by fold, √fold or
-  not), `fold` (`[bins, samples]`, int32), `binning`, `dtMs`, `startMs`, `stacked`,
+  not), `fold` (`[bins, samples]`, int32), `binning`, `dtMs` (and `intervalUs`, the
+  input's own microseconds, which is what `stackKeys` writes), `startMs`, `stacked`,
   `skipped` (live traces outside every bin, with a NaN offset, t0 or static, no
   interval, non-finite samples, or fully stretch-muted) and `failed` (traces that could
   not be decoded). The traces are summed in file order: the stack is the same bit for
