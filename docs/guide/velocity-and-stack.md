@@ -103,6 +103,18 @@ let field = initVelocityField([1.0, 2.0], [constantVelocity(2000),
 for k in keys.mitems: k.ensemble = 2    # the field is read at each row's CDP
 moveoutTimesInto(meta, field, t0Ms = 1000, ticks)
 doAssert abs(ticks[0] - nmoTime(50, 3000, 1000)) < 1e-9
+
+# A stack by midpoints reads the field at each bin's CDP number, not at the
+# header's: give the binning to draw the hyperbolas that stack will correct.
+let line = lineBinning(x0 = 0, y0 = 0, azimuthDeg = 90, binSize = 25, count = 40,
+  firstCdp = 1)
+for k in keys.mitems:
+  k.ensemble = 777                      # a header CDP the stack does not use
+  k.cmpX = 30                           # bin 1 of the line: CDP 2
+  k.cmpY = 0
+moveoutTimesInto(meta, field, line, t0Ms = 1000, ticks)
+doAssert line.locationOf(keys[0]).cdp == 2
+doAssert abs(ticks[0] - nmoTime(50, 3000, 1000)) < 1e-9
 ```
 
 To flatten first breaks on the display, `applyLmo(samples, meta, velocity, biasMs)`
@@ -150,7 +162,10 @@ or a `VelocityField` read at each row's location (the keys' `ensemble` in 2D, `i
 and `crossline` in 3D), and mutes where the stretch exceeds `maxStretch`. (The kernel
 under it is `nmoInto`, one row with a velocity per output sample; to correct many rows
 with one velocity column yourself, convert the column once with `vrmsToSloth` and call
-`nmoSlothInto`, which gives the same samples without a division per sample.) A
+`nmoSlothInto`, which gives the same samples without a division per sample.) To
+preview what `bruteStack` will stack with a `lineBinning` or `gridBinning`, whose bins'
+numbers are not the traces' header numbers, pass the binning:
+`samples.applyNmo(meta, field, binning, p, ws)` reads the field at each row's bin. A
 `StackAccumulator` then sums traces into bins in any order with a **per-sample** fold:
 `addLive` counts only the span between a trace's first and last non-zero samples, so
 muted zeros do not count.

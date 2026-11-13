@@ -395,7 +395,14 @@ geometry yet) gives a NaN tick.
   t0Ms)` takes a `VelocityFunction`'s RMS velocity at `t0Ms`, and
   `moveoutTimesInto(meta, field, t0Ms, ticks)` / `moveoutColumnsInto(meta, field, t0Ms,
   ticks)` take a `VelocityField`'s at each row's location (the keys' `ensemble` in 2D,
-  `inline`/`crossline` in 3D; a `locations` overload takes distances along the line).
+  `inline`/`crossline` in 3D; a `locations` overload takes distances along the line);
+- the hyperbolas a stack will correct: `bruteStack` reads its field at each **bin's**
+  numbers (`binning.location(bin)`), which are the traces' header numbers only for
+  `cdpBinning` and `inlineCrosslineBinning`. With `lineBinning` or `gridBinning`, pass
+  the binning: `moveoutTimesInto(meta, field, binning, t0Ms, ticks)` /
+  `moveoutColumnsInto(meta, field, binning, t0Ms, ticks)` read the field at the location
+  of each row's bin (`binning.locationOf(keys)`; NaN for a row in no bin), and
+  `applyNmo(samples, meta, field, binning, p, ws)` previews the NMO itself.
 
 Velocity picks load with `readVelocities(path)` (VELF cards, HANDVEL blocks or CSV,
 detected) into `VelocityPick`s, and `initVelocityField(picks, dtMs, tMaxMs)` builds the

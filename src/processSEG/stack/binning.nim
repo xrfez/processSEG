@@ -9,6 +9,7 @@
 ## var bins = newSeq[int](meta.len)                          # once; reused
 ## binsInto(meta.rows, b3, bins)                             # −1: no bin
 ## let loc = b3.location(bins[0])                            # inline, crossline, x, y
+## let same = b3.locationOf(meta.keys(0))                    # a trace's bin's
 ## ```
 ##
 ## **2D.** `cdpBinning` takes the keys' `ensemble` (the CDP number) as it
@@ -252,13 +253,8 @@ proc binsInto*(meta: ChunkMeta, b: Binning, bins: var openArray[int]) =
   ## `binsInto(meta.rows, b, bins)`.
   binsInto(meta.rows, b, bins)
 
-proc location*(b: Binning, bin: int): BinLocation =
-  ## What bin `bin` stands for: its CDP number (2D), its inline and
-  ## crossline numbers (3D) and its centre (line and grid binnings); NaN
-  ## for what the binning does not define. Raises `ValueError` for a bin
-  ## outside `0 ..< len`.
-  if bin < 0 or bin >= b.len:
-    badBinning("bin " & $bin & " is outside 0 ..< " & $b.len)
+func locationAt(b: Binning, bin: int): BinLocation {.raises: [].} =
+  # `location` of a bin known to be in 0 ..< len.
   result = BinLocation(cdp: NaN, inline: NaN, crossline: NaN, x: NaN, y: NaN)
   case b.kind
   of bnCdp:
@@ -277,3 +273,22 @@ proc location*(b: Binning, bin: int): BinLocation =
       let c = float64(i) * b.size1
       result.x = b.x0 + a * b.ux + c * b.vx
       result.y = b.y0 + a * b.uy + c * b.vy
+
+proc location*(b: Binning, bin: int): BinLocation =
+  ## What bin `bin` stands for: its CDP number (2D), its inline and
+  ## crossline numbers (3D) and its centre (line and grid binnings); NaN
+  ## for what the binning does not define. Raises `ValueError` for a bin
+  ## outside `0 ..< len`.
+  if bin < 0 or bin >= b.len:
+    badBinning("bin " & $bin & " is outside 0 ..< " & $b.len)
+  b.locationAt(bin)
+
+func locationOf*(b: Binning, k: TraceKeys): BinLocation {.raises: [].} =
+  ## The location of the bin a trace with keys `k` falls in,
+  ## `location(binOf(k))`; every field NaN when it falls in none. It is
+  ## where a stack with this binning reads a `VelocityField` for the trace
+  ## (`bruteStack`, and the `Binning` forms of `applyNmo` and
+  ## `moveoutTimesInto`): the bin's numbers, not the trace's header numbers.
+  let bin = b.binOf(k)
+  if bin < 0: BinLocation(cdp: NaN, inline: NaN, crossline: NaN, x: NaN, y: NaN)
+  else: b.locationAt(bin)

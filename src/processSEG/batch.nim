@@ -93,7 +93,7 @@ import core/[rows, types, workspace]
 import pipeline
 import stack/[binning, nmo, stack]
 import statics/elevation
-import velocity/model
+import velocity/[model, moveout]
 
 # For `BruteStackOptions.statics`: callers write `some(datumStatics(...))`.
 export options
@@ -470,16 +470,6 @@ proc runStack[T](f: SeismicFile, sel: TraceSel, binning: Binning,
   acc.finishInto(result.data, result.fold, opts.norm)
   if progress != nil: discard progress(total, total)
 
-proc checkField(binning: Binning, velocity: VelocityField) =
-  if velocity.len == 0:
-    raise newException(ValueError, "the velocity field is empty")
-  if velocity.kind == fk2D and binning.is3D:
-    raise newException(ValueError, "a 2D velocity field needs a 2D binning " &
-      "(cdpBinning or lineBinning)")
-  if velocity.kind == fk3D and not binning.is3D:
-    raise newException(ValueError, "a 3D velocity field needs a 3D binning " &
-      "(gridBinning or inlineCrosslineBinning)")
-
 proc checkFunction(velocity: VelocityFunction) =
   let v = velocity.vrmsAt(0)
   if v.isNaN or v <= 0:
@@ -498,7 +488,7 @@ proc bruteStack*(f: SeismicFile, T: typedesc[SampleType], traces: Slice[int],
   ## suit the binning or ends before the stack's last sample
   ## (`field.tMaxMs`), an option is invalid or the flow does not compile,
   ## and `SegCancelledError` when `progress` cancels.
-  checkField(binning, velocity)
+  checkSuits(velocity, binning)
   var job = Job[T](velKind: velField, field: addr velocity)
   runStack[T](f, TraceSel(span: traces), binning, job, opts, progress)
 
@@ -518,7 +508,7 @@ proc bruteStack*(f: SeismicFile, T: typedesc[SampleType],
   ## channel set), read and stacked in list order: `traces[i]` is a trace
   ## index, and a trace listed twice is stacked twice. `progress` counts
   ## list positions. The list is copied. Otherwise as the range form.
-  checkField(binning, velocity)
+  checkSuits(velocity, binning)
   var job = Job[T](velKind: velField, field: addr velocity)
   runStack[T](f, TraceSel(listed: true, list: @traces), binning, job, opts,
     progress)

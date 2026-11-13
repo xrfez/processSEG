@@ -252,6 +252,7 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `m.kind`, `m.velocity`, `m.t0Ms`, `m.timeMs(offset)` | Its parameters and its time at an offset. |
 | `moveoutTimesInto(rows \| meta, m, times)` | One time per row, ms, from each row's offset (every row, whatever its status; NaN for a NaN offset). |
 | `moveoutTimesInto(rows \| meta, field, t0Ms, times)`, `moveoutTimesInto(rows, field, locations, t0Ms, times)` | Hyperbolas with a field's velocity at each row's location (`ensemble`, or `inline`/`crossline`), or at caller locations. |
+| `moveoutTimesInto(rows \| meta, field, binning, t0Ms, times)`, `moveoutColumnsInto(meta, field, binning, t0Ms, cols)`, `checkSuits(field, binning)` | Hyperbolas with the field's velocity at the location of each row's bin (`binning.locationOf`): what a stack with `binning` corrects, also for bins from midpoints (`lineBinning`, `gridBinning`), whose numbers are not the header numbers. NaN for a row in no bin. `checkSuits` raises `ValueError` unless the field has nodes and is 2D for a 2D binning, 3D for a 3D one. |
 | `moveoutColumnsInto(meta, m \| field, [t0Ms,] cols)` | The same as fractional block columns, ready to draw: `(t − t0Ms)/dtMs − firstSample`. |
 | `applyLmo(b \| samples, meta, velocity, biasMs = 0, interp = siLinear)`, `removeLmo(...)` | Flatten first breaks in place: every live row earlier by `1000·\|x\|/v − biasMs`; and back. A display transform, not a pipeline op. |
 
@@ -275,6 +276,7 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `vrmsToSloth(v)`, `nmoSlothInto(src, srcStartMs, dst, dstStartMs, dtMs, offset, sloth, p): int` | The same kernel fed the sloth `1/Vrms²` of each output sample: convert a velocity column once, in place, and correct many rows with it without a division per sample (the same samples as `nmoInto`). |
 | `nmoWorkspace(T, cols)` | The scratch of the block forms. |
 | `applyNmo(b \| samples, meta, f: VelocityFunction \| field: VelocityField, p, ws)` | NMO in place, each row from its own `t0Ms`; a field is read at each row's location. Rows with a NaN offset, `t0Ms` or location are left alone. |
+| `applyNmo(b \| samples, meta, field, binning, p, ws)` | NMO with the field read at the location of each row's bin, as `bruteStack` with that binning reads it: the preview of what will be stacked. Rows in no bin are left alone; `ValueError` when the field does not suit the binning. |
 
 ## stack/binning: CMP bins
 
@@ -286,7 +288,7 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `b.kind`, `b.len`, `b.inlines`, `b.crosslines`, `b.is3D` | Its size. |
 | `b.binOf(k: TraceKeys): int`, `binsInto(rows \| meta, b, bins)` | A trace's bin, −1 for none (NaN key, outside, off the line). |
 | `b.binAt(x, y): int` | The bin of a midpoint position (line and grid binnings; −1 for none, always −1 for header binnings); the maths `binOf` uses. |
-| `BinLocation` (`cdp`, `inline`, `crossline`, `x`, `y`); `b.location(bin)` | What a bin stands for (NaN where undefined). |
+| `BinLocation` (`cdp`, `inline`, `crossline`, `x`, `y`); `b.location(bin)`, `b.locationOf(k: TraceKeys)` | What a bin stands for (NaN where undefined); the location of a trace's bin (all NaN when it is in none): where a stack reads a `VelocityField` for the trace. |
 
 ## stack/stack: `StackAccumulator`
 

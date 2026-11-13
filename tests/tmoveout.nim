@@ -152,6 +152,67 @@ block field_times_3d:
   doAssert near(t[0], 1250) and near(t[1], sqrt(1000.0 ^ 2 + 500.0 ^ 2)) and t[2].isNaN
   doAssertRaises ValueError: moveoutTimesInto(g.rows, field, [1.0, 2, 3], 1000, t)
 
+block field_times_by_binning:
+  # A stack by midpoints (lineBinning, gridBinning) reads its field at each
+  # bin's numbers, not at the traces' header CDP or inline/crossline: the
+  # overloads with the binning give the hyperbolas that stack corrects.
+  let field = initVelocityField([1001.0, 1011], [constantVelocity(2000),
+    constantVelocity(4000)], dtMs = 4, tMaxMs = 2000)
+  # Bins 10 m apart along x from x = 500, numbered CDP 1001, 1002, ...
+  let line = lineBinning(500, 0, 90, binSize = 10, count = 11, firstCdp = 1001)
+  var g = cmpGather[float32](0, [1000.0, 1000, 1000, 1000], 100, dtMs = 2, cdp = 7)
+  for r, x in [500.0, 551.0, 600.0, 900.0]: # bins 0, 5, 10 and none
+    g.keys[r].cmpX = x
+    g.keys[r].cmpY = 0
+  let meta = initChunkMeta(g.rows, dtMs = 2)
+  var t = newSeq[float64](4)
+  moveoutTimesInto(g.rows, field, line, 1000, t)
+  for r, cdp in [1001.0, 1006, 1011]:
+    doAssert line.locationOf(g.keys[r]).cdp == cdp
+    doAssert near(t[r], nmoTime(1000, field.vrmsAt(cdp, 1000), 1000)), $r
+  doAssert near(t[0], sqrt(1000.0 ^ 2 + 500.0 ^ 2)) and near(t[2], sqrt(
+      1000.0 ^ 2 + 250.0 ^ 2))
+  doAssert t[3].isNaN and line.locationOf(g.keys[3]).cdp.isNaN # in no bin
+  # The header form reads the field at ensemble 7: before its first node.
+  var byHeader = newSeq[float64](4)
+  moveoutTimesInto(meta, field, 1000, byHeader)
+  doAssert near(byHeader[1], t[0]) and not near(byHeader[1], t[1], 1e-3)
+  var viaMeta = newSeq[float64](4)
+  moveoutTimesInto(meta, field, line, 1000, viaMeta)
+  var cols = newSeq[float64](4)
+  moveoutColumnsInto(meta, field, line, 1000, cols)
+  for r in 0..<3:
+    doAssert viaMeta[r] == t[r] and near(cols[r], t[r] / 2)
+  doAssert cols[3].isNaN
+  doAssert allocsIn(moveoutTimesInto(meta, field, line, 1000, t)) == 0
+  # 3D: a grid of midpoints and a field by its inline and crossline numbers.
+  let grid = gridBinning(0, 0, 90, crosslineSpacing = 10, inlineSpacing = 10,
+    inlines = 2, crosslines = 3, firstInline = 10, firstCrossline = 100,
+    clockwise = false)
+  let field3 = initVelocityField([10.0, 11], [100.0, 102], [constantVelocity(2000),
+    constantVelocity(4000), constantVelocity(2000), constantVelocity(4000)],
+    dtMs = 4, tMaxMs = 2000)
+  g.keys[0].cmpX = 0 # crossline 100
+  g.keys[1].cmpX = 20 # crossline 102
+  g.keys[2].cmpX = 11 # crossline 101
+  moveoutTimesInto(g.rows, field3, grid, 1000, t)
+  doAssert near(t[0], sqrt(1000.0 ^ 2 + 500.0 ^ 2))
+  doAssert near(t[1], sqrt(1000.0 ^ 2 + 250.0 ^ 2))
+  doAssert near(t[2], nmoTime(1000, field3.vrmsAt(10, 101, 1000), 1000))
+  doAssert t[3].isNaN
+  # A field must suit the binning, and the lengths must agree.
+  doAssertRaises ValueError: moveoutTimesInto(g.rows, field3, line, 1000, t)
+  doAssertRaises ValueError: moveoutTimesInto(g.rows, field, grid, 1000, t)
+  doAssertRaises ValueError: moveoutColumnsInto(meta, field, grid, 1000, cols)
+  doAssertRaises ValueError: moveoutTimesInto(g.rows, VelocityField(), line, 1000, t)
+  doAssertRaises ValueError: moveoutTimesInto(g.rows, field, line, -1, t)
+  var short = newSeq[float64](3)
+  doAssertRaises ValueError: moveoutTimesInto(g.rows, field, line, 1000, short)
+  checkSuits(field, line)
+  checkSuits(field3, grid)
+  checkSuits(field, cdpBinning(1, 5))
+  checkSuits(field3, inlineCrosslineBinning(1, 2, 1, 2))
+
 proc peakCol[T](g: SynthGather[T], r: int): int =
   var best = 0.0
   for j in 0..<g.cols:

@@ -9,6 +9,7 @@
 ## var ws = initWorkspace()
 ## ws.reserve(nmoWorkspace(float32, samples.shape[1]))
 ## samples.applyNmo(meta, field, p, ws)          # in place, row by row
+## samples.applyNmo(meta, field, binning, p, ws) # the field as a stack reads it
 ## let first = nmoInto(src, srcStartMs, dst, dstStartMs, dtMs, offset, vrms, p)
 ## vrmsToSloth(vrms)                             # once per velocity column: 1/V²
 ## discard nmoSlothInto(src, srcStartMs, dst, dstStartMs, dtMs, offset, vrms, p)
@@ -35,7 +36,12 @@
 ## **Velocities.** The block forms take a `VelocityFunction` (one for every
 ## row) or a `VelocityField` read at each row's location: the keys'
 ## `ensemble` (the CDP) for a 2D field, `inline` and `crossline` for a 3D
-## one, as `moveoutTimesInto`. The offset's sign is ignored. The kernel
+## one, as `moveoutTimesInto`. With a `Binning` the field is read at the
+## location of each row's bin instead (`Binning.locationOf`), which is
+## where a stack with that binning reads it: the preview of what
+## `bruteStack` will stack, also for bins from midpoints (`lineBinning`,
+## `gridBinning`), whose numbers are not the traces' header numbers. The
+## offset's sign is ignored. The kernel
 ## works with the *sloth*, `1/Vrms²` (`t² = t₀² + x²·sloth`): `nmoInto`
 ## takes velocities and inverts them per call; a caller that corrects many
 ## traces with one velocity column converts it once (`vrmsToSloth`) and
@@ -52,6 +58,7 @@
 import std/math
 import parseSEG
 import ../core/[mute, rows, shift, types, workspace]
+import ./binning
 
 # `sqrt` never needs errno here (its argument is a sum of squares), and
 # without errno GCC vectorizes it; `floor` it vectorizes only when told that
@@ -60,7 +67,7 @@ import ../core/[mute, rows, shift, types, workspace]
 # generic, or are instantiated here, so their loops are compiled with these
 # flags (a generic kernel compiles in its caller's module).
 {.localPassC: "-fno-math-errno -fno-trapping-math".}
-import ../velocity/model
+import ../velocity/[model, moveout]
 
 export ShiftInterp
 
@@ -414,25 +421,19 @@ proc applyNmo*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
         last = start
       nmoRow(b, meta, r, p, sloth, ws)
 
-proc applyNmo*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
-    field: VelocityField, p: NmoParams, ws: var Workspace) =
-  ## NMO with the field's RMS velocities at each row's location (`ensemble`
-  ## for a 2D field, `inline` and `crossline` for a 3D one); rows with a NaN
-  ## location are left alone. Otherwise as the `VelocityFunction` form.
-  checkNmo(b, meta, p, ws)
+template fieldNmo(b, meta, field, p, ws: untyped, placeOf: untyped) =
+  # NMO of every usable row with the field's velocities at `placeOf(keys)`:
+  # (location, 0) for a 2D field, (inline, crossline) for a 3D one; a NaN
+  # leaves the row alone.
   let sloth = ws.scratch(float64, b.cols)
   template col: untyped = sloth.toOpenArray(0, b.cols - 1)
-  # The location and start time `sloth` was computed for: the rows of a
-  # gather share them.
+  # The place and start time `sloth` was computed for: the rows of a gather
+  # share them.
   var lastA, lastB, lastStart = NaN
   for r in 0 ..< b.len:
     if meta.usable(r):
-      let k = meta.keys(r)
       let start = meta.sampleTimeMs(r, 0)
-      # (A 2D field has no second coordinate: NaN, which never changes.)
-      let (a, c) =
-        if field.kind == fk2D: (k.ensemble, 0.0)
-        else: (k.inline, k.crossline)
+      let (a, c) = placeOf(meta.keys(r))
       if not (a.isNaN or c.isNaN):
         if a != lastA or c != lastB or start != lastStart:
           case field.kind
@@ -441,6 +442,32 @@ proc applyNmo*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
           vrmsToSloth(col)
           (lastA, lastB, lastStart) = (a, c, start)
         nmoRow(b, meta, r, p, sloth, ws)
+
+proc applyNmo*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
+    field: VelocityField, p: NmoParams, ws: var Workspace) =
+  ## NMO with the field's RMS velocities at each row's location (`ensemble`
+  ## for a 2D field, `inline` and `crossline` for a 3D one); rows with a NaN
+  ## location are left alone. Otherwise as the `VelocityFunction` form.
+  checkNmo(b, meta, p, ws)
+  template byHeader(k: TraceKeys): (float64, float64) =
+    (if field.kind == fk2D: (k.ensemble, 0.0) else: (k.inline, k.crossline))
+  fieldNmo(b, meta, field, p, ws, byHeader)
+
+proc applyNmo*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
+    field: VelocityField, binning: Binning, p: NmoParams, ws: var Workspace) =
+  ## NMO with the field's RMS velocities at the location of each row's bin
+  ## (`binning.locationOf`: the bin's CDP number for a 2D field, its inline
+  ## and crossline for a 3D one), as a stack with `binning` reads them
+  ## (`bruteStack`); rows in no bin are left alone. Raises `ValueError` as
+  ## the other field form, or when the field does not suit the binning
+  ## (`checkSuits`). Allocates nothing.
+  checkNmo(b, meta, p, ws)
+  checkSuits(field, binning)
+  template byBin(k: TraceKeys): (float64, float64) =
+    block:
+      let loc = binning.locationOf(k)
+      if field.kind == fk2D: (loc.cdp, 0.0) else: (loc.inline, loc.crossline)
+  fieldNmo(b, meta, field, p, ws, byBin)
 
 proc applyNmo*[T: SampleType](samples: var Tensor[T], meta: ChunkMeta,
     f: VelocityFunction, p: NmoParams, ws: var Workspace) =
@@ -454,3 +481,10 @@ proc applyNmo*[T: SampleType](samples: var Tensor[T], meta: ChunkMeta,
   ## `applyNmo` with a field on a `[rows, cols]` tensor, in place.
   meta.checkShape(samples)
   applyNmo(rowBlock(samples), meta, field, p, ws)
+
+proc applyNmo*[T: SampleType](samples: var Tensor[T], meta: ChunkMeta,
+    field: VelocityField, binning: Binning, p: NmoParams, ws: var Workspace) =
+  ## `applyNmo` with a field read at each row's bin, on a `[rows, cols]`
+  ## tensor, in place.
+  meta.checkShape(samples)
+  applyNmo(rowBlock(samples), meta, field, binning, p, ws)

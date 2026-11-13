@@ -163,6 +163,40 @@ block nan_and_dead_rows:
     initNmoParams()) == 3
   doAssert dst == [0.0, 0, 0]
 
+block field_by_binning:
+  # applyNmo with a binning reads the field where a stack with that binning
+  # reads it, at each row's bin: the same samples as the header form on a
+  # copy whose `ensemble` holds the bin's CDP number. Rows in no bin are
+  # left alone.
+  let f = gradientVelocity(1600, 900)
+  let field = initVelocityField([1001.0, 1011], [f, gradientVelocity(2200, 300)],
+    dtMs = 4, tMaxMs = 2000)
+  let line = lineBinning(500, 0, 90, binSize = 10, count = 11, firstCdp = 1001)
+  var g = cmpGather[float32](0, [300.0, 600, 900, 1200, 1500], 700, dt, cdp = 3)
+  for t0 in [400.0, 900]: g.addHyperbola(t0, 2000, freqHz = 25)
+  for r, x in [500.0, 530, 560, 600, 2000]: # the last one in no bin
+    g.keys[r].cmpX = x
+    g.keys[r].cmpY = 0
+  var h = g.clone
+  for r in 0..<h.len: h.keys[r].ensemble = line.locationOf(h.keys[r]).cdp
+  doAssert h.keys[1].ensemble == 1004 and h.keys[4].ensemble.isNaN
+  let before = g.data.clone
+  var ws = initWorkspace()
+  ws.reserve(nmoWorkspace(float32, g.cols))
+  let p = initNmoParams(siCubic, maxStretch = 0.5)
+  let meta = initChunkMeta(g.rows, dt)
+  applyNmo(g.data, meta, field, line, p, ws)
+  applyNmo(h.data, initChunkMeta(h.rows, dt), field, p, ws)
+  doAssert g.data == h.data
+  for j in 0..<g.cols: doAssert g.data[4, j] == before[4, j]
+  doAssert g.data[0, _] != before[0, _]
+  var b = rowBlock(g.data)
+  doAssert allocsIn(applyNmo(b, meta, field, line, p, ws)) == 0
+  let field3 = initVelocityField([1.0, 2], [1.0, 2], [f, f, f, f], dtMs = 4,
+    tMaxMs = 2000)
+  doAssertRaises ValueError: applyNmo(g.data, meta, field3, line, p, ws)
+  doAssertRaises ValueError: applyNmo(g.data, meta, field, line, NmoParams(), ws)
+
 block validation_and_allocation:
   for s in [0.0, -0.1, NaN]:
     doAssertRaises ValueError: discard initNmoParams(maxStretch = s)
