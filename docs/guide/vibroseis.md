@@ -209,7 +209,11 @@ one trace per (receiver, shot) from the segments' start times (`TraceKeys.time`,
 own array) and a window around each shot time. A receiver is its station (line and point
 to 1/100 with the point index, the rule of [survey-qc.md](survey-qc.md)), and at one
 station each channel and component is a stream of its own; your own array of receiver
-ids overrides that. `extractInto` copies and stitches the segments into a new block. The
+ids overrides that. Sorting the segments into streams is the costly part (a quarter of a
+second for a million rows) and does not depend on the shots: `initSliceStreams(meta)`
+does it once, and `planSlices(streams, shots, window)` then costs only the traces of
+those shots (`planSlices(meta, shots, window)` does both in one call). `extractInto`
+copies and stitches the segments into a new block. The
 plan lists `tracesNeeded`, so only those traces are read (`rowsNeeded` are the same rows
 counted in the planning view, which are trace numbers only when the view starts at trace
 0); gaps are zero-filled and reported; overlapping segments are trimmed (the later one
@@ -239,7 +243,8 @@ for r in 0 ..< 3:
 let meta = initChunkMeta(rowsOf(keys, counts), dtMs = 2)
 
 # A shot at t = 1001.5 s and a 1 s window from it: it straddles segments 0 and 1.
-let plan = planSlices(meta, [initSliceShot(1001.5, id = 1)],
+let streams = initSliceStreams(meta)                 # once per dataset: keep it
+let plan = planSlices(streams, [initSliceShot(1001.5, id = 1)],
   SliceWindow(startMs: 0, lengthMs: 1000))
 doAssert plan.len == 1 and plan.samples == 500 and plan.rowsNeeded == @[0, 1]
 var report = initSliceReport(plan)
