@@ -23,7 +23,8 @@
 ##   velocities, opts, progress = proc (done, total: int64): bool = true)
 ## let part = bruteStack(f, float32, 0 ..< 5000, binning, velocities, opts)
 ## let side = bruteStack(f, float32, picked, binning, velocities, opts) # a list
-## # res.data: [bins, samples]; res.fold; res.binning.location(bin)
+## # res.data: [bins, samples]; res.fold; res.binning.location(bin);
+## # res.binTraces[bin]: a fold map; res.cmpX[bin], res.cmpY[bin]: its place
 ## ```
 ##
 ## **Velocities** are read at each bin's location (`Binning.location`): a
@@ -121,18 +122,23 @@ type
 
   StackResult*[T: SampleType] = object
     ## A brute stack: `data[bin, j]` at time `startMs + j·dtMs`.
-    data*: Tensor[T]     ## `[bins, samples]`, normalized.
-    fold*: Tensor[int32] ## `[bins, samples]`, the per-sample fold.
-    binning*: Binning    ## The bins (`location` gives each bin's numbers).
-    dtMs*: float64       ## Sample interval, in ms.
-    intervalUs*: float64 ## The same in µs, as the input's keys hold it, for
-                         ## the writer (`stackKeys`): `dtMs · 1000` is not
-                         ## always the whole microseconds `dtMs` came from.
-                         ## 0 (a result built by hand): `dtMs · 1000` is used.
-    startMs*: float64    ## Time of sample 0, in ms.
-    stacked*: int        ## Traces stacked.
-    skipped*: int        ## Live traces not stacked (see the module documentation).
-    failed*: int         ## Traces that could not be decoded.
+    data*: Tensor[T]       ## `[bins, samples]`, normalized.
+    fold*: Tensor[int32]   ## `[bins, samples]`, the per-sample fold.
+    binning*: Binning      ## The bins (`location` gives each bin's numbers).
+    dtMs*: float64         ## Sample interval, in ms.
+    intervalUs*: float64   ## The same in µs, as the input's keys hold it, for
+                           ## the writer (`stackKeys`): `dtMs · 1000` is not
+                           ## always the whole microseconds `dtMs` came from.
+                           ## 0 (a result built by hand): `dtMs · 1000` is used.
+    startMs*: float64      ## Time of sample 0, in ms.
+    binTraces*: seq[int32] ## Traces stacked into each bin: a fold map.
+    cmpX*, cmpY*: seq[float64]
+      ## The mean midpoint of the traces stacked into each bin: where a bin
+      ## of header numbers lies on the map. NaN for a bin with no trace, or
+      ## whose traces have no midpoint.
+    stacked*: int ## Traces stacked.
+    skipped*: int ## Live traces not stacked (see the module documentation).
+    failed*: int ## Traces that could not be decoded.
 
 func cacheSlots(cacheBytes, bins, samples: int): int =
   ## The velocity columns of a worker's cache: what `cacheBytes` holds, at
@@ -320,8 +326,11 @@ proc stackChunk[T](acc: var StackAccumulator[T], c: PrefetchChunk[T],
         let span = liveSpan(b.row(r, acc.samples))
         added = span.len > 0 and acc.add(bin, b.row(r, acc.samples), span.a,
           span.b + 1)
-      if added: inc stacked
-      else: inc skipped
+      if added:
+        acc.addMidpoint(bin, meta.keys(r).cmpX, meta.keys(r).cmpY)
+        inc stacked
+      else:
+        inc skipped
 
 type TraceSel = object
   ## The traces of a job: a range of the file, or a list.
@@ -451,6 +460,13 @@ proc runStack[T](f: SeismicFile, sel: TraceSel, binning: Binning,
       var msg = newString(s.msgLen)
       for i in 0 ..< s.msgLen: msg[i] = s.msg[i]
       raise newException(ValueError, "bruteStack: " & msg)
+  result.binTraces = newSeq[int32](acc.bins)
+  result.cmpX = newSeq[float64](acc.bins)
+  result.cmpY = newSeq[float64](acc.bins)
+  for bin in 0 ..< acc.bins:
+    result.binTraces[bin] = int32(acc.tracesAt(bin))
+    result.cmpX[bin] = acc.cmpXAt(bin)
+    result.cmpY[bin] = acc.cmpYAt(bin)
   acc.finishInto(result.data, result.fold, opts.norm)
   if progress != nil: discard progress(total, total)
 
@@ -563,8 +579,14 @@ proc keysOf[T](res: StackResult[T], bin: int, fold: int32): TraceKeys =
   result.ensemble = if loc.cdp.isNaN: float64(bin + 1) else: loc.cdp
   result.inline = loc.inline
   result.crossline = loc.crossline
-  result.cmpX = loc.x
-  result.cmpY = loc.y
+  # A bin with a geometry is at its centre; a bin of header numbers has
+  # none, and is where its traces' midpoints are on average.
+  if loc.x.isNaN and bin < res.cmpX.len and bin < res.cmpY.len:
+    result.cmpX = res.cmpX[bin]
+    result.cmpY = res.cmpY[bin]
+  else:
+    result.cmpX = loc.x
+    result.cmpY = loc.y
   result.offset = 0
   result.t0Ms = res.startMs
   # The input's own microseconds: 1001 µs is 1.001 ms, and 1.001 · 1000 is
@@ -578,8 +600,11 @@ func overridesOf(fold: int32): array[1, HeaderOverride] =
 proc stackKeys*[T](res: StackResult[T], bin: int): TraceKeys =
   ## The keys of bin `bin`'s stacked trace (decision D14: processSEG
   ## describes its results, parseSEG writes them): the CDP number (or the
-  ## 1-based bin index for 3D bins), inline and crossline, the bin centre as
-  ## the midpoint, offset 0, `startMs` as `t0Ms`, `intervalUs` as the
+  ## 1-based bin index for 3D bins), inline and crossline, as the midpoint
+  ## the bin centre (line and grid binnings) or the mean midpoint of the
+  ## bin's traces (`cmpX`, `cmpY`: header CDP and inline/crossline
+  ## binnings; NaN for an empty bin), offset 0, `startMs` as `t0Ms`,
+  ## `intervalUs` as the
   ## interval (`dtMs · 1000` when it is 0), and `tsDead` for a bin with no
   ## fold, else `tsLive`; every other key unknown. Pass them, with
   ## `stackOverrides`, to parseSEG's
@@ -601,7 +626,8 @@ proc writeStack*[T](path: string, res: StackResult[T],
   ## `TraceKeys`; `opts` sets the revision, byte order, sample format and
   ## textual header). Each trace holds its bin's location (CDP number, or
   ## the 1-based bin index for 3D bins; inline and crossline; the bin
-  ## centre as the CDP X/Y), offset 0, `startMs` as the delay, the interval
+  ## centre, or for bins of header numbers the mean midpoint of their
+  ## traces, as the CDP X/Y), offset 0, `startMs` as the delay, the interval
   ## (`intervalUs`, exact for the input's whole microseconds), and
   ## as the fold (`numHorzStacked`, bytes 33-34) the largest per-sample fold;
   ## a bin with no fold is a dead trace (code 2). The binary header's trace

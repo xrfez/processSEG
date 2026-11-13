@@ -182,6 +182,49 @@ block finish_without_a_copy:
   none.finishInto(data, fold)
   doAssert data.size == 0 and fold.size == 0
 
+block traces_and_midpoints_per_bin:
+  # Each bin counts the traces added to it and keeps the mean of the
+  # midpoints given for them: a fold map and a place on the map for a bin
+  # that has no geometry of its own (header CDP or inline/crossline bins).
+  var acc = initStackAccumulator[float32](4, 5, dt)
+  doAssert acc.tracesAt(0) == 0 and acc.cmpXAt(0).isNaN and acc.cmpYAt(0).isNaN
+  for (bin, x, y) in [(0, 100.0, 10.0), (0, 104.0, 14.0), (2, 7.0, -3.0),
+                      (0, 102.0, 12.0)]:
+    doAssert acc.addLive(bin, [1'f32, 2, 3, 0, 0])
+    acc.addMidpoint(bin, x, y)
+  doAssert acc.tracesAt(0) == 3 and acc.tracesAt(1) == 0 and acc.tracesAt(2) == 1
+  doAssert acc.cmpXAt(0) == 102 and acc.cmpYAt(0) == 12
+  doAssert acc.cmpXAt(2) == 7 and acc.cmpYAt(2) == -3 and acc.cmpXAt(1).isNaN
+  # A trace that is refused, or adds no sample, is not counted; a midpoint
+  # with an unknown coordinate, or for no bin, is left out of the mean.
+  doAssert not acc.add(1, [1'f32, NaN, 0, 0, 0])
+  doAssert acc.addLive(1, [0'f32, 0, 0, 0, 0]) and acc.add(1, [1'f32], 0, 0)
+  doAssert acc.tracesAt(1) == 0
+  doAssert acc.add(3, [5'f32])
+  acc.addMidpoint(3, NaN, 4)
+  acc.addMidpoint(3, 4, NaN)
+  acc.addMidpoint(-1, 1, 1)
+  doAssert acc.tracesAt(3) == 1 and acc.cmpXAt(3).isNaN and acc.cmpYAt(3).isNaN
+  acc.addMidpoint(3, 9, 8)
+  doAssert acc.cmpXAt(3) == 9 and acc.cmpYAt(3) == 8
+  # merge adds counts and midpoints; a copy has its own; clear zeroes them.
+  var other = initStackAccumulator[float32](4, 5, dt)
+  doAssert other.add(2, [1'f32, 1])
+  other.addMidpoint(2, 9, 1)
+  var copy = acc
+  copy.merge(other)
+  doAssert copy.tracesAt(2) == 2 and copy.cmpXAt(2) == 8 and copy.cmpYAt(2) == -1
+  doAssert acc.tracesAt(2) == 1 and acc.cmpXAt(2) == 7
+  var added: bool
+  doAssert allocsIn((added = acc.add(2, [1'f32]); acc.addMidpoint(2, 1, 1))) == 0
+  copy.clear
+  doAssert copy.tracesAt(0) == 0 and copy.cmpXAt(0).isNaN
+  when compileOption("boundChecks") and not defined(addressSanitizer):
+    doAssertRaises IndexDefect: discard acc.tracesAt(4)
+    doAssertRaises IndexDefect: discard acc.cmpXAt(-1)
+    doAssertRaises IndexDefect: discard acc.cmpYAt(4)
+    doAssertRaises AssertionDefect: acc.addMidpoint(4, 1, 1)
+
 block refused_traces:
   var acc = initStackAccumulator[float32](2, 4, dt)
   doAssert not acc.add(-1, [1'f32, 1, 1, 1]) # no bin
@@ -250,17 +293,20 @@ block validation_memory_allocation:
       int) div 2, 10, dt)
   doAssertRaises ValueError: discard initStackAccumulator[float32](1, high(
       int) div 4, dt)
-  doAssert stackMemory(float32, 10_000, 2001) == 160_080_000
-  doAssert stackMemory(float64, 2, 3) == 72
+  # Per sample a sum and an int32 fold; per bin a trace count and the
+  # midpoint sums (24 bytes).
+  doAssert stackMemory(float32, 10_000, 2001) == 160_080_000 + 240_000
+  doAssert stackMemory(float64, 2, 3) == 72 + 48
   # A size beyond int is a ValueError in every build mode (it was an
   # OverflowDefect, and a wrapped number in a danger build).
   doAssertRaises ValueError: discard stackMemory(float32, high(int) div 2, 10)
   doAssertRaises ValueError: discard stackMemory(float32, 3_037_000_500, 3_037_000_500)
-  doAssertRaises ValueError: discard stackMemory(float64, high(int) div 11, 1)
+  doAssertRaises ValueError: discard stackMemory(float64, high(int) div 35, 1)
   doAssertRaises ValueError: discard stackMemory(float32, -1, 10)
   doAssertRaises ValueError: discard stackMemory(float32, 10, -1)
-  doAssert stackMemory(float64, high(int) div 12, 1) == high(int) div 12 * 12
+  doAssert stackMemory(float64, high(int) div 36, 1) == high(int) div 36 * 36
   doAssert stackMemory(float32, 0, high(int)) == 0
+  doAssert stackMemory(float32, 5, 0) == 5 * 24
   var acc = initStackAccumulator[float32](8, 500, dt)
   var x = newSeq[float32](500)
   for j in 100..<400: x[j] = 1

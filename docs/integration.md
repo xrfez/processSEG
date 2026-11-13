@@ -473,7 +473,10 @@ trace's first and last non-zero samples, so muted zeros do not count.
     `close`. To do any of these, cancel the job through `progress` and wait for it.
 - **Result:** a `StackResult`: `data` (`[bins, samples]`, normalized by fold, √fold or
   not), `fold` (`[bins, samples]`, int32), `binning`, `dtMs` (and `intervalUs`, the
-  input's own microseconds, which is what `stackKeys` writes), `startMs`, `stacked`,
+  input's own microseconds, which is what `stackKeys` writes), `startMs`, per bin
+  `binTraces` (the traces stacked into it: a fold map without reading `fold`) and
+  `cmpX`, `cmpY` (their mean midpoint, NaN for an empty bin: where a bin of header
+  CDP or inline/crossline numbers lies on the map), `stacked`,
   `skipped` (live traces outside every bin, with a NaN offset, t0 or static, no
   interval, non-finite samples, or fully stretch-muted) and `failed` (traces that could
   not be decoded). The traces are summed in file order: the stack is the same bit for
@@ -490,7 +493,8 @@ parseSEG writes them (D14): `stackKeys(res, bin)` and `stackOverrides(res, bin)`
 bin's headers for parseSEG's `writeTrace`. As a convenience, `writeStack(path, res, opts)` saves
 it as SEG-Y, whatever the input standard, one trace per bin (patch F3: headers built from
 `TraceKeys`, no template trace): the bin's CDP number (3D: its 1-based index), inline and
-crossline, centre as CDP X/Y, offset 0, `startMs` and `dtMs`, the largest per-sample fold
+crossline, as CDP X/Y its centre (line and grid binnings) or the mean midpoint of its
+traces (bins of header numbers), offset 0, `startMs` and `dtMs`, the largest per-sample fold
 in `numHorzStacked`, and a dead trace for a bin with no fold. `opts` is parseSEG's
 `SegyOutputOptions` (revision, byte order, sample format, textual header; trace sorting 4
 by default). `openSeismic` reads the keys back.

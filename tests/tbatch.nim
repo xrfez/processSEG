@@ -235,6 +235,73 @@ block subset_and_field:
       worst = max(worst, abs(float64(byField.data[b, j] - three.data[b, j])))
   doAssert worst <= 5e-3, $worst
 
+block fold_map_and_midpoints:
+  # The result holds, per bin, the traces stacked into it and the mean of
+  # their midpoints: a fold map without the fold tensor, and a place on
+  # the map for bins by header numbers, which have no geometry of their
+  # own (stackKeys had no cmpX/cmpY for them).
+  var f = openSeismic(flat.path, keys = true)
+  var opts = initBruteStackOptions(workers = 3)
+  opts.chunkTraces = 16
+  let res = bruteStack(f, float32, binning, vel, opts)
+  doAssert res.binTraces.len == cdps and res.cmpX.len == cdps and res.cmpY.len == cdps
+  var count = newSeq[int](cdps)
+  var sumX, sumY = newSeq[float64](cdps)
+  for t in 0 ..< f.len:
+    let k = f.traceKeys(t)
+    let b = binning.binOf(k)
+    inc count[b]
+    sumX[b] += k.cmpX
+    sumY[b] += k.cmpY
+  var total = 0
+  for b in 0 ..< cdps:
+    doAssert res.binTraces[b] == flat.foldOf[b + 1] and count[b] == flat.foldOf[b + 1]
+    total += res.binTraces[b]
+    if count[b] > 0:
+      doAssert abs(res.cmpX[b] - sumX[b] / float64(count[b])) <= 1e-9
+      doAssert abs(res.cmpY[b] - sumY[b] / float64(count[b])) <= 1e-9
+      # Midpoints 12.5 m apart along the line (headers hold whole metres).
+      doAssert abs(res.cmpX[b] - (10_006.25 - 300 + 12.5 * float64(b))) <= 0.5
+      let k = res.stackKeys(b)
+      doAssert k.cmpX == res.cmpX[b] and k.cmpY == res.cmpY[b] and k.ensemble ==
+        float64(b + 1)
+    else:
+      doAssert res.cmpX[b].isNaN and res.stackKeys(b).cmpX.isNaN
+  doAssert total == res.stacked
+  let one = bruteStack(f, float32, binning, vel) # the same for any workers
+  doAssert one.binTraces == res.binTraces
+  for b in 0 ..< cdps:
+    doAssert one.cmpX[b] == res.cmpX[b] or (one.cmpX[b].isNaN and res.cmpX[b].isNaN)
+  # A bin past the line's CDPs: no trace, no midpoint.
+  let wider = bruteStack(f, float32, cdpBinning(1, cdps + 3), vel)
+  doAssert wider.binTraces[cdps + 2] == 0 and wider.cmpX[cdps + 2].isNaN
+  doAssert wider.stackKeys(cdps + 2).cmpX.isNaN
+  # Written and read back: the stacked traces carry their midpoints.
+  let path = dir / "midpoints.sgy"
+  doAssert not writeStack(path, res).isFatal
+  var st = openSeismic(path, keys = true)
+  var checked = 0
+  for b in 0 ..< cdps:
+    if res.binTraces[b] > 0:
+      doAssert abs(st.traceKeys(b).cmpX - res.cmpX[b]) <= 0.01, $st.traceKeys(b).cmpX
+      doAssert abs(st.traceKeys(b).cmpY - res.cmpY[b]) <= 0.01
+      inc checked
+    else:
+      doAssert st.traceKeys(b).status == tsDead
+  doAssert checked > cdps div 2
+  st.close()
+  # Bins with a geometry keep their centre as the midpoint.
+  let line = lineBinning(10_006.25 - 300, 0, 90, 12.5, cdps)
+  let byLine = bruteStack(f, float32, line, vel)
+  doAssert byLine.binTraces[4] == 0 and byLine.binTraces[20] > 0
+  for b in [4, 20]:
+    doAssert byLine.stackKeys(b).cmpX == line.location(b).x
+  doAssert abs(byLine.cmpX[20] - line.location(20).x) <= 0.5
+  # A result built by hand, without them: NaN, as before.
+  let hand = StackResult[float32](binning: binning, dtMs: 2,
+    data: newTensor[float32](cdps, 3), fold: newTensor[int32](cdps, 3))
+  doAssert hand.stackKeys(0).cmpX.isNaN
+
 block trace_list:
   # A list of traces (a map selection, one side of the spread, one channel
   # set) is stacked in list order.

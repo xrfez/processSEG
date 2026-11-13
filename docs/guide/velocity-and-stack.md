@@ -270,6 +270,7 @@ let res = bruteStack(f, float32, cdpBinning(firstCdp = 1, count = 20), velocity,
     true)                               # false cancels: SegCancelledError
 doAssert res.stacked == 240 and res.skipped == 0 and res.failed == 0
 doAssert res.data.shape == [20, ns] and res.fold[5, 700] == 12
+doAssert res.binTraces[5] == 12         # traces per bin: a fold map
 doAssert res.data[5, 300] > 0.8 and res.data[5, 700] > 0.8 and calls > 0
 
 var near: seq[int]                      # a list of traces: the near offsets only
@@ -300,6 +301,10 @@ f.close()
   flow depends on `opts.chunkTraces`).
 - `res.skipped` counts live traces outside every bin or with a NaN offset, `t0Ms` or
   static, no interval, non-finite samples, or fully stretch-muted.
+- `res.binTraces[bin]` is the number of traces stacked into each bin (a fold map), and
+  `res.cmpX[bin]`, `res.cmpY[bin]` their mean midpoint: with `cdpBinning` or
+  `inlineCrosslineBinning` that is where the bin lies on a map, and what `stackKeys` and
+  `writeStack` give as its CDP X/Y (line and grid bins keep their centre).
 - Memory: one stack of bins × samples × (sizeof(T) + 4) bytes, whatever the number of
   workers (the sums are normalized in place and become the result), plus the prefetch
   ring and each worker's scratch and velocity columns (`opts.velocityCacheBytes`, 8 MiB:
