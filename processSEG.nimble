@@ -1,6 +1,6 @@
 # Package
 
-version       = "0.2.0"
+version       = "0.3.0"
 author        = "Joshua Fenner"
 description   = "Seismic SEG-Y / SEG-D processing built on parseSEG"
 license       = "MIT"
@@ -10,5 +10,5 @@ srcDir        = "src"
 # Dependencies
 
 requires "nim >= 2.4.0"
-requires "https://github.com/xrfez/parseSEG >= 0.9.0"
+requires "https://github.com/xrfez/parseSEG >= 0.10.0"
 
