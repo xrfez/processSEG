@@ -2,7 +2,7 @@
 ## builds this module and checks their disassembly for packed SIMD.
 
 import processSEG
-import synth
+import synth, veccorrelate
 
 template wrap(name, kernel: untyped, T: typedesc, args: varargs[untyped]) =
   proc name(x: var openArray[T]) {.exportc: astToStr(name), noinline.} =
@@ -126,7 +126,65 @@ proc shotFitOnce() =
   fitShot(meta, picks, ShotFitParams(correlate: false), fit)
   echo fit.used
 
+proc vec_amplitude_f32(b: RowBlock[float32], meta: ChunkMeta,
+    dst: var openArray[TraceAmplitude], ws: var Workspace) {.exportc: "vec_amplitude_f32",
+    noinline.} =
+  b.traceAmplitudeInto(meta, AmplitudeParams(), dst, ws)
+
+proc amplitudeOnce() =
+  # sumAndSquares, extremes, countBeyond and spikeCount (amplitude QC).
+  var g = cmpGather[float32](cmpX = 0, offsets = [0.0, 100.0], 200, 2)
+  let meta = initChunkMeta(g.rows, dtMs = 2)
+  var ws = initWorkspace()
+  ws.reserve(traceAmplitudeWorkspace(200))
+  var dst = newSeq[TraceAmplitude](2)
+  vec_amplitude_f32(rowBlock(g.data), meta, dst, ws)
+  echo dst[0].rmsDb
+
+proc vec_recordStack_f32(acc: var RecordStack[float32], x: openArray[float32],
+    ws: var Workspace): bool {.exportc: "vec_recordStack_f32", noinline.} =
+  acc.add(0, x, ws)
+
+proc recordStackOnce() =
+  # addVertical and addWeighted (vibroseis record stacks).
+  var x = newSeq[float32](100)
+  x[3] = 1
+  for mode in RecordStackMode:
+    var acc = initRecordStack[float32](1, 100, 2, RecordStackParams(mode: mode))
+    var ws = initWorkspace()
+    ws.reserve(acc.workspaceSize)
+    discard vec_recordStack_f32(acc, x, ws)
+
+proc vec_stackMerge_f32(acc: var StackAccumulator[float32],
+    other: StackAccumulator[float32], dst: var Tensor[float32]) {.
+    exportc: "vec_stackMerge_f32", noinline.} =
+  acc.merge(other)
+  acc.stackInto(dst, fnFold)
+  acc.stackInto(dst, fnSqrtFold)
+
+proc stackMergeOnce() =
+  # mergeInto and normalize (CMP stacks).
+  var acc = initStackAccumulator[float32](2, 100, 2)
+  let other = initStackAccumulator[float32](2, 100, 2)
+  var dst = zeros[float32](2, 100)
+  vec_stackMerge_f32(acc, other, dst)
+
+proc vec_shift_f32(x: var openArray[float32], shift: float64,
+    interp: ShiftInterp) {.exportc: "vec_shift_f32", noinline.} =
+  x.shiftSamples(shift, interp)
+
+proc shiftOnce() =
+  # lerpInto and cubicInto (fractional statics shifts).
+  var x = newSeq[float32](1000)
+  vec_shift_f32(x, 2.5, siLinear)
+  vec_shift_f32(x, -2.5, siCubic)
+
 when isMainModule:
+  amplitudeOnce()
+  correlateOnce()
+  recordStackOnce()
+  stackMergeOnce()
+  shiftOnce()
   nmoOnce()
   shotFitOnce()
   stackOnce()

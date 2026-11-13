@@ -32,7 +32,20 @@ const
     "mulTable", "mulTableLerp",
     # Stacking: the sum and fold update, and the finite check before it
     # (an OR of exponent-bit flags).
-    "accumulate", "allFinite"]
+    "accumulate", "allFinite",
+    # The merge of two accumulators (another worker's share). Not
+    # `normalize`: GCC branches on a fold of 0 or 1 there.
+    "mergeInto",
+    # Statics shifts: the interior of a linear and a cubic interpolation.
+    "lerpInto", "cubicInto",
+    # Amplitude QC: Σx and Σx² (eight accumulators each), the extremes and
+    # the constant test (integer reductions on the bits), the samples beyond
+    # the clip levels, the spike test over the interior. The clip runs and
+    # the spike window's block sums are serial.
+    "sumAndSquares", "extremes", "countBeyond", "spikeCount",
+    # Vibroseis record stacks: vertical and diversity (the diversity window
+    # powers are serial).
+    "addVertical", "addWeighted"]
   # Non-generic kernels: their symbols carry their own module (and GCC clones
   # such as `.constprop.0` count too).
   moduleKernels = [
@@ -44,7 +57,11 @@ const
     ("moveoutCols", "ZstackZnmo"), ("slothCols", "ZstackZnmo"),
     ("insideCount", "ZstackZnmo"), ("splitCols", "ZstackZnmo"),
     # The shot fit's normal-equation sums.
-    ("l1Fit", "ZqcZshotfit")]
+    ("l1Fit", "ZqcZshotfit"),
+    # Vibroseis, instantiated in `utils/veccorrelate` (away from the lanes
+    # FFT instances above): a bin of the lanes' spectra times the pilot's
+    # (correlation), the resampling filter's dot product (pilots).
+    ("mulKernel", "__veccorrelate"), ("dot", "__veccorrelate")]
 
 const mostlyPacked = ["sosKernel"]
   # Kernels whose loop must be packed as a whole: over all their instances,

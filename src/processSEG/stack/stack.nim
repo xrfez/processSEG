@@ -357,8 +357,9 @@ proc normalize[T](x {.noalias.}: ptr UncheckedArray[T],
     fold: ptr UncheckedArray[int32], n: int, norm: FoldNorm) {.noinline,
     raises: [].} =
   ## The sums `x` into the stack, in place. A sum of fold 0 is 0 (nothing
-  ## was added there), so dividing by `max(fold, 1)` needs no branch: the
-  ## loops are straight-line and vectorize.
+  ## was added there), so dividing by `max(fold, 1)` needs no branch. GCC
+  ## still makes one (a fold of 0 or 1 leaves the sample as it is), so the
+  ## loops are scalar: they run once per stack, after the stacking.
   {.push boundChecks: off, overflowChecks: off.}
   case norm
   of fnNone: discard
