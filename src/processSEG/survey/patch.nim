@@ -247,13 +247,23 @@ proc receiverLayout*(g: SurveyGeometry, azimuthDeg = NaN, interval = NaN, lineSp
       raise newException(ValueError, "receiverLayout: fewer than two receiver lines; " &
         "give lineSpacing")
 
+iterator channelRelations(g: SurveyGeometry,
+    record: int64): tuple[channel: int64, relation: StationRelation] =
+  # Every channel of X record `record` with its source and receiver station:
+  # the one place this module walks relations (`describePatches`,
+  # `compareRelations`). parseSEG's `relations` goes channel by channel,
+  # scanning the record's earlier runs for each; a run-level iterator of
+  # parseSEG replaces this body (a loop over the runs and the stations of
+  # each), and its callers stay as they are.
+  for item in g.relations(record): yield item
+
 proc describeRecord(g: SurveyGeometry, layout: ReceiverLayout, record: int64): RecordPatch =
   result = RecordPatch(record: record, sourceX: NaN, sourceY: NaN, inlineMin: NaN,
     inlineMax: NaN, crosslineMin: NaN, crosslineMax: NaN, maxOffset: NaN)
   var first = true
   var sa, sc = NaN
   var seen: HashSet[StationKey] # distinct stations; multi-component channels share one
-  for (_, rel) in g.relations(record):
+  for (_, rel) in g.channelRelations(record):
     inc result.channels
     if first:
       first = false
@@ -266,26 +276,27 @@ proc describeRecord(g: SurveyGeometry, layout: ReceiverLayout, record: int64): R
         (result.inlineMin, result.inlineMax) = (Inf, -Inf)
         (result.crosslineMin, result.crosslineMax, result.maxOffset) = (Inf, -Inf, 0.0)
     let r = rel.receiver
-    if seen.containsOrIncl(r): continue
-    var j = result.lines.high
-    while j >= 0 and result.lines[j].line != r.line: dec j
-    if j < 0:
-      result.lines.add PatchLine(line: r.line, firstPoint: r.point, lastPoint: r.point)
-      j = result.lines.high
-    inc result.lines[j].stations
-    result.lines[j].firstPoint = min(result.lines[j].firstPoint, r.point)
-    result.lines[j].lastPoint = max(result.lines[j].lastPoint, r.point)
-    var c: Coordinates
-    if not g.table.receivers.lookup(r, c) or not (finite(c.x) and finite(c.y)):
-      inc result.noCoordinates
-    elif not sa.isNaN:
-      let a = layout.inlineOf(c.x, c.y) - sa
-      let x = layout.crosslineOf(c.x, c.y) - sc
-      result.inlineMin = min(result.inlineMin, a)
-      result.inlineMax = max(result.inlineMax, a)
-      result.crosslineMin = min(result.crosslineMin, x)
-      result.crosslineMax = max(result.crosslineMax, x)
-      result.maxOffset = max(result.maxOffset, hypot(c.x - result.sourceX, c.y - result.sourceY))
+    if not seen.containsOrIncl(r):
+      var j = result.lines.high
+      while j >= 0 and result.lines[j].line != r.line: dec j
+      if j < 0:
+        result.lines.add PatchLine(line: r.line, firstPoint: r.point, lastPoint: r.point)
+        j = result.lines.high
+      inc result.lines[j].stations
+      result.lines[j].firstPoint = min(result.lines[j].firstPoint, r.point)
+      result.lines[j].lastPoint = max(result.lines[j].lastPoint, r.point)
+      var c: Coordinates
+      if not g.table.receivers.lookup(r, c) or not (finite(c.x) and finite(c.y)):
+        inc result.noCoordinates
+      elif not sa.isNaN:
+        let a = layout.inlineOf(c.x, c.y) - sa
+        let x = layout.crosslineOf(c.x, c.y) - sc
+        result.inlineMin = min(result.inlineMin, a)
+        result.inlineMax = max(result.inlineMax, a)
+        result.crosslineMin = min(result.crosslineMin, x)
+        result.crosslineMax = max(result.crosslineMax, x)
+        result.maxOffset = max(result.maxOffset,
+          hypot(c.x - result.sourceX, c.y - result.sourceY))
   if result.inlineMin == Inf: # a source with coordinates, but no receiver with them
     (result.inlineMin, result.inlineMax, result.crosslineMin, result.crosslineMax,
       result.maxOffset) = (NaN, NaN, NaN, NaN, NaN)
@@ -820,9 +831,9 @@ proc compareRelations*(listed, generated: SurveyGeometry): seq[RecordAgreement] 
     if i > 0 and r == last: continue
     last = r
     var a, b: HashSet[StationKey]
-    for (_, rel) in listed.relations(r):
+    for (_, rel) in listed.channelRelations(r):
       a.incl stationKey(rel.receiver.line, rel.receiver.point, max(1'i16, rel.receiver.index))
-    for (_, rel) in generated.relations(r):
+    for (_, rel) in generated.channelRelations(r):
       b.incl stationKey(rel.receiver.line, rel.receiver.point, max(1'i16, rel.receiver.index))
     var e = RecordAgreement(record: r, listed: a.len, generated: b.len)
     for k in a:

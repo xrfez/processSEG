@@ -179,9 +179,18 @@ func statusAt(m: ChunkMeta, i: int): Status {.inline.} =
 func keyAt(r: TraceRows, i: int): lent TraceKeys {.inline.} = r.keysAt(i)
 func statusAt(r: TraceRows, i: int): Status {.inline.} = statusOf(r.keysAt(i))
 
+iterator channelRelations(g: SurveyGeometry,
+    record: int64): tuple[channel: int64, relation: StationRelation] =
+  # Every channel of X record `record` with its source and receiver station:
+  # the one place record completeness walks relations. parseSEG's
+  # `relations` goes channel by channel, scanning the record's earlier runs
+  # for each; a run-level iterator of parseSEG replaces this body (a loop
+  # over the runs and the stations of each), and `check` stays as it is.
+  for item in g.relations(record): yield item
+
 func hasRecord(g: SurveyGeometry, record: int64): bool =
   # The X record lists at least one channel.
-  for _ in g.relations(record): return true
+  for _ in g.channelRelations(record): return true
   false
 
 proc check[S: ChunkMeta | TraceRows](g: SurveyGeometry, src: S, recordMatch: RecordMatch,
@@ -257,7 +266,7 @@ proc check[S: ChunkMeta | TraceRows](g: SurveyGeometry, src: S, recordMatch: Rec
   var lineAt: Table[float64, int]
   var lastMissing = false
   var first = true
-  for (channel, rel) in g.relations(result.xpsRecord):
+  for (channel, rel) in g.channelRelations(result.xpsRecord):
     if first:
       first = false
       result.xpsSource = rel.source
@@ -266,44 +275,44 @@ proc check[S: ChunkMeta | TraceRows](g: SurveyGeometry, src: S, recordMatch: Rec
         result.fieldRecord != float64(result.xpsRecord)
     let r = rel.receiver
     var key = if byStation: r else: channelKey(float64(channel))
-    if listed.containsOrIncl(if byStation: stationKey(r.line, r.point, r.index) else: key):
-      continue # another component of a station already counted
-    inc result.expected
-    var li = lineAt.getOrDefault(r.line, -1)
-    if li < 0:
-      li = result.lines.len
-      lineAt[r.line] = li
-      result.lines.add LineCompleteness(line: r.line)
-    inc result.lines[li].expected
-    # The header's station with the X index, else one with no index (0);
-    # an X station without one (0) takes the usual index 1.
-    if byStation and key notin seen:
-      let alt = stationKey(r.line, r.point, (if r.index == 0: 1'i16 else: 0'i16))
-      if alt in seen: key = alt
-    var found = false
-    seen.withValue(key, e):
-      found = true
-      e.listed = true
-      inc result.present
-      if e.live > 0:
-        inc result.presentLive
-        inc result.lines[li].live
-      # A header without a channel number (NaN) has none to compare.
-      if byStation and finite(e.channel) and e.channel != float64(channel):
-        inc result.channelMismatch
-    if found:
-      lastMissing = false
-    else:
-      inc result.missing
-      inc result.lines[li].missing
-      result.missingStations.add r
-      if lastMissing and result.missingRanges[^1].line == r.line:
-        result.missingRanges[^1].lastPoint = r.point
-        inc result.missingRanges[^1].count
+    # Another component of a station already counted takes no part.
+    if not listed.containsOrIncl(if byStation: stationKey(r.line, r.point, r.index) else: key):
+      inc result.expected
+      var li = lineAt.getOrDefault(r.line, -1)
+      if li < 0:
+        li = result.lines.len
+        lineAt[r.line] = li
+        result.lines.add LineCompleteness(line: r.line)
+      inc result.lines[li].expected
+      # The header's station with the X index, else one with no index (0);
+      # an X station without one (0) takes the usual index 1.
+      if byStation and key notin seen:
+        let alt = stationKey(r.line, r.point, (if r.index == 0: 1'i16 else: 0'i16))
+        if alt in seen: key = alt
+      var found = false
+      seen.withValue(key, e):
+        found = true
+        e.listed = true
+        inc result.present
+        if e.live > 0:
+          inc result.presentLive
+          inc result.lines[li].live
+        # A header without a channel number (NaN) has none to compare.
+        if byStation and finite(e.channel) and e.channel != float64(channel):
+          inc result.channelMismatch
+      if found:
+        lastMissing = false
       else:
-        result.missingRanges.add StationRange(line: r.line, firstPoint: r.point,
-          lastPoint: r.point, count: 1)
-      lastMissing = true
+        inc result.missing
+        inc result.lines[li].missing
+        result.missingStations.add r
+        if lastMissing and result.missingRanges[^1].line == r.line:
+          result.missingRanges[^1].lastPoint = r.point
+          inc result.missingRanges[^1].count
+        else:
+          result.missingRanges.add StationRange(line: r.line, firstPoint: r.point,
+            lastPoint: r.point, count: 1)
+        lastMissing = true
   for e in seen.values:
     if not e.listed and e.live > 0: inc result.unlisted
   result.lines.sort(proc (a, b: LineCompleteness): int = cmp(a.line, b.line))

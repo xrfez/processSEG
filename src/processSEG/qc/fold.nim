@@ -529,6 +529,15 @@ proc find(ix: StationIndex, c: var Cursor, s: StationKey): int {.raises: [].} =
   if found >= 0: c.pos = found
   found
 
+iterator channelRelations(g: SurveyGeometry, record: int64,
+    domain: RelationDomain): tuple[channel: int64, relation: StationRelation] =
+  # Every channel of `record` with its source and receiver station: the one
+  # place the pre-plot fold walks relations. parseSEG's `relations` goes
+  # channel by channel, scanning the record's earlier runs for each; a
+  # run-level iterator of parseSEG replaces this body (a loop over the runs
+  # and the stations of each), and `preplotFold` stays as it is.
+  for item in g.relations(record, domain): yield item
+
 proc preplotFold*(g: SurveyGeometry, binning: Binning, opts = FoldOptions(),
     domain = rdSource, maxBins = 1 shl 26): FoldMap =
   ## The pre-plot fold of `g`'s relations (X; O with `rdReceiver`) over
@@ -545,7 +554,7 @@ proc preplotFold*(g: SurveyGeometry, binning: Binning, opts = FoldOptions(),
   var sc = initCursor()
   var rc = initCursor()
   for record in g.records(domain):
-    for (_, rel) in g.relations(record, domain):
+    for (_, rel) in g.channelRelations(record, domain):
       let i = sources.find(sc, rel.source)
       let j = receivers.find(rc, rel.receiver)
       if i < 0 or j < 0:
