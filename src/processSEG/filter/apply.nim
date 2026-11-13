@@ -35,7 +35,16 @@
 ## 3. transform with an FFT of `nfft ≥ samples + 2L` (zeros) or
 ##    `samples + 4L` (reflections: the two pads, then `2L` of zeros), a 2·3·5
 ##    length, with bins no wider than half the narrowest ramp of the
-##    response. At least `2L` zeros separate one end of the trace from the
+##    response. An impulse longer than the trace (a very low low-cut: 0.02 Hz
+##    is 22 000 samples at 2 ms) is cut to the trace's length in zero pads,
+##    with the bins it allows (`samples + 2·samples`): the trace cannot
+##    resolve the ramp anyway. Against pads of `L`, measured on 501 to 2001
+##    samples (low-cuts of 0.02 to 1 Hz, a Butterworth low-cut, a band-pass;
+##    noise, events, steady sinusoids in and below the ramps, an offset with
+##    a slope), the output moved by at most 0.39 % of its peak, mostly under
+##    0.06 %, and a 0.02-0.04 Hz low-cut of a 2000 × 2001 panel went from
+##    568 to 63 ms. Reflected pads keep `L`: cut, they moved the output by up
+##    to 0.5 % (a notch) and far more under `trMean`. At least `2L` zeros separate one end of the trace from the
 ##    other, so the response does not wrap: its tail past `L` (0.1 % of the
 ##    energy, but a cos² ramp's impulse decays only as 1/t³) leaks less than
 ##    −60 dB of the peak (−75 dB with zero pads), measured with a spike on
@@ -90,7 +99,8 @@ type
     fft: FftPlan[T]
     gain: seq[T] # one value per bin
     fall: seq[T] # pad weights, k = 1 .. pad (fall[k − 1])
-    pad: int
+    pad: int ## The pad laid out each side in the FFT window.
+    margin: int ## The impulse length `L` (`requiredMargin`).
     reflect: bool # the pads hold the odd reflection (else zeros)
     samples: int
     dtMs: float64
@@ -113,13 +123,16 @@ proc initFilterPlan*(T: typedesc[SampleType], spec: FilterSpec, dtMs: float64,
   ## (`impulseLength`).
   if samples < 1: badPlan("a filter plan needs samples ≥ 1, got " & $samples)
   spec.validate(dtMs)
-  let pad = spec.impulseLength(dtMs)
+  let margin = spec.impulseLength(dtMs)
   let dcGain = spec.response(0, dtMs)
   let reflect = dcGain >= 0.5 or trend != trLinear
+  # Zero pads: at most the trace's length each side (an impulse longer than
+  # the trace is cut to it, and then so are the bins: see the module doc).
+  let pad = if reflect: margin else: min(margin, samples)
   # Reflected pads of L each and 2L of zeros between them, or 2L of zeros.
   var n = samples + (if reflect: 4 else: 2) * pad
   let ramp = spec.narrowestRampHz
-  if ramp < Inf: # bins no wider than half the narrowest ramp
+  if ramp < Inf and pad == margin: # bins no wider than half the narrowest ramp
     n = max(n, int(ceil(2000 / (ramp * dtMs))))
   n = nextFastLen(n)
   result.spec = spec
@@ -130,6 +143,7 @@ proc initFilterPlan*(T: typedesc[SampleType], spec: FilterSpec, dtMs: float64,
   for k in 1..pad:
     result.fall[k - 1] = T(cos(PI / 2 * float64(k) / float64(pad + 1)) ^ 2)
   result.pad = pad
+  result.margin = margin
   result.samples = samples
   result.dtMs = dtMs
   result.dcGain = dcGain
@@ -138,14 +152,15 @@ proc initFilterPlan*(T: typedesc[SampleType], spec: FilterSpec, dtMs: float64,
 
 func requiredMargin*[T](plan: FilterPlan[T]): int {.inline, raises: [].} =
   ## The samples a zoom window needs on each side: the impulse length `L`.
-  plan.pad
+  plan.margin
 
 func samples*[T](plan: FilterPlan[T]): int {.inline, raises: [].} =
   ## The longest trace the plan takes.
   plan.samples
 
 func nfft*[T](plan: FilterPlan[T]): int {.inline, raises: [].} =
-  ## The FFT length: at least `samples + 4·requiredMargin`.
+  ## The FFT length: at least `samples` plus the two pads and the zeros
+  ## between them (module documentation, step 3).
   plan.fft.len
 
 func spec*[T](plan: FilterPlan[T]): lent FilterSpec {.inline, raises: [].} =

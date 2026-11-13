@@ -58,6 +58,22 @@ block plan_shape:
   let c = clean[float64]()
   doAssert maxDiff(filtered(c, flat), c) < 1e-12
 
+block an_impulse_longer_than_the_trace:
+  # A 0.02-0.04 Hz low-cut at 2 ms is 22 000 samples long. Its zero pads are
+  # cut to the trace (nfft about 3 × ns, not 50 000), its margin stays L, and
+  # on a trace too short to resolve the ramp it removes the trend and little
+  # else. Reflected pads (a high-cut, trMean) keep L.
+  let s = lowCut(0.02, 0.04)
+  let p = initFilterPlan(float64, s, dt, ns)
+  doAssert p.requiredMargin == s.impulseLength(dt) and p.requiredMargin > 10 * ns
+  doAssert p.nfft >= 3 * ns and p.nfft < 4 * ns, $p.nfft
+  let c = clean[float64]()
+  var x = c
+  x.addDrift(dt, slopePerS = 50, start = -30)
+  doAssert maxDiff(filtered(x, p), c) < 0.01
+  let m = initFilterPlan(float64, s, dt, ns, trend = trMean)
+  doAssert m.nfft >= ns + 4 * m.requiredMargin
+
 proc edgesMatchReference(T: typedesc, tol: float64) =
   # A 1 Hz low-cut with a 0.5–1 Hz ramp: the signal plus a large DC, and plus
   # a linear drift, match the filtered clean signal, in the first 10 % of the

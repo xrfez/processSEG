@@ -181,7 +181,7 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | Proc | What |
 |---|---|
 | `TrendRemoval` (`trNone`, `trMean`, `trLinear`) | What is removed before padding and added back after, scaled by the gain at 0 Hz. |
-| `FilterPlan[T]`; `initFilterPlan(T, spec, dtMs, samples, trend = trLinear)` | A filter for traces up to `samples` long: odd-reflection pads of `L`, a pad-only taper, an FFT of at least `samples + 4L`. |
+| `FilterPlan[T]`; `initFilterPlan(T, spec, dtMs, samples, trend = trLinear)` | A filter for traces up to `samples` long: zero pads (a response that rejects 0 Hz, with `trLinear`) or odd-reflection pads of `L`, a pad-only taper, an FFT of at least `samples + 2L` (zeros) or `samples + 4L` (reflections). Zero pads are cut to `samples` when `L` is longer than the trace (a 0.02 Hz low-cut: nfft 6144 for 2001 samples, not 50 000; the output within 0.4 % of the uncut one). |
 | `plan.requiredMargin`, `plan.samples`, `plan.nfft`, `plan.spec`, `plan.dtMs`, `plan.binHz`, `plan.gainAt(k)`, `plan.workspaceSize` | Its margin `L`, size and response. |
 | `applyFilter(plan, x \| b, meta \| samples, meta, ws)` | Filter one trace, or the live rows in place (`fftLanes` at a time). |
 

@@ -293,7 +293,11 @@ the pool, and keep filtering off the draw thread without it.
 
 The impulse length `L` holds 99.9 % of the energy of the response or of its complement
 (a narrow low-cut ramp is long: 0.5–1 Hz at 2 ms is 881 samples, 1.8 s), each edge and
-notch measured on its own, so the narrowest one sets it. A window decoded with `m`
+notch measured on its own, so the narrowest one sets it. A very low low-cut has an `L`
+longer than the trace (0.02–0.04 Hz: 22 000 samples): its zero pads are cut to the trace's
+length, which keeps it at about the cost of a band-pass (63 against 568 ms per 2000 × 2001
+panel, one thread) and moves the output by under 0.4 % of its peak; the margin stays `L`,
+so a zoom window of such a trace decodes the whole trace. A window decoded with `m`
 samples each side matches the whole trace filtered to within about 0.5 % of the traces'
 peak on broadband data, not the window's own (see below): 0.3 % measured on white noise
 for a 4-8-60-80 Hz band-pass, 0.06 % for a 0.5–1 Hz low-cut, 0.4 % for a zero-phase IIR
