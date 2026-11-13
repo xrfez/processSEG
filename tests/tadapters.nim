@@ -4,6 +4,7 @@
 
 import std/[assertions, math, os, strutils]
 import parseSEG
+from parseSEG/model/traceindex import mindex # the tests corrupt the index
 import processSEG
 import utils/[allocs, demo]
 
@@ -52,7 +53,7 @@ block failed_rows_of_a_truncated_file:
   var f = openSeismic(demoDir() / "survey.sgy", keys = true)
   defer: f.close()
   let cols = int(f.traceEntry(0).numSamples) # before the entries change
-  for t in [3, 4, 11]: f.index.entries[t].numSamples = 1_000_000_000
+  for t in [3, 4, 11]: f.mindex.entries[t].numSamples = 1_000_000_000
   let n = 12
   var p = newPrefetcher[float32](f, 0 ..< n, chunkTraces = n, cols = cols)
   defer: p.close()

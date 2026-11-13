@@ -9,6 +9,7 @@
 import std/[assertions, math, options, os, random, strutils]
 import processSEG
 import parseSEG/io/diskio
+from parseSEG/model/traceindex import mindex # the tests corrupt the index
 import parseSEG/segy/[samples as segysamples, textheader, binheader,
   traceheader, writer as segywriter]
 import utils/[demo, synth]
@@ -605,7 +606,7 @@ block decode_failures_counted:
   # Traces whose samples lie past the end of the file fail to decode: they
   # are counted, not stacked.
   var f = openSeismic(flat.path, keys = true)
-  for t in [5, 6, 100]: f.index.entries[t].offset = int64(getFileSize(flat.path))
+  for t in [5, 6, 100]: f.mindex.entries[t].offset = int64(getFileSize(flat.path))
   let res = bruteStack(f, float32, binning, vel)
   doAssert res.failed == 3 and res.stacked == flat.traces - 3 and res.skipped == 0
 
@@ -613,8 +614,8 @@ block skipped_traces:
   # A NaN static (unknown elevation) with statics on, and a trace with no
   # interval, are skipped; a trace fully stretch-muted is skipped too.
   var f = openSeismic(flat.path, keys = true)
-  f.index.keys[7].rcvZ = NaN
-  f.index.keys[8].intervalUs = NaN
+  f.mindex.keys[7].rcvZ = NaN
+  f.mindex.keys[8].intervalUs = NaN
   var opts = initBruteStackOptions()
   opts.statics = some(datumStatics(100, 2000))
   let res = bruteStack(f, float32, binning, vel, opts)

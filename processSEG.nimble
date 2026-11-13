@@ -10,5 +10,5 @@ srcDir        = "src"
 # Dependencies
 
 requires "nim >= 2.4.0"
-requires "https://github.com/xrfez/parseSEG >= 0.10.0"
+requires "https://github.com/xrfez/parseSEG >= 0.11.0"
 

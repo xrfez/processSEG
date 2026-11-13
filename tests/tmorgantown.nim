@@ -24,6 +24,7 @@ block morgantown_example:
     var g = initSurveyGeometry()
     for ext in [".sps", ".rps", ".xps"]: g.addSps(base & ext)
     doAssert not g.log.hasErrors
+    doAssert g.gridUnit.measurementSystem == 2 # H20 feet, H201 0.3048006096 (US survey)
     var f = openSeismic(shotFile, keys = true)
     defer: f.close()
 
