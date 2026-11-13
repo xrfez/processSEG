@@ -385,8 +385,8 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 | `AmplitudeFlag` (`afNonFinite`, `afDead`, `afConstant`, `afClipped`, `afSpiky`, `afDcOffset`, `afWeak`, `afNoisy`) | Why a trace stands out: NaN/Inf samples; every finite sample 0, or one non-zero value; two runs at the maximum (or one long one); samples far above their neighbours; a large mean; RMS far below or above the record's. |
 | `AmplitudeParams` (`startMs`, `endMs`, `clipRun = 3`, `clipTolerance = 0`, `spikeFactor = 10`, `spikeHalfWindowMs = 20`, `dcRatio = 0.2`, `outlierZ = 3.5`), `validate(params)` | The window on the trace axis (default: the whole trace) and the thresholds: a clip is a run of `clipRun` samples at `≥ (1 − clipTolerance)·max` or `≤ (1 − clipTolerance)·min` (each polarity at its own level when both reach the maximum magnitude within 1 %), flagged from two runs or one of `2·clipRun`; a spike deviates from the mean by more than `spikeFactor` × its neighbours' RMS deviation within ±`spikeHalfWindowMs` (itself left out); DC: `\|mean\| > dcRatio·σ`; outliers: `\|robustZ\| > outlierZ`. Inf turns `spikeFactor`, `dcRatio`, `outlierZ` off. `validate` raises `ValueError`. |
 | `TraceAmplitude` (`samples`, `rmsDb`, `maxDb`, `mean`, `nonFinite`, `clipped`, `spikes`, `robustZ`, `flags`) | One trace over its finite samples; `samples = 0` and NaN for a non-live row or an empty window (a finite window needs `t0Ms`). |
-| `traceAmplitude(x, dtMs, params = AmplitudeParams())` | One trace's samples (the window is not applied). |
-| `traceAmplitudeInto(b \| samples, meta, params, dst)`; `traceAmplitudeInto(pool, b \| samples, meta, params, dst)` | Every row into `dst[row]`, the live samples in the window; with a `ProcessPool`, rows split across its workers (identical results). No allocation. |
+| `traceAmplitude(x, dtMs, params = AmplitudeParams())` | One trace's samples (the window is not applied); allocates its scratch. |
+| `traceAmplitudeWorkspace(cols)`; `traceAmplitudeInto(b \| samples, meta, params, dst, ws)`; `traceAmplitudeInto(pool, b \| samples, meta, params, dst)` | Every row into `dst[row]`, the live samples in the window, with `2·cols + 1` float64 of scratch in `ws` (`ValueError` when it holds less); with a `ProcessPool`, rows split across its workers, each with its own workspace (identical results). No allocation. |
 | `RecordAmplitude` (`traces`, `medianRmsDb`, `madDb`, `counts`, `flagged`), `recordAmplitudeWorkspace(traces)`, `recordAmplitude(traces, params, ws)` | One record: median and MAD of `rmsDb` over the traces with samples, a finite RMS and neither dead nor constant; each one's `robustZ = (rmsDb − median) / (1.4826·MAD)` and `afWeak` / `afNoisy` (set or cleared), counts per flag. No allocation. |
 
 ## pipeline: `Op`, `Pipeline`, `PipelinePlan`
@@ -411,7 +411,7 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 | `pool.apply(plan, b \| samples, meta)`, `pool.apply(plan, src, dst, meta)` (blocks or tensors) | `plan.apply` with the rows split across the workers; blocks until done, identical results. One job at a time; a second caller waits. |
 | `pool.ping` | An empty job: the per-job overhead. |
 | `correlateInto(pool, plan: CorrelationPlan[T], src, dst: RowBlock[T] \| Tensor[T], meta)` | Vibroseis correlation with the rows split across the workers; checks as `checkCorrelate` on the caller's thread. |
-| `traceAmplitudeInto(pool, b \| samples, meta, params, dst)` | Amplitude QC (`qc/amplitude`) with the rows split across the workers. |
+| `traceAmplitudeInto(pool, b \| samples, meta, params, dst)` | Amplitude QC (`qc/amplitude`) with the rows split across the workers, each reserving `traceAmplitudeWorkspace`. |
 | `pickInto(pool, plan: FirstBreakPlan[T], b \| samples, meta, dst)` | First-break picking (`qc/firstbreak`) with the rows split across the workers; checks as `checkPick` on the caller's thread. |
 
 ## adapters: metas from parseSEG reads

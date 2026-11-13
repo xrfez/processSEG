@@ -342,17 +342,19 @@ proc ampJob[T](ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
     gcsafe, raises: [].} =
   let c = cast[ptr AmpCtx[T]](ctx)
   try:
+    ws.reserve(traceAmplitudeWorkspace(c.src.cols))
     c.queue.eachRun(span):
       traceAmplitudeInto(c.src.sub(span), c.meta.sub(span), c.params,
-        c.dst.toOpenArray(span.a, span.b))
+        c.dst.toOpenArray(span.a, span.b), ws)
   except ValueError as e:
     raiseAssert "checked by traceAmplitudeInto: " & e.msg
 
 proc traceAmplitudeInto*[T: SampleType](p: ProcessPool, b: RowBlock[T],
     meta: ChunkMeta, params: AmplitudeParams, dst: var openArray[TraceAmplitude]) =
   ## `qc/amplitude.traceAmplitudeInto` with the rows split across the
-  ## workers; blocks until they are done. The same results and errors
-  ## (raised on the caller's thread, before any work).
+  ## workers, each with its own workspace (`traceAmplitudeWorkspace`,
+  ## reserved by the worker); blocks until they are done. The same results
+  ## and errors (raised on the caller's thread, before any work).
   doAssert p.state != nil, "a ProcessPool must come from newProcessPool"
   meta.checkShape(b)
   params.validate

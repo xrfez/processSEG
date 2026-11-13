@@ -280,10 +280,25 @@ of a 30 s pilot at 0.25 ms.
 
 | operation | before | after |
 |---|---|---|
+| `traceAmplitudeInto`, 2000 × 3000 | 38.6 ms (6.4 ns a sample) | 14.2 ms (2.4 ns) |
 | `correlateInto`, 200 records | 7.90 ms (39.5 µs a record) | 6.18 ms (30.9 µs) |
 | `correlateInto`, one record | 254 µs | 86 µs |
 | `resamplePilot` to 4 ms / to 0.5 ms | 265 / 259 ms | 5.4 / 5.9 ms |
 
+- **Amplitude QC.** One loop per trace did the sums, the extremes and a finite test
+  sample by sample, a second the clip runs, a third a sliding sum of squares that had to
+  be rebuilt whenever a large term left it. Now: `Σx` and `Σx²` in eight partial sums; the
+  extremes, the finite test and the constant test as three integer reductions on the
+  samples' bits (float `min`/`max` reductions do not vectorize: they would have to be
+  reordered); a vector count of the samples at the maximum, so that only the traces with
+  `clipRun` of them (few) get the run by run pass; and for the spikes the window sums from
+  per-block suffix and prefix sums (no subtraction, so no rebuilding), with the loop over
+  the windows not cut by the trace's ends straight-line, in vectors. A trace with a NaN
+  or an Inf takes the former sample by sample path. Counts and flags are the same on all
+  8800 traces of a comparison (spikes, clips, DC, quantized, short, constant and dead
+  ones); the mean differs in the 13th digit on three (the order of the sums). The spike
+  pass's sums need `2·cols + 1` float64, hence the `Workspace` the call now takes. What
+  is left is mostly two serial sums per sample for the block sums, about 1 ns.
 - **Correlation, a block.** The two FFTs are 5.3 of the 6.2 ms now; what was around them
   cost half as much again. The spectrum's multiplication by the pilot's was vectorized
   across bins, shuffling the eight lanes in and out of each register (17.3 ms for 250

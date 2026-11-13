@@ -204,7 +204,7 @@ present, 31 missing, 2858 live stations the XPS does not list, 3 auxiliary trace
 
 ## Amplitude QC
 
-`traceAmplitudeInto(samples, meta, params, amps)` measures each trace: RMS and maximum in
+`traceAmplitudeInto(samples, meta, params, amps, ws)` measures each trace: RMS and maximum in
 dB, the mean, non-finite samples, clipped runs at the maximum, spikes against their
 neighbours, and flags the traces that are dead, constant, clipped, spiky or DC-offset by
 their samples, whatever their header status says. A clip is a run of `clipRun` samples at
@@ -246,9 +246,9 @@ samples[40, 700] = 5                             # a spike
 
 let meta = initChunkMeta(rowsOf(keys, counts), dtMs)
 var amps = newSeq[TraceAmplitude](traces)
-traceAmplitudeInto(samples, meta, AmplitudeParams(), amps)
-var ws = initWorkspace()
-ws.reserve(recordAmplitudeWorkspace(traces))
+var ws = initWorkspace()               # scratch for both steps, one after the other
+ws.reserve(max(traceAmplitudeWorkspace(cols), recordAmplitudeWorkspace(traces)))
+traceAmplitudeInto(samples, meta, AmplitudeParams(), amps, ws)
 let rec = recordAmplitude(amps, AmplitudeParams(), ws)
 doAssert amps[10].flags == {afDead}
 doAssert afClipped in amps[20].flags
