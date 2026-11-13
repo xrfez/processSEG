@@ -404,6 +404,56 @@ proc progressAndCancel() =
 
 progressAndCancel()
 
+type StackJob = object
+  ## A brute stack for a background thread: what it reads, where it puts
+  ## its result.
+  f: ptr SeismicFile
+  binning: ptr Binning
+  velocity: ptr VelocityFunction
+  res: ptr StackResult[float32]
+  ok: ptr bool
+
+proc runStackJob(job: StackJob) {.thread.} =
+  try:
+    var opts = initBruteStackOptions(workers = 2)
+    opts.chunkTraces = 8
+    {.cast(gcsafe).}:
+      job.res[] = bruteStack(job.f[], float32, job.binning[], job.velocity[], opts)
+    job.ok[] = true
+  except CatchableError:
+    job.ok[] = false
+
+block other_threads_read_the_file:
+  # The thread contract: the job runs on a background thread while this
+  # one keeps reading the same file (samples, keys, views); the result is
+  # the one a stack on this thread gives. (Creating prefetchers here
+  # meanwhile needs the parseSEG release that locks the map's pin count.)
+  var f = openSeismic(flat.path, keys = true)
+  var opts = initBruteStackOptions(workers = 2)
+  opts.chunkTraces = 8
+  let want = bruteStack(f, float32, binning, vel, opts)
+  var res: StackResult[float32]
+  var ok = false
+  var thread: Thread[StackJob]
+  createThread(thread, runStackJob, StackJob(f: addr f, binning: addr binning,
+    velocity: addr vel, res: addr res, ok: addr ok))
+  var buf = newTensor[float32](24, ns)
+  var first0 = newTensor[float32](24, ns)
+  discard f.readTracesInto(0 ..< 24, first0)
+  var live = 0
+  for pass in 0 ..< 40:
+    let first = (pass mod shots) * 24
+    discard f.readTracesInto(first ..< first + 24, buf)
+    if first == 0: doAssert buf == first0
+    let rows = f.rowsOf(first ..< first + 24)
+    for r in 0 ..< rows.len:
+      if binning.binOf(rows.keysAt(r)) >= 0 and f.traceKeys(first + r).offset != 0:
+        inc live
+  joinThread(thread)
+  doAssert ok and live == 40 * 24
+  doAssert res.data == want.data and res.fold == want.fold
+  doAssert res.stacked == want.stacked and res.binTraces == want.binTraces
+
 block errors:
   var nokeys = openSeismic(flat.path)
   doAssertRaises ValueError: discard bruteStack(nokeys, float32, binning, vel)
