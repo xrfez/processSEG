@@ -298,6 +298,66 @@ block rows_meta_float32_and_allocation:
   doAssert plan.correlate(src, meta2) == dst
   discard meta
 
+block ragged_batches_and_the_one_record_form:
+  # Records of unequal live lengths in one batch of the FFT's lanes, a
+  # last batch that does not fill them, dead rows between; every row
+  # against the direct sum, and the one-record form (the one-trace FFT)
+  # against its row of the block form, to float32 rounding. With pilots
+  # that start before and after the time break (lags that wrap, columns
+  # that no lag reaches) and both modes.
+  const n = 700
+  let rows = 2 * fftLanes + 3
+  for (t0Ms, mode, outSamples) in [(0.0, cmCorrelate, 0), (-6.0, cmCorrelate, n),
+      (9.4, cmCorrelate, 0), (0.6, cmDeconvolve, 0)]:
+    var pilot = generatePilot(linearSweep(10, 70, 400, 2, initSweepTaper(50, 50)), float32)
+    pilot.t0Ms = t0Ms
+    var keys: seq[TraceKeys]
+    var counts: seq[int]
+    discard metaFor(rows, n, 2, keys, counts)
+    var src = zeros[float32](rows, n)
+    for r in 0 ..< rows:
+      var x = newSeq[float32](n)
+      x.addNoise(1, 40 + r)
+      counts[r] = n - 37 * (r mod 5) # ragged within each batch
+      for j in 0 ..< n: src[r, j] = (if j < counts[r]: x[j] else: 1e6) # past the live length
+    keys[1].status = tsDead
+    keys[fftLanes + 2].status = tsDead
+    let meta = initChunkMeta(rowsOf(keys, counts), 2)
+    let plan = initCorrelationPlan(float32, pilot, n, 2, outSamples = outSamples, mode = mode,
+      normalize = false)
+    var ws = initWorkspace()
+    ws.reserve(plan.workspaceSize)
+    var dst = zeros[float32](rows, plan.outSamples)
+    plan.correlateInto(src, dst, meta, ws)
+    var p64 = newSeq[float64](pilot.len)
+    for j, v in pilot.samples: p64[j] = float64(v)
+    let whole = int(round(t0Ms / 2))
+    var peak = 0.0
+    for r in 0 ..< rows:
+      for m in 0 ..< plan.outSamples: peak = max(peak, abs(float64(dst[r, m])))
+    for r in 0 ..< rows:
+      var x = newSeq[float32](counts[r])
+      var x64 = newSeq[float64](counts[r])
+      for j in 0 ..< counts[r]:
+        x[j] = src[r, j]
+        x64[j] = float64(src[r, j])
+      var y = newSeq[float32](plan.outSamples)
+      plan.correlateInto(x, y, ws)
+      for m in 0 ..< plan.outSamples:
+        if keys[r].status == tsDead:
+          doAssert dst[r, m] == 0
+        else:
+          doAssert abs(float64(y[m]) - float64(dst[r, m])) <= 1e-6 * peak,
+            $t0Ms & " row " & $r & " column " & $m
+          # A whole-sample start time and plain correlation: the direct sum.
+          if mode == cmCorrelate and t0Ms == float64(2 * whole):
+            doAssert abs(float64(dst[r, m]) - direct(x64, p64, m + whole)) <= 2e-5 * peak,
+              $t0Ms & " row " & $r & " column " & $m
+    doAssert allocsIn(plan.correlateInto(src, dst, meta, ws)) == 0
+    var one = newSeq[float32](n)
+    var y = newSeq[float32](plan.outSamples)
+    doAssert allocsIn(plan.correlateInto(one, y, ws)) == 0
+
 block validation:
   let pilot = generatePilot(linearSweep(10, 70, 2000, 2))
   doAssertRaises(ValueError): discard initCorrelationPlan(float32, pilot, 1601, 1)

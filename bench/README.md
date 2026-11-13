@@ -267,3 +267,38 @@ thread.
 - Coppens reads the whole trace (its ratio is cumulative from the trace's start and its
   stabilization relative to the whole trace): same picks, bit for bit. It gains only from
   its ratio being computed about the window instead of everywhere.
+
+## QC and vibroseis
+
+`nim bench` (bench/bqc.nim), one thread: amplitude QC of a 2000 × 3000 float32 panel, the
+coherence SNR of a 24 × 6000 gather, the correlation of 200 records of 20 s at 2 ms with a
+12 s sweep (nfft 16200) and of one such record, the shot fit of 2000 picks, the resampling
+of a 30 s pilot at 0.25 ms.
+
+2026-11-13, AMD Ryzen 9 3950X, Nim 2.4.0, gcc 12.2.0,
+`-d:danger --opt:speed --debuginfo:on --linedir:on -march=x86-64-v3`, medians:
+
+| operation | before | after |
+|---|---|---|
+| `correlateInto`, 200 records | 7.90 ms (39.5 µs a record) | 6.18 ms (30.9 µs) |
+| `correlateInto`, one record | 254 µs | 86 µs |
+| `resamplePilot` to 4 ms / to 0.5 ms | 265 / 259 ms | 5.4 / 5.9 ms |
+
+- **Correlation, a block.** The two FFTs are 5.3 of the 6.2 ms now; what was around them
+  cost half as much again. The spectrum's multiplication by the pilot's was vectorized
+  across bins, shuffling the eight lanes in and out of each register (17.3 ms for 250
+  batches of 8101 bins on its own; 4.1 ms as one vector operation per bin, which a kernel
+  that is not inlined gets). The lane buffer is filled and read sample by sample, one pass
+  with a stream per record, and zeroed only past the longest record, where it was zeroed
+  whole and then written lane by lane (9.8 → 3.3 ms and 6.9 → 3.1 ms for 2000 records).
+  2000 records: 77.8 → 64.4 ms.
+- **Correlation, one record.** It ran the eight-lane path with seven empty lanes; it now
+  takes the one-trace FFT.
+- The outputs are equal to the last bit or one from it: 3727 of 105 064 values of four
+  cases differ, by at most 1.9e-8 at a peak of 0.2 (a float32's rounding; the products are
+  fused in another order), and the one-record form agrees with its row of the block form
+  to the same.
+- **Resampling.** A Bessel series and a sine per tap of every output sample became one
+  kernel per phase of the two intervals' ratio (one for 0.25 → 4 ms, two for 0.25 → 0.5 ms),
+  tabulated once, and a dot product per output. (Before: 24 samples of the coarser
+  interval a side; after: 32, the new default.)
