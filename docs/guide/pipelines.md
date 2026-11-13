@@ -177,8 +177,8 @@ for r in 0 ..< 200:
 ```
 
 One job runs at a time per pool; a second caller waits. Measured on a Ryzen 9 3950X
-([bench/README.md](../../bench/README.md)): 6–12 µs per job, and a demean + band-pass + AGC
-flow over a 2000 × 2001 float32 panel takes 32 ms on one thread, 8.6 ms on 4 workers.
+([bench/README.md](../../bench/README.md)): 6–13 µs per job, and a demean + band-pass + AGC
+flow over a 2000 × 2001 float32 panel takes 19 ms on one thread, 5.1 ms on 4 workers.
 
 ## Your own threads
 

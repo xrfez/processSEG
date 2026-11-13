@@ -226,8 +226,8 @@ flow[2].agc.windowMs = 300                # a slider moved: edit the op, recompi
      destroying it stops and joins its workers. Each worker grows its own workspace on
      the first job that needs more, so the first frame after a plan that needs more
      scratch allocates once; later frames allocate nothing. Measured (bench/README "Process
-     pool"): 6–12 µs per job, and a demean + band-pass + AGC flow over a 2000 × 2001
-     panel takes 32 ms on one thread, 8.6 ms on 4 workers, 4.3 ms on 8.
+     pool"): 6–13 µs per job, and a demean + band-pass + AGC flow over a 2000 × 2001
+     panel takes 19 ms on one thread, 5.1 ms on 4 workers, 2.9 ms on 8.
   3. **Inside the prefetcher**, for batch jobs: the `transform` hook runs the plan on
      parseSEG's decode workers while the chunk is still in cache, with one `Workspace` per
      worker passed through the `user` pointer.
@@ -287,9 +287,9 @@ let m = plan.requiredMargin           # L samples: decode a zoom window with m e
 ```
 
 Cost (bench/README "Filters", Ryzen 3950X): a band-pass of a 2000 × 2001 float32 panel
-takes about 6 ms on 4 workers and 23 ms on one thread; the IIR form costs the same. Budget
-one filter at ~6 ms per frame with the pool, and keep filtering off the draw thread
-without it.
+takes about 3 ms on 4 workers and 12 ms on one thread; the IIR form costs about the same
+(11 ms), a 0.5–1 Hz low-cut half as much again. Budget one filter at ~3 ms per frame with
+the pool, and keep filtering off the draw thread without it.
 
 The impulse length `L` holds 99.9 % of the energy of the response or of its complement
 (a narrow low-cut ramp is long: 0.5–1 Hz at 2 ms is 881 samples, 1.8 s), each edge and
@@ -329,7 +329,7 @@ Viewers usually offer **fixed**, **normalized** and **AGC** display gain.
   computes the statistics (`processSEG/gain/stats`), and the viewer can apply the factor
   as a shader uniform, with no CPU pass over the samples:
   - `traceStatsInto(samples, meta, stats)`: RMS and max |x| per row (NaN for dead,
-    auxiliary and failed rows), about 0.9 ms for a 2000 × 2001 panel;
+    auxiliary and failed rows), about 0.8 ms for a 2000 × 2001 panel;
   - `panelStats(samples, meta, ws, clipPercentile = 99, rows = a .. b)`: RMS, max and a
     percentile clip of |x| over the live rows (rows with a NaN or Inf are left out;
     `rows` counts the rows used), from a histogram with 0.4 % relative resolution (`ws` holds
@@ -354,8 +354,9 @@ Viewers usually offer **fixed**, **normalized** and **AGC** display gain.
   rows that start before 0 or windows past the record; times outside it are exact but
   slower.
 
-  AGC costs about 6.5 ms per 2000 × 2001 panel on one thread, whatever the window, so
-  about 1.7 ms on 4 workers (the pool scales 3.75× on 4 workers for a whole flow). `normalize` (`initNormalizePlan(normRms | normMax |
+  AGC costs 4.5–7 ms per 2000 × 2001 panel on one thread (100 ms to 2 s windows: only the
+  windows cut by the trace ends cost more), so about 1.2–1.9 ms on 4 workers (the pool
+  scales 3.7× on 4 workers for a whole flow). `normalize` (`initNormalizePlan(normRms | normMax |
   normPercentile, samples, perTrace | perPanel)`) and `scaleDb` are the CPU forms of the
   fixed and normalized display gains.
 
@@ -441,7 +442,8 @@ processSEG's QC modules score this automatically (experimental for land data):
   `iirLanes` (24) rows at a time into copies in the workspace (`plan.workspaceSize` holds
   them), one without picks from the rows in place. A plan is shareable, one `Workspace`
   per thread. Picks for the overlay are `picks[row].timeMs`. On a 2000-trace shot, picking
-  takes 5–19 ms on one thread, 31–44 ms with the band-pass (bench/README).
+  guided by the refraction takes 1.0–5.2 ms on one thread, 2.9–16 ms with the band-pass
+  (bench/README).
 - `fitShot([samples,] meta, picks, params, fit)` (`qc/shotfit`), per shot (a `meta.sub`
   of its rows): a two-segment (crossover) L1 fit or an offset-binned one on the confident
   picks; residuals minus the neighbours' median along the spread (a laterally varying

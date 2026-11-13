@@ -77,7 +77,7 @@ trace read (`chunkMeta(f, traces, failed)`); see the guide.
 - [docs/integration.md](docs/integration.md): the contract between parseSEG, processSEG and
   a viewer (who reads the file, buffers and plans, zoom margins, display gain, overlays).
 - [bench/README.md](bench/README.md): measured throughput (a 2000-trace panel: a band-pass
-  in about 6 ms on 4 workers).
+  in about 3 ms on 4 workers).
 - `nim docs`: the generated HTML reference, in `htmldocs/`.
 
 ## Setup

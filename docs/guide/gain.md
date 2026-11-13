@@ -54,8 +54,8 @@ doAssert abs(samples[0, 700] - before[0, 700]) < 1e-4
 doAssert agcPlan.requiredMargin == agcPlan.windowSamples div 2 # half the window
 ```
 
-`agcMeanAbs` divides by the window's mean |x| instead of its RMS. AGC costs about 6.5 ms
-per 2000 × 2001 float32 panel on one thread, whatever the window
+`agcMeanAbs` divides by the window's mean |x| instead of its RMS. AGC costs 4.5–7 ms
+per 2000 × 2001 float32 panel on one thread, for windows of 100 ms to 2 s
 ([bench/README.md](../../bench/README.md)).
 
 ## Time-variant gain curves
