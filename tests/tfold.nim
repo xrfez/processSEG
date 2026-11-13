@@ -143,7 +143,9 @@ block strays:
   doAssert trimmed.len == plain.len, $trimmed.len & " " & $plain.len
   doAssert close(trimmed.location(0).x, plain.location(0).x) and
     close(trimmed.location(0).y, plain.location(0).y), $trimmed.location(0) & $plain.location(0)
-  let full = surveyGrid(g, trimStrays = false)
+  # Covering the strays takes 2.9e9 bins: more than the default budget.
+  doAssertRaises(ValueError): discard surveyGrid(g, trimStrays = false)
+  let full = surveyGrid(g, trimStrays = false, maxBins = high(int))
   doAssert full.len > 100 * plain.len
   # a compact survey loses no station: the extreme midpoints stay inside
   let (rx, ry) = o.receiverAt(o.receiverLines - 1, o.stations - 1)
@@ -182,6 +184,38 @@ block errors:
   doAssertRaises(ValueError): discard surveyGrid(one, azimuthDeg = 90, binInline = 10)
   let single = surveyGrid(one, binInline = 10, binCrossline = 10, azimuthDeg = 90)
   doAssert single.len == 1 and close(single.location(0).x, 50)
+
+block bin_budget:
+  # A bin size typed as 0.01 for 10: the midpoints span 1300 × 1650, which
+  # would take 2.1e10 bins, 86 GB of fold counts. The error names both.
+  let g = initOrtho(90).geometry
+  try:
+    discard surveyGrid(g, binInline = 0.01, binCrossline = 0.01)
+    doAssert false, "a grid of 2.1e10 bins was made"
+  except ValueError as e:
+    doAssert "0.01 × 0.01" in e.msg and "1300 × 1650" in e.msg and "maxBins" in e.msg, e.msg
+  # More bins than an int counts.
+  doAssertRaises(ValueError): discard surveyGrid(g, binInline = 1e-12, binCrossline = 1e-12)
+  doAssertRaises(ValueError): discard surveyGrid(g, binInline = 1e-300, binCrossline = 1e-300)
+  # The budget is the caller's: the natural grid fits its own size exactly.
+  let b = surveyGrid(g)
+  doAssert surveyGrid(g, maxBins = b.len).len == b.len
+  doAssertRaises(ValueError): discard surveyGrid(g, maxBins = b.len - 1)
+  doAssertRaises(ValueError): discard surveyGrid(g, maxBins = 0)
+  # A binning of the caller's own is checked where the counts are allocated.
+  let big = gridBinning(0, 0, 90, 0.01, 0.02, 100_000, 100_000)
+  try:
+    discard initFoldMap(big)
+    doAssert false, "a fold map of 1e10 bins was made"
+  except ValueError as e:
+    doAssert "0.01 × 0.02" in e.msg and "1000 × 2000" in e.msg and "maxBins" in e.msg, e.msg
+  doAssertRaises(ValueError): discard g.preplotFold(big)
+  doAssertRaises(ValueError): discard initFoldMap(cdpBinning(1, 1 shl 27))
+  doAssert initFoldMap(b, maxBins = b.len).fold.size == b.len
+  doAssert g.preplotFold(b, maxBins = b.len).fold.size == b.len
+  doAssertRaises(ValueError): discard initFoldMap(b, maxBins = b.len - 1)
+  doAssertRaises(ValueError): discard g.preplotFold(b, maxBins = b.len - 1)
+  doAssertRaises(ValueError): discard initFoldMap(b, maxBins = -1)
 
 # An orthogonal swath with X records: 10 receiver lines 200 apart (c = 200 i),
 # 81 stations every 50 (a = 50 k); 20 source lines between stations
@@ -330,6 +364,40 @@ block fold_options:
     doAssertRaises(ValueError): discard initFoldMap(b, FoldOptions(offsetBounds: bad))
   doAssertRaises(ValueError): discard initFoldMap(b, FoldOptions(azimuthSectors: -1))
   doAssertRaises(ValueError): discard initFoldMap(b, FoldOptions(sectorStartDeg: NaN))
+
+block clone_is_independent:
+  # A map's counts are tensors, which share their storage when copied: a map
+  # is moved or cloned, never copied (tests/reject/rfoldcopy.nim).
+  let grid = gridBinning(0, 0, 0, 10, 10, 4, 4)
+  var k = initTraceKeys()
+  k.status = tsLive
+  (k.srcX, k.srcY, k.rcvX, k.rcvY) = (0.0, 0.0, 20.0, 20.0)
+  let keys = @[k]
+  let counts = @[1]
+  var a = initFoldMap(grid, FoldOptions(offsetBounds: @[0.0, 100], azimuthSectors: 2,
+    offsetRange: true))
+  a.addFold(rowsOf(keys, counts))
+  var b = a.clone
+  doAssert b.binned == 1 and b.fold.toFlatSeq == a.fold.toFlatSeq
+  doAssert b.binning.len == a.binning.len and b.options.azimuthSectors == 2
+  b.addFold(rowsOf(keys, counts))
+  doAssert a.binned == 1 and b.binned == 2
+  template total(t: untyped): int =
+    var n = 0
+    for v in t: n += int(v)
+    n
+  doAssert total(a.fold) == 1 and total(b.fold) == 2, "the clone has its own fold"
+  doAssert total(a.offsetFold) == 1 and total(b.offsetFold) == 2
+  doAssert total(a.azimuthFold) == 1 and total(b.azimuthFold) == 2
+  b.clear
+  doAssert total(a.fold) == 1 and total(b.fold) == 0
+  var known = 0
+  for v in a.offsetMin: known += int(not v.isNaN)
+  doAssert known == 1, "clearing the clone leaves the original's offset range"
+  # A map without the optional counts clones too; a returned map is a move.
+  var plain = initFoldMap(grid).clone
+  plain.addFold(rowsOf(keys, counts))
+  doAssert plain.binned == 1 and plain.offsetFold.size == 0 and plain.offsetMin.size == 0
 
 # Traces of the swath, one per pre-plot pair (keys as parseSEG's applySurvey
 # leaves them); `drop` decides each pair's fate.

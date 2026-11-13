@@ -4,7 +4,7 @@
 ## against brute force over the SPS coordinates; and the Morgantown 11.7 box
 ## against its XPS (skipped when absent).
 
-import std/[algorithm, assertions, math, os, sets, strutils]
+import std/[algorithm, assertions, math, os, random, sets, strutils]
 when defined(release) or defined(danger): import std/times
 import parseSEG
 import processSEG/survey/patch
@@ -58,8 +58,7 @@ proc brute(f: SpsFile, b: Brute): seq[HashSet[StationKey]] =
         set.incl stationKey(p.line, p.point, 1)
     result.add set
 
-proc check(s: SyntheticSurvey, t: PatchTemplate, b: Brute, label: string) =
-  let f = s.spsFile
+proc check(f: SpsFile, t: PatchTemplate, b: Brute, label: string) =
   var g = initSurveyGeometry()
   g.addSps(f)
   let got = receiversOf(g.generateRelations(f.patchShots, t))
@@ -69,6 +68,9 @@ proc check(s: SyntheticSurvey, t: PatchTemplate, b: Brute, label: string) =
     doAssert have == want[i], label & ": record " & $(i + 1) & ": " & $have.len & " vs " &
       $want[i].len
   doAssert want.len == 147
+
+proc check(s: SyntheticSurvey, t: PatchTemplate, b: Brute, label: string) =
+  check(s.spsFile, t, b, label)
 
 block box_equals_template:
   # Sources lie between lines (±100, ±300 m) and on stations (±250 m): a
@@ -101,6 +103,80 @@ block limits:
   t = initDistancePatch(260, 310, peShift)
   check(s, t, Brute(az: 30, hwI: 260, hwC: 310, radius: Inf, maxOffset: Inf, shift: true),
     "shift")
+
+proc irregular(seed: int): SpsFile =
+  ## The synthetic survey at 30° with every receiver moved by up to 20 m, and
+  ## two lines whose stations do not run one way along the line: one doubles
+  ## back every seventh station, one wanders 300 m across.
+  var s = initSyntheticSurvey()
+  (s.azimuthDeg, s.x0, s.y0) = (30.0, 1000.0, 2000.0)
+  result = s.spsFile
+  var rng = initRand(seed)
+  let (ux, uy) = (sin(degToRad(30.0)), cos(degToRad(30.0)))
+  for p in result.points.mitems:
+    if p.kind == pkReceiver:
+      p.easting += rng.rand(-20.0 .. 20.0)
+      p.northing += rng.rand(-20.0 .. 20.0)
+      let k = int(p.point) - 100
+      if p.line == 1003 and k mod 7 == 3: # 180 m along the line: past three stations
+        p.easting += 180 * ux
+        p.northing += 180 * uy
+      if p.line == 1006: # across the line, by 0 to 300 m
+        p.easting += float64(k mod 5) * 75 * uy
+        p.northing -= float64(k mod 5) * 75 * ux
+
+block irregular_layout_against_brute_force:
+  # The stations inside the limits are found from the box, not by testing
+  # every station: on an irregular layout that search must lose none. (The
+  # box azimuths are given: the measured one of a jittered layout is not
+  # exactly 30°, and the brute force must use the same frame.)
+  proc boxAt(az, hwI, hwC: float64, radius = Inf, maxOffset = Inf): PatchTemplate =
+    result = initDistancePatch(hwI, hwC, radius = radius, maxOffset = maxOffset)
+    result.boxAzimuthDeg = az
+  for seed in [1, 2, 3]:
+    let f = irregular(seed)
+    check(f, boxAt(30, 260, 310), Brute(az: 30, hwI: 260, hwC: 310, radius: Inf,
+      maxOffset: Inf), "box")
+    check(f, boxAt(75, 400, 250, radius = 380, maxOffset = 420), Brute(az: 75, hwI: 400,
+      hwC: 250, radius: 380, maxOffset: 420), "rotated box")
+    # A strip across the lines: no limit along either axis of the layout.
+    check(f, boxAt(120, Inf, 180), Brute(az: 120, hwI: Inf, hwC: 180, radius: Inf,
+      maxOffset: Inf), "strip")
+    check(f, boxAt(30, Inf, Inf, radius = 330), Brute(az: 30, hwI: Inf, hwC: Inf,
+      radius: 330, maxOffset: Inf), "radius")
+    var t = boxAt(30, 300, 200, maxOffset = 500)
+    (t.inlineDistance, t.crosslineDistance) = (125.0, -60.0)
+    check(f, t, Brute(az: 30, hwI: 300, hwC: 200, radius: Inf, maxOffset: 500, dI: 125,
+      dC: -60), "off-centre")
+    check(f, boxAt(30, Inf, Inf, maxOffset = 512.5), Brute(az: 30, hwI: Inf, hwC: Inf,
+      radius: Inf, maxOffset: 512.5), "maximum offset")
+    # The receiver-line azimuth as measured (not exactly 30°): a box along it.
+    var g = initSurveyGeometry()
+    g.addSps(f)
+    let az = g.receiverLayout.azimuthDeg
+    doAssert az != 30 and abs(az - 30) < 2
+    check(f, initDistancePatch(260, 310), Brute(az: az, hwI: 260, hwC: 310, radius: Inf,
+      maxOffset: Inf), "box along the measured azimuth")
+
+block the_order_of_a_layout_does_not_matter:
+  # Which stations lie inside the limits does not depend on the order of the
+  # lines in the layout or of the stations on a line: a layout shuffled by
+  # hand gives the X records of the measured one.
+  let f = irregular(4)
+  var g = initSurveyGeometry()
+  g.addSps(f)
+  let layout = g.receiverLayout
+  var shuffled = layout
+  var rng = initRand(9)
+  for line in shuffled.lines.mitems: rng.shuffle(line.stations)
+  rng.shuffle(shuffled.lines)
+  var rotated = initDistancePatch(400, 250, radius = 380, maxOffset = 420)
+  rotated.boxAzimuthDeg = 75
+  for t in [initDistancePatch(260, 310), rotated, initDistancePatch(Inf, Inf, radius = 330),
+      initDistancePatch(260, 310, peShift)]:
+    let want = g.generateRelations(layout, f.patchShots, t)
+    let got = g.generateRelations(shuffled, f.patchShots, t)
+    doAssert want.len > 147 and receiversOf(got) == receiversOf(want)
 
 block with_template:
   # 4 × 11 template ∩ 200 m maximum offset.

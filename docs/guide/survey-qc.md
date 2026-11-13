@@ -43,6 +43,21 @@ f.applySurvey(g, stats)        # by station; `overwrite = true` refreshes coordi
 echo stats                     # traces joined by stations, via the source, by record, ...
 ```
 
+**One rule for a receiver.** Everywhere a trace's receiver is its *station*, as parseSEG's
+`stationKey(rcvLine, rcvPoint, rcvIndex)` makes it: the line and the point rounded to 1/100
+(the resolution of survey files, so a point decoded from a binary fraction and the same
+point typed in decimal are one station), together with the point index. Two traces at one
+line and point with different indices are two receivers. This is how `applySurvey` joins
+traces, how record completeness matches them (below), and how `planSlices` groups the
+segments of a continuous recording ([vibroseis.md](vibroseis.md#continuous-recordings));
+slicing then keeps each channel and component of a station as a stream of its own, and
+record QC counts a station's components once. Against a survey file, index 0 means
+unknown: a header index 0 matches any X index, and an X index 0 matches index 1. Rows that
+are not live (dead, auxiliary, or failed to decode) are no receiver's data: slicing does
+not use them, `addFold` does not count them, `checkGeometryInto` does not check them
+(given a `ChunkMeta` or a `TraceRows` view alike), and auxiliary traces take no part in
+record matching.
+
 ## Patches: describing and generating X records
 
 `describePatches(g)` walks every X record: its receiver lines and stations, its channels,
@@ -111,7 +126,9 @@ lattice over the whole survey, its inlines along the receiver lines (the median 
 between consecutive receivers), the natural bin of half the receiver interval by half the
 source interval, and an extent that covers the midpoint of every source–receiver pair.
 Any of the three can be given instead (`binInline`, `binCrossline`, `azimuthDeg`), and a
-`Binning` of your own works everywhere a grid does.
+`Binning` of your own works everywhere a grid does. A grid and a fold map hold at most
+`maxBins` bins (2²⁶ unless you pass more): a bin size typed as 0.01 for 10 raises a
+`ValueError` that names the bin sizes and the extent, instead of running out of memory.
 
 **Centring.** The grid is placed so that its bin centres fall where the midpoints cluster.
 On a regular survey every midpoint then sits at a bin centre. Where the midpoints scatter
@@ -132,7 +149,9 @@ range. `initFoldMap` + `addFold` count live traces (by their header midpoint, or
 between their source and receiver coordinates), chunk by chunk in any order. Both use the
 same midpoint maths, so `foldDifference(pre, actual)` (pre-plot − actual) is exact: positive
 where traces are missing, negative where traces fall that the pre-plot has fewer of (a
-geometry error). The results are tensors plus the `Binning`, ready for a display.
+geometry error). The results are tensors plus the `Binning`, ready for a display. A
+`FoldMap` is moved, never copied (its tensors would be shared): `m.clone` gives an
+independent map, for a snapshot before more traces are added.
 
 ```nim
 import parseSEG, processSEG
@@ -190,11 +209,14 @@ doAssert missing == 1 and min(diff.toFlatSeq) == 0
 
 `recordCompleteness(g, meta)` checks one field record against the XPS. The X record is
 found by the header's **source station** (`recordsAt`; when a source was shot more than
-once, the FFID chooses), or by the FFID with `rmFieldRecord`; the other key is always
+once, the FFID chooses), or by the FFID: with `rmFieldRecord`, and by default when the
+headers have no source station or one that no X record lists. The other key is always
 checked, and a mismatch is reported (`recordMismatch`, `sourceMismatch`: the Morgantown
 case). Traces match by **receiver station** (by channel only when the headers have no
-stations). The result counts the expected, present and live stations, the **missing** ones
-as station ranges per line, the **unlisted** live stations, duplicates, renumbered
+stations). A station whose line and point are both 0 is a header left empty, not a
+station. The result counts the expected, present and live stations and the **missing**
+ones, which it also lists one by one (`missingStations`, for a map) and as station ranges
+per line (`missingRanges`); the **unlisted** live stations, duplicates, renumbered
 channels (informational), and per receiver line expected / live / missing.
 `summarize(g, records)` totals many records, and lists the XPS records no data matched.
 

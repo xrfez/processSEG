@@ -33,6 +33,13 @@
 ## of a station left out fall outside the grid and are counted as such
 ## (`FoldMap.outside`). `trimStrays = false` covers every station.
 ##
+## **Budget.** A grid has at most `maxBins` bins (2²⁶ by default, 256 MB of
+## fold counts), and so has a `FoldMap`: a bin size mistyped as 0.01 for 10
+## asks for a million times the bins, and running out of memory ends the
+## program without an error to catch. More raises `ValueError`, naming the
+## bin sizes and the extent they were to cover; a survey that needs more
+## passes a larger `maxBins`.
+##
 ## **Centring.** The grid is one fixed lattice over the whole survey, and
 ## by default (`centre = true`) its bins are centred where the midpoints
 ## cluster. Along each axis, with `p` a position and `b` the bin, a
@@ -100,7 +107,7 @@
 ## pre-plot − actual per bin: positive where traces are missing, negative
 ## where traces fall where the pre-plot has fewer (geometry errors).
 
-import std/[algorithm, math, tables]
+import std/[algorithm, math, strutils, tables]
 import parseSEG
 import ../core/types
 import ../stack/binning
@@ -192,8 +199,16 @@ func centred(rcv, src: seq[float64], bin, lo: float64): float64 =
 proc badGrid(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, "surveyGrid: " & msg)
 
+func short(x: float64): string =
+  # Six significant digits: enough to recognise a bin size or an extent.
+  result = formatFloat(x, ffDefault, 6)
+  result.trimZeros()
+
+func countText(bins: float64): string =
+  if bins < 9e18: $int64(bins) else: short(bins)
+
 proc surveyGrid*(g: SurveyGeometry, binInline = NaN, binCrossline = NaN,
-    azimuthDeg = NaN, centre = true, trimStrays = true): Binning =
+    azimuthDeg = NaN, centre = true, trimStrays = true, maxBins = 1 shl 26): Binning =
   ## The bin grid covering every source–receiver midpoint of `g` (see the
   ## module documentation): inlines along `azimuthDeg`, bins `binInline`
   ## along them (`gridBinning`'s `crosslineSpacing`) by `binCrossline`
@@ -202,11 +217,15 @@ proc surveyGrid*(g: SurveyGeometry, binInline = NaN, binCrossline = NaN,
   ## interval. `centre` places the bin centres on the midpoints' dominant
   ## positions (module documentation); `false` starts the grid at the
   ## minimum corner. `trimStrays` leaves stations far outside the survey out
-  ## of the extent (module documentation). Raises `ValueError` for a given
-  ## value that is not finite (or
+  ## of the extent (module documentation). `maxBins` is the most bins the
+  ## grid may have: a bin size mistyped by a factor of 1000 asks for a
+  ## million times the bins, and a fold map of them for more memory than
+  ## there is. Raises `ValueError` for a given value that is not finite (or
   ## not positive, for the bins), when there are no receivers or no sources
-  ## with coordinates, or when a default cannot be measured (no line with
-  ## two stations at distinct positions).
+  ## with coordinates, when a default cannot be measured (no line with two
+  ## stations at distinct positions), or when the grid would have more than
+  ## `maxBins` bins (the message gives the bin sizes and the extent).
+  if maxBins < 1: badGrid("maxBins must be ≥ 1, got " & $maxBins)
   for (v, name) in [(binInline, "binInline"), (binCrossline, "binCrossline")]:
     if not v.isNaN and not (v > 0 and v < Inf):
       badGrid(name & " must be > 0 and finite, got " & $v)
@@ -237,12 +256,23 @@ proc surveyGrid*(g: SurveyGeometry, binInline = NaN, binCrossline = NaN,
   for a in 0 .. 1:
     lo[a] = (min(rcv[a]) + min(src[a])) / 2
     hi[a] = (max(rcv[a]) + max(src[a])) / 2
+  let extent = [hi[0] - lo[0], hi[1] - lo[1]]
   if centre:
     lo = [centred(rcv[0], src[0], binI, lo[0]), centred(rcv[1], src[1], binC, lo[1])]
   # Nearest-bin assignment: position u (in bins) needs u < n − 0.5 (with
   # the low side's slack, so rounding in binAt cannot drop the last one).
-  let crosslines = int(floor((hi[0] - lo[0]) / binI + 0.5 + 1e-9)) + 1
-  let inlines = int(floor((hi[1] - lo[1]) / binC + 0.5 + 1e-9)) + 1
+  # Counted as floats first: a mistyped bin size makes more bins than an int
+  # counts, and far fewer already take more memory than there is.
+  let countC = floor((hi[0] - lo[0]) / binI + 0.5 + 1e-9) + 1
+  let countI = floor((hi[1] - lo[1]) / binC + 0.5 + 1e-9) + 1
+  if not (countC * countI <= min(float64(maxBins), 9e18)):
+    badGrid("bins of " & short(binI) & " × " & short(binC) & " (binInline × binCrossline) " &
+      "over midpoints spanning " & short(extent[0]) & " × " & short(extent[1]) &
+      " (along × across the azimuth) make " & countText(countC * countI) &
+      " bins, more than maxBins (" & $maxBins &
+      "); check the bin sizes, or pass a larger maxBins")
+  let crosslines = int(countC)
+  let inlines = int(countI)
   let (s, c) = (sin(degToRad(azimuth)), cos(degToRad(azimuth)))
   let x0 = lo[0] * s + lo[1] * c
   let y0 = lo[0] * c - lo[1] * s
@@ -260,18 +290,44 @@ type
 
   FoldMap* = object
     ## Source–receiver pairs per bin; build it with `initFoldMap` or
-    ## `preplotFold`.
+    ## `preplotFold`. It is moved, not copied: its counts are tensors, and a
+    ## copy would share them (`clone` makes an independent map).
     binning: Binning
     options: FoldOptions
     fold, offsetFold, azimuthFold: Tensor[int32]
     offsetMin, offsetMax: Tensor[float32]
     binned, outside, noCoordinates, notLive: int
 
-proc initFoldMap*(binning: Binning, opts = FoldOptions()): FoldMap =
-  ## An empty fold map over `binning`. Raises `ValueError` when the offset
-  ## bounds are given but fewer than two, not finite or not strictly
-  ## ascending, when `azimuthSectors` is negative, or `sectorStartDeg` not
-  ## finite.
+# A copied tensor shares its storage: a copied map would keep its own totals
+# (`binned`, ...) over counts that the other map goes on changing.
+proc `=copy`*(dst: var FoldMap, src: FoldMap) {.error.}
+proc `=dup`*(src: FoldMap): FoldMap {.error.}
+
+proc checkBinBudget(binning: Binning, maxBins: int) =
+  # Before any count is allocated: out of memory cannot be caught.
+  if maxBins < 1:
+    raise newException(ValueError, "initFoldMap: maxBins must be ≥ 1, got " & $maxBins)
+  if binning.len > maxBins:
+    var msg = "initFoldMap: " & $binning.inlines & " × " & $binning.crosslines &
+      " bins (inlines × crosslines) are more than maxBins (" & $maxBins & ")"
+    if binning.kind == bnGrid and binning.inlines > 1 and binning.crosslines > 1:
+      # The bin sizes from the bin centres: a `Binning` does not give them.
+      let (o, c, i) = (binning.location(0), binning.location(1),
+        binning.location(binning.crosslines))
+      let (sizeC, sizeI) = (hypot(c.x - o.x, c.y - o.y), hypot(i.x - o.x, i.y - o.y))
+      msg.add ": bins of " & short(sizeC) & " × " & short(sizeI) & " over " &
+        short(sizeC * float64(binning.crosslines)) & " × " &
+        short(sizeI * float64(binning.inlines))
+    raise newException(ValueError, msg & "; check the bin sizes, or pass a larger maxBins")
+
+proc initFoldMap*(binning: Binning, opts = FoldOptions(), maxBins = 1 shl 26): FoldMap =
+  ## An empty fold map over `binning`, of at most `maxBins` bins: the fold
+  ## is an int32 per bin, and each offset class and azimuth sector another.
+  ## Raises `ValueError` when the offset bounds are given but fewer than two,
+  ## not finite or not strictly ascending, when `azimuthSectors` is negative,
+  ## `sectorStartDeg` not finite, or the binning has more than `maxBins` bins
+  ## (a mistyped bin size: nothing is allocated).
+  checkBinBudget(binning, maxBins)
   let b = opts.offsetBounds
   if b.len == 1: raise newException(ValueError, "initFoldMap: offsetBounds needs " &
     "at least two edges")
@@ -292,6 +348,16 @@ proc initFoldMap*(binning: Binning, opts = FoldOptions()): FoldMap =
     result.offsetMin.apply_inline(NaN)
     result.offsetMax = result.offsetMin.clone
 
+proc clone*(m: FoldMap): FoldMap =
+  ## An independent copy of `m`, with its own counts: a snapshot, or a map
+  ## to go on adding to. (Assigning a `FoldMap` is a compile-time error.)
+  template own[T](t: Tensor[T]): Tensor[T] =
+    (if t.size > 0: t.clone else: default(Tensor[T])) # the optional counts may be empty
+  FoldMap(binning: m.binning, options: m.options, fold: own(m.fold),
+    offsetFold: own(m.offsetFold), azimuthFold: own(m.azimuthFold),
+    offsetMin: own(m.offsetMin), offsetMax: own(m.offsetMax), binned: m.binned,
+    outside: m.outside, noCoordinates: m.noCoordinates, notLive: m.notLive)
+
 func binning*(m: FoldMap): lent Binning {.inline.} =
   ## The bins counted.
   m.binning
@@ -301,7 +367,9 @@ func options*(m: FoldMap): lent FoldOptions {.inline.} =
   m.options
 
 func fold*(m: FoldMap): lent Tensor[int32] {.inline.} =
-  ## Pairs per bin, `[inlines, crosslines]`.
+  ## Pairs per bin, `[inlines, crosslines]`. Like every tensor of the map it
+  ## is lent: a tensor assigned from it shares the map's counts (Arraymancer
+  ## tensors are references), so `clone` it to keep a snapshot.
   m.fold
 
 func offsetFold*(m: FoldMap): lent Tensor[int32] {.inline.} =
@@ -461,22 +529,32 @@ proc find(ix: StationIndex, c: var Cursor, s: StationKey): int {.raises: [].} =
   if found >= 0: c.pos = found
   found
 
+iterator channelRelations(g: SurveyGeometry, record: int64,
+    domain: RelationDomain): tuple[channel: int64, relation: StationRelation] =
+  # Every channel of `record` with its source and receiver station: the one
+  # place the pre-plot fold walks relations. parseSEG's `relations` goes
+  # channel by channel, scanning the record's earlier runs for each; a
+  # run-level iterator of parseSEG replaces this body (a loop over the runs
+  # and the stations of each), and `preplotFold` stays as it is.
+  for item in g.relations(record, domain): yield item
+
 proc preplotFold*(g: SurveyGeometry, binning: Binning, opts = FoldOptions(),
-    domain = rdSource): FoldMap =
+    domain = rdSource, maxBins = 1 shl 26): FoldMap =
   ## The pre-plot fold of `g`'s relations (X; O with `rdReceiver`) over
   ## `binning` (see the module documentation). Raises `ValueError` for bad
-  ## options (`initFoldMap`) or a binning without positions (`bnCdp`,
-  ## `bnInlineCrossline`: pairs have midpoints, not header numbers).
+  ## options or more than `maxBins` bins (`initFoldMap`), or a binning
+  ## without positions (`bnCdp`, `bnInlineCrossline`: pairs have midpoints,
+  ## not header numbers).
   if binning.kind notin {bnLine, bnGrid}:
     raise newException(ValueError, "preplotFold: the binning must be a line or grid " &
       "binning (midpoint positions), got " & $binning.kind)
-  result = initFoldMap(binning, opts)
+  result = initFoldMap(binning, opts, maxBins)
   let sources = initStationIndex(g.table.sources)
   let receivers = initStationIndex(g.table.receivers)
   var sc = initCursor()
   var rc = initCursor()
   for record in g.records(domain):
-    for (_, rel) in g.relations(record, domain):
+    for (_, rel) in g.channelRelations(record, domain):
       let i = sources.find(sc, rel.source)
       let j = receivers.find(rc, rel.receiver)
       if i < 0 or j < 0:

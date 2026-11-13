@@ -2,7 +2,7 @@
 ## A synthetic stream with known samples is split into segments (rows), and
 ## every window is checked against a direct slice of the unsegmented stream.
 
-import std/[assertions, math, random]
+import std/[algorithm, assertions, math, os, random]
 import parseSEG, processSEG
 import utils/allocs
 
@@ -378,11 +378,24 @@ proc suite[T]() =
     var stale = initSliceReport(planSlices(meta, [shotAt(0), shotAt(5)], window(10)))
     doAssertRaises ValueError:
       extractInto(plan, s.data, meta, dst, stale, ws)
-    # A segment of another interval.
+
+  block a_row_of_another_interval_is_reported:
+    # Mixed sample rates are a property of the data (a line recorded at
+    # 1 ms beside one at 2 ms), not a bad argument: the row is left out and
+    # listed, and its span is a gap.
+    var s = segmentsOf[T]([(0, 100), (100, 100), (200, 100)])
     s.keys[1].intervalUs = 1000
-    let mixed = initChunkMeta(rowsOf(s.keys, s.counts), dtMs = Dt)
-    doAssertRaises ValueError:
-      discard planSlices(mixed, [shotAt(0)], window(10))
+    s.keys[2].intervalUs = NaN # unknown: taken at the meta's interval
+    let meta = initChunkMeta(rowsOf(s.keys, s.counts), dtMs = Dt)
+    let plan = planSlices(meta, [shotAt(90), shotAt(190)], window(20))
+    doAssert plan.otherInterval == @[1] and plan.untimed.len == 0
+    doAssert plan.rowsNeeded == @[0, 2]
+    doAssert plan.gapSamples(0) == 10 and plan.gapSamples(1) == 10
+    var report: SliceReport
+    let dst = cut(s, meta, plan, report)
+    for j in 0 ..< 10:
+      doAssert dst[0, j] == T(streamValue(90 + j)) and dst[0, 10 + j] == 0
+      doAssert dst[1, j] == 0 and dst[1, 10 + j] == T(streamValue(200 + j))
 
 suite[float32]()
 suite[float64]()
@@ -402,6 +415,82 @@ block doc_example:
   doAssert plan.len == 1 and plan.samples == 1000
   doAssert plan.rowsNeeded == @[0, 1]
 
+block traces_needed_of_a_view_inside_the_file:
+  # Four segments of three receivers on disk (trace = 3 · segment +
+  # receiver). The plan is made on a view that skips the first segment, so
+  # its rows are not the file's trace numbers.
+  const segLen = 500
+  let path = getTempDir() / "processseg_tslice_continuous.sgy"
+  block:
+    var w = openSeismicWriter(path, SegyOutputOptions())
+    var x = newSeq[float32](segLen)
+    for s in 0 ..< 4:
+      for r in 0 ..< 3:
+        var k = initTraceKeys()
+        k.status = tsLive
+        (k.rcvLine, k.rcvPoint, k.channel) = (10.0, float64(100 + r), float64(r + 1))
+        k.time = 1.7e9 + float64(s * segLen) * Dt / 1000
+        k.t0Ms = 0
+        k.intervalUs = Dt * 1000
+        for j in 0 ..< segLen: x[j] = float32(r * 100_000 + s * segLen + j)
+        w.writeTrace(k, x)
+    discard w.close()
+  var f = openSeismic(path, keys = true)
+  let meta = chunkMeta(f, 3 ..< 12)
+  # A window of 100 samples from 30 samples before the end of segment 1.
+  let shot = initSliceShot(meta.keys(0).time + float64(segLen - 30) * Dt / 1000, id = 1)
+  let plan = planSlices(meta, [shot], window(100), soShotRecords)
+  doAssert plan.rowsNeeded == @[0, 1, 2, 3, 4, 5], "rows of the planning view"
+  doAssert plan.tracesNeeded == @[3, 4, 5, 6, 7, 8], "their traces in the file"
+  # The whole view as one block ...
+  var all = zeros[float32](meta.len, segLen)
+  doAssert f.readTracesInto(3 ..< 12, all) == 0
+  var report = initSliceReport(plan)
+  var ws = initWorkspace()
+  var want = zeros[float32](plan.len, plan.samples)
+  extractInto(plan, all, meta, want, report, ws)
+  for r in 0 ..< plan.len:
+    for j in 0 ..< plan.samples:
+      doAssert want[r, j] == float32(r * 100_000 + 2 * segLen - 30 + j)
+  # ... and a read of the traces needed alone give the same records.
+  let need = plan.tracesNeeded
+  var some = zeros[float32](need.len, segLen)
+  doAssert f.readTracesInto(need, some) == 0
+  var got = zeros[float32](plan.len, plan.samples)
+  extractInto(plan, some, chunkMeta(f, need), got, report, ws)
+  doAssert got == want, "the compact read"
+  f.close()
+  removeFile(path)
+
+block a_receiver_is_its_station_with_the_index:
+  # The receiver of a row is its station as parseSEG's `stationKey` makes
+  # it: line and point to 1/100, with the point index.
+  # Two deployments at one line and point (index 1 and 2) record the same
+  # span: two receivers, not one stream overlapping itself.
+  var s = segmentsOf[float32]([(0, 100)], point = 7).join(segmentsOf[float32]([(0, 100)],
+    point = 7, value = proc (k: int): float64 = -streamValue(k)))
+  (s.keys[0].rcvIndex, s.keys[1].rcvIndex) = (1'i16, 2'i16)
+  let meta = initChunkMeta(rowsOf(s.keys, s.counts), dtMs = Dt)
+  let plan = planSlices(meta, [shotAt(10)], window(20), soShotRecords)
+  doAssert plan.receiverCount == 2 and plan.overlaps.len == 0
+  doAssert plan.receiverKeys(0).rcvIndex == 1 and plan.receiverKeys(1).rcvIndex == 2
+  var report: SliceReport
+  let dst = cut(s, meta, plan, report)
+  doAssert dst[0, 0] == float32(streamValue(10)) and dst[1, 0] == float32(-streamValue(10))
+  # A point decoded from a binary fraction (SEG-D: sixteen fraction bits) and
+  # the same point in decimal are one station: two segments, one stream.
+  var t = segmentsOf[float32]([(0, 100), (100, 100)], line = 12, point = 100.1)
+  t.keys[1].rcvPoint = 100.0 + 6554.0 / 65536.0
+  doAssert t.keys[0].rcvPoint != t.keys[1].rcvPoint
+  let one = planSlices(initChunkMeta(rowsOf(t.keys, t.counts), dtMs = Dt), [shotAt(90)],
+    window(20))
+  doAssert one.receiverCount == 1 and one.gapSamples(0) == 0
+  # Channel and component still tell the streams of one station apart.
+  var c = segmentsOf[float32]([(0, 100)]).join(segmentsOf[float32]([(0, 100)]))
+  c.keys[1].component = 2
+  doAssert planSlices(initChunkMeta(rowsOf(c.keys, c.counts), dtMs = Dt), [shotAt(0)],
+    window(10)).receiverCount == 2
+
 block slice_keys:
   var s = segmentsOf[float32]([(0, 100)], line = 4, point = 2)
   s.keys[0].channel = 3
@@ -416,6 +505,47 @@ block slice_keys:
   doAssert k.time == timeOf(10) and k.t0Ms == -4 and k.intervalUs == 2000
   doAssert k.status == tsLive and k.ensemble.isNaN
 
+block slice_keys_take_the_source_from_the_shot_alone:
+  # The segment's own source station (a node file's general header) must
+  # not leave its point index beside the shot's line and point.
+  var s = segmentsOf[float32]([(0, 100)])
+  (s.keys[0].srcLine, s.keys[0].srcPoint, s.keys[0].srcIndex) = (77.0, 88.0, 3'i16)
+  let meta = initChunkMeta(rowsOf(s.keys, s.counts), dtMs = Dt)
+  let unknown = initSliceShot(timeOf(10), id = 5, srcLine = 9, srcPoint = 4)
+  let second = initSliceShot(timeOf(20), id = 6, srcLine = 9, srcPoint = 4, srcIndex = 2)
+  let plan = planSlices(meta, [unknown, second], window(20))
+  let k = plan.sliceKeys(0)
+  doAssert k.srcLine == 9 and k.srcPoint == 4 and k.srcIndex == 0, $k.srcIndex
+  doAssert plan.sliceKeys(1).srcIndex == 2
+
+block slice_keys_keep_the_source_interval:
+  # A 31 Hz stream: 1e6 / 31 µs is not `(that / 1000) · 1000` in float64.
+  # The output keys hold the interval the segments' keys hold, bit for bit,
+  # so a writer and `uniformRuns` see one interval, not two.
+  let us = 1e6 / 31
+  doAssert us / 1000 * 1000 != us, "the case this test is about"
+  var keys = @[initTraceKeys(), initTraceKeys()]
+  for i, k in keys.mpairs:
+    k.status = tsLive
+    (k.time, k.t0Ms, k.intervalUs) = (1000.0, 0.0, us)
+    (k.rcvLine, k.rcvPoint) = (1.0, float64(i))
+  keys[1].intervalUs = NaN # unknown in the headers: from the meta
+  let counts = @[100, 100]
+  let meta = initChunkMeta(rowsOf(keys, counts), dtMs = us / 1000)
+  let plan = planSlices(meta, [initSliceShot(1000.0, id = 1)],
+    SliceWindow(startMs: 0, lengthMs: 10 * us / 1000))
+  doAssert plan.sliceKeys(0).intervalUs == us
+  doAssert plan.sliceKeys(1).intervalUs == meta.dtMs * 1000
+
+block a_sample_count_beyond_any_file:
+  # No file holds a trace of 2⁶³ samples: it is the caller's array, so a bad
+  # argument, and must not overflow the positions on the sample grid.
+  let s = segmentsOf[float32]([(0, 10), (10, 100)])
+  let counts = @[10, high(int)]
+  let meta = initChunkMeta(rowsOf(s.keys, counts), dtMs = Dt)
+  doAssertRaises ValueError:
+    discard planSlices(meta, [shotAt(0)], window(10))
+
 block drift_correction:
   # The clock is 1 ms ahead at t = 1000 s and 3 ms ahead at t = 3000 s.
   let times = [1000.0, 2000.0, 3000.0, 5000.0, NaN]
@@ -429,6 +559,132 @@ block drift_correction:
     discard driftCorrectedTimes(times, 1000, 0, 1000, 0.001)
   doAssertRaises ValueError:
     discard driftCorrectedTimes(times, NaN, 0, 1000, 0.001)
+
+proc samePlans(a, b: SlicePlan): bool =
+  ## Every public part of two plans agrees.
+  if a.len != b.len or a.samples != b.samples or a.receiverCount != b.receiverCount or
+      a.maxColumn != b.maxColumn or a.rowsNeeded != b.rowsNeeded or
+      a.tracesNeeded != b.tracesNeeded or a.overlaps != b.overlaps or
+      a.timingIssues != b.timingIssues or a.untimed != b.untimed or
+      a.otherInterval != b.otherInterval:
+    return false
+  for t in 0 ..< a.len:
+    if a.fraction(t) != b.fraction(t) or a.gapSamples(t) != b.gapSamples(t): return false
+    var pa, pb: seq[SlicePiece]
+    for p in a.pieces(t): pa.add p
+    for p in b.pieces(t): pb.add p
+    if pa != pb: return false
+    let (ka, kb) = (a.sliceKeys(t), b.sliceKeys(t))
+    if ka.record != kb.record or ka.status != kb.status or ka.rcvPoint != kb.rcvPoint or
+        ka.time != kb.time:
+      return false
+  true
+
+block streams_made_once_serve_every_plan:
+  # Random segmentations of several receivers, with gaps, overlaps, dead and
+  # untimed rows and a row of another interval: plans made from one
+  # `SliceStreams`, for any shots, order and alignment, are the plans the
+  # one-call form makes from the meta; and a compact read of the rows
+  # needed extracts what the full block does.
+  var rng = initRand(7)
+  for trial in 0 ..< 30:
+    var s: Segments[float32]
+    for r in 0 ..< rng.rand(1 .. 4):
+      var spans: seq[(int, int)]
+      var pos = rng.rand(0 .. 20)
+      while pos < 400:
+        let n = rng.rand(1 .. 60)
+        let back = if pos > 0 and rng.rand(3) == 0: rng.rand(0 .. min(5, pos)) else: 0
+        spans.add (pos - back, n + back)
+        pos += n + (if rng.rand(5) == 0: rng.rand(1 .. 15) else: 0)
+      let part = segmentsOf[float32](spans, point = float64(r + 1),
+        value = proc (k: int): float64 = streamValue(k + 1000 * r))
+      s = if r == 0: part else: s.join(part)
+    for i in 0 ..< s.keys.len:
+      case rng.rand(25)
+      of 0: s.keys[i].status = tsDead
+      of 1: s.keys[i].time = NaN
+      of 2: s.keys[i].intervalUs = 4 * Dt * 1000
+      of 3: s.keys[i].time += 0.3 * Dt / 1000
+      else: discard
+    let meta = initChunkMeta(rowsOf(s.keys, s.counts), dtMs = Dt)
+    var times = newSeq[float64](meta.len)
+    var ids = newSeq[int](meta.len)
+    for i in 0 ..< meta.len:
+      times[i] = s.keys[i].time
+      ids[i] = int(s.keys[i].rcvPoint) mod 2
+    let byKeys = initSliceStreams(meta)
+    let byTimes = initSliceStreams(meta, times)
+    let byIds = initSliceStreams(meta, times, ids)
+    doAssert byKeys.rowCount == meta.len and byKeys.dtMs == Dt
+    for round in 0 ..< 3:
+      var shots: seq[SliceShot]
+      for i in 0 ..< rng.rand(0 .. 5): shots.add shotAt(rng.rand(-50.0 .. 450.0), float64(i))
+      let w = window(rng.rand(1 .. 90), startMs = float64(rng.rand(-10 .. 10)) * Dt)
+      let order = if rng.rand(1) == 0: soReceiverGathers else: soShotRecords
+      let align = [saNearest, saLinear, saCubic][rng.rand(2)]
+      let plan = planSlices(byKeys, shots, w, order, align)
+      doAssert samePlans(plan, planSlices(meta, shots, w, order, align)), $trial
+      doAssert samePlans(planSlices(byTimes, shots, w, order, align),
+        planSlices(meta, times, shots, w, order, align)), $trial
+      doAssert samePlans(planSlices(byIds, shots, w, order, align),
+        planSlices(meta, times, ids, shots, w, order, align)), $trial
+      # The streams list what the plan lists for the whole dataset.
+      doAssert plan.overlaps == byKeys.overlaps and plan.untimed == byKeys.untimed
+      doAssert plan.timingIssues == byKeys.timingIssues
+      doAssert plan.otherInterval == byKeys.otherInterval
+      doAssert plan.receiverCount == byKeys.receiverCount
+      for r in 0 ..< plan.receiverCount:
+        doAssert plan.receiverKeys(r).rcvPoint == byKeys.receiverKeys(r).rcvPoint
+      # Rows needed: ascending, each read by a piece, and no other row is.
+      var seen: seq[int]
+      for t in 0 ..< plan.len:
+        for p in plan.pieces(t):
+          if p.row >= 0 and p.row notin seen: seen.add p.row
+      seen.sort()
+      doAssert plan.rowsNeeded == seen, $trial
+      # A block of the needed rows alone gives the same records and reports.
+      var report: SliceReport
+      let full = cut(s, meta, plan, report)
+      var sub: Segments[float32]
+      sub.data = zeros[float32](max(1, seen.len), s.data.shape[1])
+      for i, r in seen:
+        sub.keys.add s.keys[r]
+        sub.counts.add s.counts[r]
+        for j in 0 ..< s.data.shape[1]: sub.data[i, j] = s.data[r, j]
+      if seen.len > 0 and seen.len < meta.len:
+        var subReport: SliceReport
+        let subMeta = initChunkMeta(rowsOf(sub.keys, sub.counts), dtMs = Dt)
+        doAssert cut(sub, subMeta, plan, subReport) == full, $trial
+        for t in 0 ..< plan.len:
+          doAssert subReport.gapSamples(t) == report.gapSamples(t)
+        for i in 0 ..< plan.overlaps.len:
+          doAssert subReport.overlapCheck(i) == report.overlapCheck(i)
+
+block streams_arguments:
+  let s = segmentsOf[float32]([(0, 100), (100, 100)])
+  let meta = initChunkMeta(rowsOf(s.keys, s.counts), dtMs = Dt)
+  doAssertRaises ValueError: discard initSliceStreams(meta, [1.0])
+  doAssertRaises ValueError: discard initSliceStreams(meta, [1.0, 2.0], [1])
+  let tiny = initChunkMeta(rowsOf(s.keys, s.counts), dtMs = 1e-5)
+  doAssertRaises ValueError: discard initSliceStreams(tiny)
+  let streams = initSliceStreams(meta)
+  doAssert streams.receiverCount == 1 and streams.rowCount == 2
+  doAssertRaises ValueError: # 3 ms is not a whole number of 2 ms samples
+    discard planSlices(streams, [shotAt(0)], SliceWindow(startMs: 0, lengthMs: 3))
+  doAssertRaises ValueError:
+    discard planSlices(streams, [initSliceShot(NaN, 1)], window(10))
+  # No shots: an empty plan, with the dataset's lists all the same.
+  let none = planSlices(streams, newSeq[SliceShot](), window(10))
+  doAssert none.len == 0 and none.rowsNeeded.len == 0 and none.receiverCount == 1
+  # The streams hold no pointer into the keys: they outlive the meta's arrays.
+  var kept: SliceStreams
+  block:
+    var gone = segmentsOf[float32]([(0, 50), (50, 50)], point = 9)
+    kept = initSliceStreams(initChunkMeta(rowsOf(gone.keys, gone.counts), dtMs = Dt))
+    gone.keys.setLen(0)
+  let later = planSlices(kept, [shotAt(40)], window(20))
+  doAssert later.rowsNeeded == @[0, 1] and later.receiverKeys(0).rcvPoint == 9
 
 block random_windows_match_the_stream:
   # Random segmentations (with overlaps of matching samples) and windows.

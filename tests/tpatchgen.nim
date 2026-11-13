@@ -181,6 +181,73 @@ block arguments:
   let none = [PatchShot(record: 1, source: stationKey(1, 1, 1))]
   doAssert g.generateRelations(none, initPatchTemplate(4, 11)).len == 0
 
+block stations_out_of_order:
+  # A layout built by hand need not keep its stations in point order. The
+  # stations of a patch are found by bisection only on a line whose slots
+  # ascend; on any other line every station is looked at. By numbers the
+  # patch does not depend on the order at all (slots count from the line's
+  # first station, wherever that is), so the X records must not either.
+  var s = initSyntheticSurvey()
+  let f = s.spsFile
+  var g = initSurveyGeometry()
+  g.addSps(f)
+  var layout = g.receiverLayout
+  for i in [1, 2, 5]: layout.lines[i].stations.reverse()
+  let t = s.numbersTemplate(initPatchTemplate(4, 11))
+  doAssert sameRuns(g.generateRelations(layout, f.patchShots, t), f.relations)
+  # A step that is not positive: the slots descend although the points ascend.
+  layout = g.receiverLayout
+  layout.lines[3].pointStep = -1
+  var want: seq[SpsRelation]
+  for r in f.relations:
+    if r.rcvLine != layout.lines[3].line: want.add r
+  var got: seq[SpsRelation]
+  for r in g.generateRelations(layout, f.patchShots, t):
+    if r.rcvLine != layout.lines[3].line: got.add r
+  doAssert got.len == want.len and got.len > 0
+  for i in 0 ..< got.len:
+    doAssert got[i].fieldRecord == want[i].fieldRecord and
+      got[i].fromReceiver == want[i].fromReceiver and got[i].toReceiver == want[i].toReceiver
+
+block point_index_out_of_range:
+  # An SPS record holds a one-digit point index, but a point built in code
+  # may hold anything: the station key takes it clamped, as parseSEG's
+  # survey join does, instead of a RangeDefect (or a wrapped index).
+  var f: SpsFile
+  for index in [100_000, -100_000, 3]:
+    var p = initSpsPoint(pkSource)
+    (p.line, p.point, p.index) = (1.0, 2.0, index)
+    f.points.add p
+  let shots = f.patchShots
+  doAssert shots.len == 3 and shots[2].source.index == 3
+  doAssert shots[0].source.index == high(int16) and shots[1].source.index == low(int16)
+
+block shots_without_a_station_number:
+  # A shot whose source line or point is unknown gets no records, like one
+  # without coordinates, whatever the placement and the edge mode.
+  let g = initSyntheticSurvey().geometry
+  let good = PatchShot(record: 2, source: stationKey(1004, 120, 1))
+  for bad in [StationKey(line: NaN, point: 120, index: 1),
+      StationKey(line: 1004, point: NaN, index: 1), StationKey(line: Inf, point: 120, index: 1),
+      StationKey(line: 1004, point: -Inf, index: 1)]:
+    let shots = [PatchShot(record: 1, source: bad), good]
+    for edge in [peRoll, peShift, peStatic]:
+      for placement in [ppCoordinates, ppNumbers]:
+        var t = initPatchTemplate(4, 11, edge)
+        t.placement = placement
+        let gen = g.generateRelations(shots, t)
+        doAssert gen.len > 0, $edge & " " & $placement
+        for r in gen: doAssert r.fieldRecord == 2, $edge & " " & $placement & " " & $bad
+  # A finite number map that sends the source far outside the lines: no
+  # receivers, and no conversion of 1e303 to an int.
+  var t = initPatchTemplate(4, 11)
+  t.placement = ppNumbers
+  t.lineMap.scale = 1e300
+  doAssert g.generateRelations([good], t).len == 0
+  t.lineMap.scale = 1
+  t.pointMap.scale = -1e300
+  doAssert g.generateRelations([good], t).len == 0
+
 const
   dir = currentSourcePath().parentDir.parentDir / "exampleFiles" / "sps"
   base = dir / "PGI_NNE_West_Morgantown_3D_Post261019_NAD27_SPCS_WV_N_USFeet"

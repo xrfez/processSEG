@@ -23,7 +23,8 @@
 ## **Tolerance.** An offset or midpoint mismatches when it is off by more
 ## than `max(tolerance, relTolerance · distance)` (in the coordinates'
 ## units): coordinates are often rounded, and the header offset to whole
-## units.
+## units. An infinite coordinate is not an unknown one (NaN): its distance
+## is infinite, which no offset or midpoint matches.
 ##
 ## **Units.** The comparison is in the coordinates' units, which must be
 ## those of the offset: parseSEG does not convert SEG-Y coordinates given
@@ -35,7 +36,9 @@
 ## `gfMidpointMismatch` is not in `badGeometry`.
 ##
 ## Non-live rows (dead, auxiliary, failed) are not checked: their flags are
-## empty and their values NaN.
+## empty and their values NaN. That holds for a `ChunkMeta` and for a
+## `TraceRows` view alike (a view has no failed rows); `checkGeometry` on a
+## trace's keys checks them whatever its status.
 
 import std/math
 import parseSEG
@@ -97,7 +100,9 @@ func checkGeometry*(k: TraceKeys, qc = GeometryQc()): GeometryCheck {.raises: []
     return
   let d = hypot(k.rcvX - k.srcX, k.rcvY - k.srcY)
   result.distance = d
-  let tol = max(qc.tolerance, qc.relTolerance * d)
+  # An infinite coordinate makes the distance infinite: the relative part
+  # would then accept any offset, so only the absolute one applies.
+  let tol = if d < Inf: max(qc.tolerance, qc.relTolerance * d) else: qc.tolerance
   if d <= qc.tolerance: result.flags.incl gfZeroOffset
   if not k.offset.isNaN:
     result.offsetError = abs(k.offset) - d
@@ -122,14 +127,19 @@ proc checkGeometryInto*(meta: ChunkMeta, dst: var openArray[GeometryCheck],
 
 proc checkGeometryInto*(rows: TraceRows, dst: var openArray[GeometryCheck],
     qc = GeometryQc()) =
-  ## `checkGeometry` of every row of `rows`, whatever its status. Raises
-  ## `ValueError` as the `ChunkMeta` form, and when the view has no keys.
+  ## `checkGeometry` of every live row of `rows` (status live or unknown)
+  ## into `dst[row]`, as the `ChunkMeta` form: dead and auxiliary rows get no
+  ## flags and NaN values. Raises `ValueError` as that form, and when the
+  ## view has no keys.
   qc.checkTolerances
   if not rows.hasKeys: raise newException(ValueError, "the rows have no keys")
   if dst.len != rows.len:
     raise newException(ValueError, "dst holds " & $dst.len & " checks, the view " &
       $rows.len & " rows")
-  for row in 0 ..< rows.len: dst[row] = checkGeometry(rows.keysAt(row), qc)
+  for row in 0 ..< rows.len:
+    let k = rows.keysAt(row)
+    dst[row] = if k.status in {tsLive, tsUnknown}: checkGeometry(k, qc)
+               else: uncheckedGeometry()
 
 func flaggedRows*(checks: openArray[GeometryCheck], flags = badGeometry): seq[int] =
   ## The rows whose findings include one of `flags`, ascending.

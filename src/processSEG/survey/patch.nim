@@ -247,13 +247,23 @@ proc receiverLayout*(g: SurveyGeometry, azimuthDeg = NaN, interval = NaN, lineSp
       raise newException(ValueError, "receiverLayout: fewer than two receiver lines; " &
         "give lineSpacing")
 
+iterator channelRelations(g: SurveyGeometry,
+    record: int64): tuple[channel: int64, relation: StationRelation] =
+  # Every channel of X record `record` with its source and receiver station:
+  # the one place this module walks relations (`describePatches`,
+  # `compareRelations`). parseSEG's `relations` goes channel by channel,
+  # scanning the record's earlier runs for each; a run-level iterator of
+  # parseSEG replaces this body (a loop over the runs and the stations of
+  # each), and its callers stay as they are.
+  for item in g.relations(record): yield item
+
 proc describeRecord(g: SurveyGeometry, layout: ReceiverLayout, record: int64): RecordPatch =
   result = RecordPatch(record: record, sourceX: NaN, sourceY: NaN, inlineMin: NaN,
     inlineMax: NaN, crosslineMin: NaN, crosslineMax: NaN, maxOffset: NaN)
   var first = true
   var sa, sc = NaN
   var seen: HashSet[StationKey] # distinct stations; multi-component channels share one
-  for (_, rel) in g.relations(record):
+  for (_, rel) in g.channelRelations(record):
     inc result.channels
     if first:
       first = false
@@ -266,26 +276,27 @@ proc describeRecord(g: SurveyGeometry, layout: ReceiverLayout, record: int64): R
         (result.inlineMin, result.inlineMax) = (Inf, -Inf)
         (result.crosslineMin, result.crosslineMax, result.maxOffset) = (Inf, -Inf, 0.0)
     let r = rel.receiver
-    if seen.containsOrIncl(r): continue
-    var j = result.lines.high
-    while j >= 0 and result.lines[j].line != r.line: dec j
-    if j < 0:
-      result.lines.add PatchLine(line: r.line, firstPoint: r.point, lastPoint: r.point)
-      j = result.lines.high
-    inc result.lines[j].stations
-    result.lines[j].firstPoint = min(result.lines[j].firstPoint, r.point)
-    result.lines[j].lastPoint = max(result.lines[j].lastPoint, r.point)
-    var c: Coordinates
-    if not g.table.receivers.lookup(r, c) or not (finite(c.x) and finite(c.y)):
-      inc result.noCoordinates
-    elif not sa.isNaN:
-      let a = layout.inlineOf(c.x, c.y) - sa
-      let x = layout.crosslineOf(c.x, c.y) - sc
-      result.inlineMin = min(result.inlineMin, a)
-      result.inlineMax = max(result.inlineMax, a)
-      result.crosslineMin = min(result.crosslineMin, x)
-      result.crosslineMax = max(result.crosslineMax, x)
-      result.maxOffset = max(result.maxOffset, hypot(c.x - result.sourceX, c.y - result.sourceY))
+    if not seen.containsOrIncl(r):
+      var j = result.lines.high
+      while j >= 0 and result.lines[j].line != r.line: dec j
+      if j < 0:
+        result.lines.add PatchLine(line: r.line, firstPoint: r.point, lastPoint: r.point)
+        j = result.lines.high
+      inc result.lines[j].stations
+      result.lines[j].firstPoint = min(result.lines[j].firstPoint, r.point)
+      result.lines[j].lastPoint = max(result.lines[j].lastPoint, r.point)
+      var c: Coordinates
+      if not g.table.receivers.lookup(r, c) or not (finite(c.x) and finite(c.y)):
+        inc result.noCoordinates
+      elif not sa.isNaN:
+        let a = layout.inlineOf(c.x, c.y) - sa
+        let x = layout.crosslineOf(c.x, c.y) - sc
+        result.inlineMin = min(result.inlineMin, a)
+        result.inlineMax = max(result.inlineMax, a)
+        result.crosslineMin = min(result.crosslineMin, x)
+        result.crosslineMax = max(result.crosslineMax, x)
+        result.maxOffset = max(result.maxOffset,
+          hypot(c.x - result.sourceX, c.y - result.sourceY))
   if result.inlineMin == Inf: # a source with coordinates, but no receiver with them
     (result.inlineMin, result.inlineMax, result.crosslineMin, result.crosslineMax,
       result.maxOffset) = (NaN, NaN, NaN, NaN, NaN)
@@ -440,13 +451,22 @@ func hasDistance*(t: PatchTemplate): bool {.inline.} =
   ## A distance limit is set.
   t.inlineHalfWidth < Inf or t.crosslineHalfWidth < Inf or t.radius < Inf or t.maxOffset < Inf
 
+func stationIndex(i: int): int16 {.inline.} =
+  # A point index as the part of a station key. Survey records hold one
+  # digit, but a point built in code may hold any int: out of range it
+  # clamps, as parseSEG's survey join clamps it (its `idx`, which is not
+  # exported), so both make the same key of the same point.
+  int16(clamp(i, int(low(int16)), int(high(int16))))
+
 proc patchShots*(f: SpsFile, firstRecord = 1'i64): seq[PatchShot] =
   ## One shot per S record with a numeric line and point, in file order,
-  ## numbered from `firstRecord`.
+  ## numbered from `firstRecord`. A point index beyond an `int16` is
+  ## clamped, as parseSEG clamps it when it adds the file to a geometry.
   var record = firstRecord
   for p in f.points:
     if p.kind == pkSource and not (p.line.isNaN or p.point.isNaN):
-      result.add PatchShot(record: record, source: stationKey(p.line, p.point, int16(p.index)))
+      result.add PatchShot(record: record,
+        source: stationKey(p.line, p.point, stationIndex(p.index)))
       inc record
 
 proc patchShots*(g: SurveyGeometry, firstRecord = 1'i64): seq[PatchShot] =
@@ -461,12 +481,19 @@ proc patchShots*(g: SurveyGeometry, firstRecord = 1'i64): seq[PatchShot] =
   for i, k in keys: result.add PatchShot(record: firstRecord + int64(i), source: k)
 
 func roundUp(x: float64): int {.inline.} =
-  ## Nearest integer, ties up (with slack for rounding error).
-  int(floor(x + 0.5 + 1e-9))
+  ## Nearest integer, ties up (with slack for rounding error). A number map
+  ## can send a source anywhere: beyond ±1e15 the result stays there, where
+  ## the conversion to an int is still defined (NaN: the low end).
+  const far = 1_000_000_000_000_000
+  let y = floor(x + 0.5 + 1e-9)
+  if y >= float64(far): far
+  elif y > -float64(far): int(y)
+  else: -far
 
 func fractionalIndex(xs: openArray[float64], v, step: float64): float64 =
-  ## Fractional position of `v` among ascending `xs`, extrapolated by `step`.
-  if v <= xs[0]: return (v - xs[0]) / step
+  ## Fractional position of `v` among ascending `xs`, extrapolated by `step`
+  ## (NaN for a NaN `v`).
+  if not (v > xs[0]): return (v - xs[0]) / step
   if v >= xs[^1]: return float64(xs.high) + (v - xs[^1]) / step
   let i = xs.upperBound(v) - 1
   float64(i) + (v - xs[i]) / (xs[i + 1] - xs[i])
@@ -525,19 +552,60 @@ type
     x, y: float64
     a, c: float64 # in the box frame
 
+  LineExtent = object
+    ## Where one layout line's stations lie in the layout frame.
+    inlineMin, inlineMax, crosslineMin, crosslineMax: float64
+    inlineDir: int ## 1: inline never decreases along the line; −1: never increases; 0: neither.
+
   DistanceField = object
     az: float64                     # box azimuth
-    stations: seq[Placed]           # every layout station, with its grid position
+    stations: seq[Placed]           # every layout station, line by line, with its grid position
     aMin, aMax, cMin, cMax: float64 # their extent in the box frame
+                                    # For finding the stations near a box without visiting them all:
+    lineStart: seq[int]             # per layout line, into `stations`; one more entry
+    extents: seq[LineExtent]        # per layout line
+    crossBefore: seq[float64]       # the highest crosslineMax of the lines up to each
+    crossAfter: seq[float64]        # the lowest crosslineMin of the lines from each
+    reachInline, reachCrossline: float64
+      # The box's half extent along and across the receiver lines (Inf: none).
 
 func xyOf(layout: ReceiverLayout, st: LineStation): (float64, float64) {.inline.} =
   let a = degToRad(layout.azimuthDeg)
   (st.inline * sin(a) + st.crossline * cos(a), st.inline * cos(a) - st.crossline * sin(a))
 
+func extentOf(line: ReceiverLine): LineExtent =
+  # A station without a position (NaN, in a layout built by hand) makes the
+  # line unbounded and unordered: it is then searched whole.
+  result = LineExtent(inlineMin: Inf, inlineMax: -Inf, crosslineMin: Inf, crosslineMax: -Inf)
+  var (up, down, known) = (true, true, true)
+  for i, st in line.stations:
+    if st.inline.isNaN or st.crossline.isNaN: known = false
+    result.inlineMin = min(result.inlineMin, st.inline)
+    result.inlineMax = max(result.inlineMax, st.inline)
+    result.crosslineMin = min(result.crosslineMin, st.crossline)
+    result.crosslineMax = max(result.crosslineMax, st.crossline)
+    if i > 0:
+      if st.inline < line.stations[i - 1].inline: up = false
+      if st.inline > line.stations[i - 1].inline: down = false
+  if not known:
+    result = LineExtent(inlineMin: -Inf, inlineMax: Inf, crosslineMin: -Inf, crosslineMax: Inf)
+  else:
+    result.inlineDir = if up: 1 elif down: -1 else: 0
+
+func reach(alongHalf, acrossHalf, cosine, sine: float64): float64 =
+  # Half the extent of a box of half-widths `alongHalf` × `acrossHalf` on an
+  # axis at the angle of `cosine`, `sine` to its own (0 · Inf counts as 0: an
+  # unlimited side does not reach along an axis it is square to).
+  template part(half, factor: float64): float64 =
+    (if factor == 0: 0.0 else: half * abs(factor))
+  part(alongHalf, cosine) + part(acrossHalf, sine)
+
 proc initDistanceField(layout: ReceiverLayout, t: PatchTemplate): DistanceField =
   result.az = if t.boxAzimuthDeg.isNaN: layout.azimuthDeg else: t.boxAzimuthDeg
   (result.aMin, result.aMax, result.cMin, result.cMax) = (Inf, -Inf, Inf, -Inf)
   for line in layout.lines:
+    result.lineStart.add result.stations.len
+    result.extents.add extentOf(line)
     for st in line.stations:
       let (x, y) = layout.xyOf(st)
       let (a, c) = (inlineOf(result.az, x, y), crosslineOf(result.az, x, y))
@@ -547,16 +615,33 @@ proc initDistanceField(layout: ReceiverLayout, t: PatchTemplate): DistanceField 
       result.aMax = max(result.aMax, a)
       result.cMin = min(result.cMin, c)
       result.cMax = max(result.cMax, c)
+  result.lineStart.add result.stations.len
+  # The layout's lines are in ascending mean crossline, which their stations
+  # only follow roughly: the running extremes are what a search may rely on.
+  let n = layout.lines.len
+  result.crossBefore = newSeq[float64](n)
+  result.crossAfter = newSeq[float64](n)
+  for i in 0 ..< n:
+    result.crossBefore[i] = max(result.extents[i].crosslineMax,
+      (if i > 0: result.crossBefore[i - 1] else: -Inf))
+  for i in countdown(n - 1, 0):
+    result.crossAfter[i] = min(result.extents[i].crosslineMin,
+      (if i < n - 1: result.crossAfter[i + 1] else: Inf))
+  let turn = degToRad(result.az - layout.azimuthDeg)
+  result.reachInline = reach(t.inlineHalfWidth, t.crosslineHalfWidth, cos(turn), sin(turn))
+  result.reachCrossline = reach(t.crosslineHalfWidth, t.inlineHalfWidth, cos(turn), sin(turn))
 
 func inside(t: PatchTemplate, x, y, a, c, sx, sy, ca, cc, cx, cy: float64): bool {.inline.} =
   ## (x, y) — (a, c) in the box frame — within the limits: box centred at
   ## (ca, cc) in the box frame, radius around (cx, cy), offset from the
   ## source (sx, sy).
   const eps = 1e-9
+  # A limit of Inf holds for every position the box test lets through (a NaN
+  # position fails that one), so its distance is not worked out.
   abs(a - ca) <= t.inlineHalfWidth * (1 + eps) + eps and
     abs(c - cc) <= t.crosslineHalfWidth * (1 + eps) + eps and
-    hypot(x - cx, y - cy) <= t.radius * (1 + eps) + eps and
-    hypot(x - sx, y - sy) <= t.maxOffset * (1 + eps) + eps
+    (t.radius == Inf or hypot(x - cx, y - cy) <= t.radius * (1 + eps) + eps) and
+    (t.maxOffset == Inf or hypot(x - sx, y - sy) <= t.maxOffset * (1 + eps) + eps)
 
 func centreOf(f: DistanceField, t: PatchTemplate, sx, sy: float64): (float64, float64) =
   ## The box centre in the box frame: the source plus the distances, shifted
@@ -576,10 +661,77 @@ func xyOfBox(az, a, c: float64): (float64, float64) {.inline.} =
   let r = degToRad(az)
   (a * sin(r) + c * cos(r), a * cos(r) - c * sin(r))
 
-proc pickTemplate(layout: ReceiverLayout, main: seq[int], t: PatchTemplate,
-    cl, sa, srcPoint: float64, picked: var seq[Picked]) =
-  ## Roll or shift: the template lines around fractional line `cl`, the
-  ## station slots around the source on each, then short lines inside.
+template firstIndex(count: int, i, test: untyped): int =
+  ## The first `i` in `0 ..< count` for which `test` holds, given that it
+  ## holds from some index on (`count` when it never does).
+  block:
+    var lo = 0
+    var hi = count
+    while lo < hi:
+      let i = (lo + hi) shr 1
+      if test: hi = i else: lo = i + 1
+    lo
+
+proc pickInside(f: DistanceField, layout: ReceiverLayout, t: PatchTemplate, sx, sy, ca, cc,
+    cx, cy: float64, picked: var seq[Picked]) =
+  ## Every layout station within the limits (`inside`), found from the box
+  ## instead of by visiting them all. The limits lie inside a rectangle along
+  ## the receiver lines; the lines that can reach it are a range (by the
+  ## running extremes of their crosslines), and so are the stations of a
+  ## line whose inline positions run one way. Every candidate still passes
+  ## `inside`, so the result is that of testing every station (1e5
+  ## receivers, a box of 10 lines × 100 stations: 113 µs a shot before, 15
+  ## now).
+  let (bi, bc) = (layout.inlineOf(cx, cy), layout.crosslineOf(cx, cy))
+  var (iLo, iHi) = (bi - f.reachInline, bi + f.reachInline)
+  var (cLo, cHi) = (bc - f.reachCrossline, bc + f.reachCrossline)
+  template narrow(centreI, centreC, half: float64) =
+    iLo = max(iLo, centreI - half)
+    iHi = min(iHi, centreI + half)
+    cLo = max(cLo, centreC - half)
+    cHi = min(cHi, centreC + half)
+  if t.radius < Inf: narrow(bi, bc, t.radius)
+  if t.maxOffset < Inf: narrow(layout.inlineOf(sx, sy), layout.crosslineOf(sx, sy), t.maxOffset)
+  # Slack for the rounding between the two frames and for `inside`'s own
+  # tolerance: far more than either, and it only adds candidates.
+  template slack(v: float64): float64 = 1e-6 * (1 + abs(v))
+  (iLo, iHi, cLo, cHi) = (iLo - slack(iLo), iHi + slack(iHi), cLo - slack(cLo), cHi + slack(cHi))
+  let lines = f.extents.len
+  let firstLine = firstIndex(lines, l, f.crossBefore[l] >= cLo)
+  let endLine = firstIndex(lines, l, f.crossAfter[l] > cHi)
+  for l in firstLine ..< endLine:
+    let e = f.extents[l]
+    if e.crosslineMax >= cLo and e.crosslineMin <= cHi and e.inlineMax >= iLo and
+        e.inlineMin <= iHi:
+      let base = f.lineStart[l]
+      let count = f.lineStart[l + 1] - base
+      var (a, b) = (0, count)
+      if e.inlineDir > 0:
+        a = firstIndex(count, i, f.stations[base + i].pick.st.inline >= iLo)
+        b = firstIndex(count, i, f.stations[base + i].pick.st.inline > iHi)
+      elif e.inlineDir < 0:
+        a = firstIndex(count, i, f.stations[base + i].pick.st.inline <= iHi)
+        b = firstIndex(count, i, f.stations[base + i].pick.st.inline < iLo)
+      for i in base + a ..< base + b:
+        let p = f.stations[i] # a copy: reading it field by field measured 15 % slower
+        if t.inside(p.x, p.y, p.a, p.c, sx, sy, ca, cc, cx, cy): picked.add p.pick
+
+func slotsAscend(line: ReceiverLine): bool =
+  ## The slots of the line's stations never decrease: its points ascend and
+  ## its step is positive (as `receiverLayout` makes them; a layout built by
+  ## hand may not).
+  if not (line.pointStep.isNaN or (line.pointStep > 0 and line.pointStep < Inf)):
+    return false
+  for i in 1 ..< line.stations.len:
+    if not (line.stations[i].point >= line.stations[i - 1].point): return false
+  true
+
+proc pickTemplate(layout: ReceiverLayout, main, shortLines: seq[int], t: PatchTemplate,
+    cl, sa, srcPoint: float64, ascending: var seq[int8], picked: var seq[Picked]) =
+  ## Roll or shift: the template lines around fractional line `cl` among the
+  ## `main` lines, the station slots around the source on each, then the
+  ## `shortLines` inside. `ascending[line]` remembers whether a layout
+  ## line's slots ascend (1) or not (−1), found on its first use (0).
   var first = roundUp(cl - float64(t.lines - 1) / 2 + t.lineOffset)
   if t.edge == peShift:
     first = if main.len >= t.lines: clamp(first, 0, main.len - t.lines) else: 0
@@ -587,9 +739,8 @@ proc pickTemplate(layout: ReceiverLayout, main: seq[int], t: PatchTemplate,
   var amax = -Inf
   var xmin = Inf
   var xmax = -Inf
-  for li in first ..< first + t.lines:
-    if li < 0 or li >= main.len: continue
-    let line = layout.lines[main[li]]
+  for li in max(first, 0) ..< min(first + t.lines, main.len):
+    template line: untyped = layout.lines[main[li]]
     let u = if t.placement == ppNumbers:
               (if line.pointStep.isNaN: 0.0
                else: (t.pointMap.scale * srcPoint + t.pointMap.offset - line.stations[0].point) /
@@ -604,28 +755,43 @@ proc pickTemplate(layout: ReceiverLayout, main: seq[int], t: PatchTemplate,
     let s1 = s0 + t.channels - 1
     xmin = min(xmin, line.crossline)
     xmax = max(xmax, line.crossline)
-    for i in 0 ..< line.stations.len:
+    # The stations in slots s0 .. s1. Slots ascend along a line, so they are
+    # a run found by bisection, not by visiting every station of the line
+    # (10 lines of 1000 stations, 100 in the patch: 37 µs a shot before, 16
+    # now, most of it the X records themselves).
+    if ascending[main[li]] == 0: ascending[main[li]] = (if line.slotsAscend: 1 else: -1)
+    var i = 0
+    var last = line.stations.len
+    if ascending[main[li]] > 0:
+      i = firstIndex(last, k, line.slotOf(k) >= s0)
+      last = firstIndex(last, k, line.slotOf(k) > s1)
+    while i < last:
       let s = line.slotOf(i)
       if s >= s0 and s <= s1:
         picked.add Picked(line: line.line, step: line.pointStep, st: line.stations[i])
         amin = min(amin, line.stations[i].inline)
         amax = max(amax, line.stations[i].inline)
-  if amin > amax: return
-  let half = layout.lineSpacing / 2
-  for line in layout.lines:
-    if line.short and line.crossline >= xmin - half and line.crossline <= xmax + half:
-      for st in line.stations:
-        if st.inline >= amin - 1e-9 and st.inline <= amax + 1e-9:
-          picked.add Picked(line: line.line, step: line.pointStep, st: st)
+      inc i
+  if amin <= amax:
+    let half = layout.lineSpacing / 2
+    for l in shortLines:
+      template line: untyped = layout.lines[l]
+      if line.crossline >= xmin - half and line.crossline <= xmax + half:
+        for st in line.stations:
+          if st.inline >= amin - 1e-9 and st.inline <= amax + 1e-9:
+            picked.add Picked(line: line.line, step: line.pointStep, st: st)
 
 proc emitRuns(picked: var seq[Picked], shot: PatchShot, relations: var seq[SpsRelation]) =
   ## X records: channels 1..n by ascending line and point, one record per
   ## run of consecutive stations (a numbering gap or an index change starts
   ## another).
-  picked.sort(proc (a, b: Picked): int =
+  func byStation(a, b: Picked): int =
     result = cmp(a.line, b.line)
     if result == 0: result = cmp(a.st.point, b.st.point)
-    if result == 0: result = cmp(a.st.index, b.st.index))
+    if result == 0: result = cmp(a.st.index, b.st.index)
+  # Picked line by line and point by point, they are often in order already:
+  # seeing that costs a pass, sorting them twenty.
+  if not picked.isSorted(byStation): picked.sort(byStation)
   var channel = 1'i64
   var i = 0
   while i < picked.len:
@@ -665,7 +831,9 @@ proc generateRelations*(g: SurveyGeometry, layout: ReceiverLayout,
   ## source plus `stationOffset` (a slot is one `pointStep` of the line). A
   ## slot with no R station is a hole: the line gets fewer channels. Short
   ## lines join with their stations inside the patch: within half a line
-  ## spacing of the chosen lines, and inside their inline extent.
+  ## spacing of the chosen lines, and inside their inline extent. A shot
+  ## whose source line or point is not a finite number gets no records, in
+  ## any mode: an X record names its source.
   ## `peShift` keeps the line range and each line's slots inside the survey;
   ## `peStatic` lists, for every shot, the stations inside `staticBox`.
   ##
@@ -694,9 +862,10 @@ proc generateRelations*(g: SurveyGeometry, layout: ReceiverLayout,
       layout.lineSpacing > 0 and layout.lineSpacing < Inf):
     raise newException(ValueError, "generateRelations: the layout needs a finite azimuth " &
       "and a positive, finite interval and line spacing (build it with receiverLayout)")
-  var main: seq[int]
+  var main, shortLines: seq[int]
   for i, line in layout.lines:
-    if not line.short: main.add i
+    if line.short: shortLines.add i else: main.add i
+  var ascending = newSeq[int8](layout.lines.len)
   if t.placement == ppNumbers:
     main.sort(proc (a, b: int): int = cmp(layout.lines[a].line, layout.lines[b].line))
   var mainPos: seq[float64]
@@ -720,12 +889,18 @@ proc generateRelations*(g: SurveyGeometry, layout: ReceiverLayout,
   var picked: seq[Picked]
   for shot in shots:
     picked.setLen 0
-    if t.edge == peStatic:
+    var c: Coordinates
+    # An X record names its source: a shot without a line or a point number
+    # gets none, in any mode. One without coordinates gets none where its
+    # position is needed.
+    let numbered = finite(shot.source.line) and finite(shot.source.point)
+    let located = numbered and t.edge != peStatic and
+      g.table.sources.lookup(shot.source, c) and finite(c.x) and finite(c.y)
+    if not numbered:
+      discard
+    elif t.edge == peStatic:
       picked.add staticPicks
-    else:
-      var c: Coordinates
-      let located = g.table.sources.lookup(shot.source, c) and finite(c.x) and finite(c.y)
-      if (t.placement == ppCoordinates or t.hasDistance) and not located: continue
+    elif located or not (t.placement == ppCoordinates or t.hasDistance):
       if t.hasTemplate and main.len > 0:
         var cl, sa = NaN
         if t.placement == ppNumbers:
@@ -734,7 +909,8 @@ proc generateRelations*(g: SurveyGeometry, layout: ReceiverLayout,
         else:
           sa = layout.inlineOf(c.x, c.y)
           cl = fractionalIndex(mainPos, layout.crosslineOf(c.x, c.y), posStep)
-        pickTemplate(layout, main, t, cl, sa, shot.source.point, picked)
+        pickTemplate(layout, main, shortLines, t, cl, sa, shot.source.point, ascending,
+          picked)
       if t.hasDistance:
         let (ca, cc) = field.centreOf(t, c.x, c.y)
         let (cx, cy) = xyOfBox(field.az, ca, cc)
@@ -748,8 +924,7 @@ proc generateRelations*(g: SurveyGeometry, layout: ReceiverLayout,
               inc kept
           picked.setLen kept
         else:
-          for p in field.stations:
-            if t.inside(p.x, p.y, p.a, p.c, c.x, c.y, ca, cc, cx, cy): picked.add p.pick
+          field.pickInside(layout, t, c.x, c.y, ca, cc, cx, cy, picked)
     emitRuns(picked, shot, result)
 
 proc generateRelations*(g: SurveyGeometry, shots: openArray[PatchShot],
@@ -796,9 +971,9 @@ proc compareRelations*(listed, generated: SurveyGeometry): seq[RecordAgreement] 
     if i > 0 and r == last: continue
     last = r
     var a, b: HashSet[StationKey]
-    for (_, rel) in listed.relations(r):
+    for (_, rel) in listed.channelRelations(r):
       a.incl stationKey(rel.receiver.line, rel.receiver.point, max(1'i16, rel.receiver.index))
-    for (_, rel) in generated.relations(r):
+    for (_, rel) in generated.channelRelations(r):
       b.incl stationKey(rel.receiver.line, rel.receiver.point, max(1'i16, rel.receiver.index))
     var e = RecordAgreement(record: r, listed: a.len, generated: b.len)
     for k in a:
