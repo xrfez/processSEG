@@ -370,8 +370,8 @@ block accessors:
   doAssert acc.workspaceSize == WorkspaceSize(f64: 1201)
   let v = initRecordStack[float32](3, 400, 4)
   doAssert v.windowSamples == 0 and v.workspaceSize == WorkspaceSize()
-  doAssert recordStackMemory(float32, 3, 400) == 3 * 400 * 12
-  doAssert recordStackMemory(float64, 3, 400, rsDiversity) == 3 * 400 * 20
+  doAssert recordStackMemory(3, 400) == 3 * 400 * 12
+  doAssert recordStackMemory(3, 400, rsDiversity) == 3 * 400 * 20
 
 block bad_arguments:
   doAssertRaises ValueError: discard initRecordStack[float32](-1, 10, dt)
@@ -402,12 +402,26 @@ block bad_arguments:
   let meta = initChunkMeta(rowsOf(keys, counts), dt)
   doAssertRaises ValueError: discard acc.addRecord(zeros[float32](2, 10), meta, ws)
   doAssert acc.countAt(0, 0) == 0, "a refused record adds nothing"
+  # A record at another interval, or a window of one (its column 0 is not
+  # sample 0), does not line up with the stack's samples.
+  var keys2 = @[initTraceKeys(), initTraceKeys()]
+  let counts2 = @[310, 310]
+  let one = ones[float32](2, 10)
+  for wrong in [initChunkMeta(rowsOf(keys2, counts2), 2 * dt),
+      initChunkMeta(rowsOf(keys2, counts2), dt, firstSample = 300)]:
+    doAssertRaises ValueError: discard acc.addRecord(one, wrong, ws)
+    doAssertRaises ValueError: discard acc.addRecord(rowBlock(one), wrong, ws)
+  doAssert acc.countAt(0, 0) == 0 and acc.countAt(1, 9) == 0
+  # The interval within rounding (1e-9, as the filters take it) is the same.
+  doAssert acc.addRecord(one, initChunkMeta(rowsOf(keys2, counts2), dt * (1 + 1e-12)), ws) == 2
+  acc.clear
   var dst = newTensor[float32](2, 9)
   doAssertRaises ValueError: acc.stackInto(dst)
   var fold = newTensor[int32](3, 10)
   doAssertRaises ValueError: acc.foldInto(fold)
   doAssertRaises ValueError: acc.merge(initRecordStack[float32](2, 10, dt, diversity))
   doAssertRaises ValueError: acc.merge(initRecordStack[float32](2, 10, 4))
+  acc.merge(initRecordStack[float32](2, 10, dt * (1 + 1e-12))) # the same interval, to rounding
 
 block no_allocation_after_reserve:
   proc check(T: typedesc) =

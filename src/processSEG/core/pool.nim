@@ -9,6 +9,7 @@
 ## pool.apply(plan, samples, meta)               # in place
 ## pool.correlateInto(corr, raw, correlated, meta) # vibroseis correlation
 ## pool.traceAmplitudeInto(raw, meta, AmplitudeParams(), amps) # amplitude QC
+## pool.pickInto(picker, raw, meta, picks)       # first breaks
 ## ```
 ##
 ## **Workers.** The threads start once, in `newProcessPool`, sleep on a
@@ -48,7 +49,7 @@ import parseSEG
 import rows, types, workspace
 import ../pipeline
 import ../vibroseis/correlate
-import ../qc/amplitude
+import ../qc/[amplitude, firstbreak]
 
 type
   JobFn = proc(ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
@@ -341,17 +342,19 @@ proc ampJob[T](ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
     gcsafe, raises: [].} =
   let c = cast[ptr AmpCtx[T]](ctx)
   try:
+    ws.reserve(traceAmplitudeWorkspace(c.src.cols))
     c.queue.eachRun(span):
       traceAmplitudeInto(c.src.sub(span), c.meta.sub(span), c.params,
-        c.dst.toOpenArray(span.a, span.b))
+        c.dst.toOpenArray(span.a, span.b), ws)
   except ValueError as e:
     raiseAssert "checked by traceAmplitudeInto: " & e.msg
 
 proc traceAmplitudeInto*[T: SampleType](p: ProcessPool, b: RowBlock[T],
     meta: ChunkMeta, params: AmplitudeParams, dst: var openArray[TraceAmplitude]) =
   ## `qc/amplitude.traceAmplitudeInto` with the rows split across the
-  ## workers; blocks until they are done. The same results and errors
-  ## (raised on the caller's thread, before any work).
+  ## workers, each with its own workspace (`traceAmplitudeWorkspace`,
+  ## reserved by the worker); blocks until they are done. The same results
+  ## and errors (raised on the caller's thread, before any work).
   doAssert p.state != nil, "a ProcessPool must come from newProcessPool"
   meta.checkShape(b)
   params.validate
@@ -371,3 +374,46 @@ proc traceAmplitudeInto*[T: SampleType](p: ProcessPool, samples: Tensor[T],
   ## The tensor form of the pooled amplitude QC.
   meta.checkShape(samples)
   p.traceAmplitudeInto(rowBlock(samples), meta, params, dst)
+
+# ------------------------------------------------------------ first breaks --
+
+type
+  PickCtx[T: SampleType] = object
+    plan: ptr FirstBreakPlan[T]
+    src: RowBlock[T]
+    meta: ChunkMeta
+    dst: ptr UncheckedArray[FirstBreakPick]
+    queue: RowQueue
+
+proc pickJob[T](ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
+    gcsafe, raises: [].} =
+  let c = cast[ptr PickCtx[T]](ctx)
+  try:
+    ws.reserve(c.plan[].workspaceSize)
+    c.queue.eachRun(span):
+      c.plan[].pickInto(c.src.sub(span), c.meta.sub(span), ws,
+        c.dst.toOpenArray(span.a, span.b))
+  except ValueError as e:
+    raiseAssert "checked by pickInto: " & e.msg
+
+proc pickInto*[T: SampleType](p: ProcessPool, plan: FirstBreakPlan[T], b: RowBlock[T],
+    meta: ChunkMeta, dst: var openArray[FirstBreakPick]) =
+  ## `FirstBreakPlan.pickInto` (`qc/firstbreak`) with the rows split across
+  ## the workers, each with its own workspace; blocks until they are done.
+  ## The same picks, bit for bit, and the same errors (`checkPick`, raised
+  ## on the caller's thread, before any work).
+  doAssert p.state != nil, "a ProcessPool must come from newProcessPool"
+  plan.checkPick(b, meta, dst.len)
+  if b.len == 0: return
+  var ctx = PickCtx[T](plan: addr plan, src: b, meta: meta,
+    dst: cast[ptr UncheckedArray[FirstBreakPick]](addr dst[0]))
+  ctx.queue.reset(b.len, b.cols, sizeof(T))
+  acquire p.state.call
+  run(p.state, pickJob[T], addr ctx)
+  release p.state.call
+
+proc pickInto*[T: SampleType](p: ProcessPool, plan: FirstBreakPlan[T], samples: Tensor[T],
+    meta: ChunkMeta, dst: var openArray[FirstBreakPick]) =
+  ## The tensor form of the pooled first-break picking.
+  meta.checkShape(samples)
+  p.pickInto(plan, rowBlock(samples), meta, dst)

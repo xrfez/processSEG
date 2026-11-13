@@ -7,7 +7,7 @@
 ## let plan = initCorrelationPlan(float32, pilot, recordSamples = 10001, dtMs = 2)
 ## var ws = initWorkspace()
 ## ws.reserve(plan.workspaceSize)
-## var correlated = zeros[float32](raw.shape[0], plan.outSamples)   # 2001: 4 s listen
+## var correlated = zeros[float32](raw.shape[0], plan.outSamples)   # 6001: 12 s listen
 ## plan.correlateInto(raw, correlated, meta, ws)
 ## ```
 ##
@@ -45,8 +45,9 @@
 ## correlates to the Klauder wavelet, a QC). Dead and failed rows give
 ## zeros. A record's live length (`liveSamples`) is what is correlated; the
 ## rest of the row is zero. The rows go through the batched FFT, `fftLanes`
-## at a time; nothing allocates once the workspace is reserved. A NaN in a
-## row makes that row NaN.
+## at a time (one record alone through the one-trace FFT, a third of the
+## time of a batch); nothing allocates once the workspace is reserved. A
+## NaN in a row makes that row NaN.
 
 import std/[complex, math]
 import parseSEG
@@ -194,12 +195,25 @@ proc checkPlan[T](plan: CorrelationPlan[T]) {.inline.} =
 
 {.push boundChecks: off, overflowChecks: off.}
 
-proc mulKernel[T](re {.noalias.}, im {.noalias.}: Buf[T], mr, mi: T) {.inline.} =
+proc mulKernel[T](re {.noalias.}, im {.noalias.}: Buf[T], mr, mi: T) {.noinline.} =
+  ## One bin of `fftLanes` spectra times the plan's multiplier there. Not
+  ## inlined: on its own the loop is one vector operation, while inside the
+  ## loop over the bins the compiler vectorized across bins, shuffling the
+  ## lanes in and out (17.3 against 4.1 ms for 250 batches of 8101 bins).
   for l in 0 ..< fftLanes:
     let a = re[l]
     let b = im[l]
     re[l] = a * mr - b * mi
     im[l] = a * mi + b * mr
+
+proc mulSingle[T](re {.noalias.}, im {.noalias.}: Buf[T], mr, mi: openArray[T]) {.
+    raises: [].} =
+  ## One trace's spectrum times the plan's multiplier, bin by bin.
+  for k in 0 ..< mr.len:
+    let a = re[k]
+    let b = im[k]
+    re[k] = a * mr[k] - b * mi[k]
+    im[k] = a * mi[k] + b * mr[k]
 
 template runLanes(plan, x, re, im, ws: untyped) =
   block:
@@ -213,21 +227,74 @@ template runLanes(plan, x, re, im, ws: untyped) =
     plan.fft.inverseLanes(re.toOpenArray(0, bins * fftLanes - 1),
       im.toOpenArray(0, bins * fftLanes - 1), x.toOpenArray(0, n * fftLanes - 1), ws)
 
-func lagIndex(plan: CorrelationPlan, m: int): int {.inline.} =
-  ## The circular index of output column `m`, or −1 when its lag is outside
-  ## (−pilot, record).
-  let lag = m + plan.shift
-  if lag <= -plan.pilotSamples or lag >= plan.recordSamples: -1
-  elif lag < 0: lag + plan.fft.len
-  else: lag
+proc gatherLanes[T](buf: Buf[T], n: int, rows: array[fftLanes, Buf[T]],
+    live: array[fftLanes, int], used: int) {.raises: [].} =
+  ## The lane buffer of `used` records (`rows[l][0 ..< live[l]]`, zeros
+  ## after, to `n`; unused lanes zero): written sample by sample, one pass
+  ## over the buffer with a read stream per record, and zeroed only past
+  ## the longest record. (Lane by lane after zeroing all of it, the buffer
+  ## was passed over nine times: 9.5 against 3.4 ms on 2000 records of
+  ## 10001 samples at nfft 16200.)
+  var shortest = (if used == fftLanes: int.high else: 0)
+  var longest = 0
+  for l in 0 ..< used:
+    shortest = min(shortest, live[l])
+    longest = max(longest, live[l])
+  # Locals: through the parameters every store to `buf` would reload them.
+  let p = rows
+  let len = live
+  for j in 0 ..< shortest: # every lane holds a record sample
+    for l in 0 ..< fftLanes: buf[j * fftLanes + l] = p[l][j]
+  for j in shortest ..< longest:
+    for l in 0 ..< fftLanes:
+      buf[j * fftLanes + l] = (if j < len[l]: p[l][j] else: T(0))
+  if n > longest:
+    zeroMem(addr buf[longest * fftLanes], (n - longest) * fftLanes * sizeof(T))
+
+type LagSpans = object
+  ## Output columns `0 ..< wrapped` are zero (lags at or before −pilot),
+  ## `wrapped ..< direct` hold the negative lags (circular index lag + nfft),
+  ## `direct ..< last` the lags from 0 (index lag), the rest are zero.
+  wrapped, direct, last: int
+
+func lagSpans(plan: CorrelationPlan, cols: int): LagSpans {.inline.} =
+  result.wrapped = clamp(1 - plan.pilotSamples - plan.shift, 0, cols)
+  result.direct = clamp(-plan.shift, result.wrapped, cols)
+  result.last = clamp(plan.recordSamples - plan.shift, result.direct, cols)
+
+proc scatterLanes[T](plan: CorrelationPlan[T], buf: Buf[T], rows: array[fftLanes, Buf[T]],
+    used, cols: int) {.raises: [].} =
+  ## The lags of `used` lanes out of the buffer into their output rows,
+  ## sample by sample (one pass over the buffer, as the gather: 3.1 against
+  ## 6.9 ms lane by lane on 2000 records).
+  let s = plan.lagSpans(cols)
+  let wrap = plan.shift + plan.fft.len
+  let d = rows # a local: through the parameter every store would reload it
+  for l in 0 ..< used:
+    for m in 0 ..< s.wrapped: d[l][m] = T(0)
+    for m in s.last ..< cols: d[l][m] = T(0)
+  for m in s.wrapped ..< s.direct:
+    for l in 0 ..< used: d[l][m] = buf[(m + wrap) * fftLanes + l]
+  for m in s.direct ..< s.last:
+    for l in 0 ..< used: d[l][m] = buf[(m + plan.shift) * fftLanes + l]
+
+proc scatterOne[T](plan: CorrelationPlan[T], buf: Buf[T], d: Buf[T], cols: int) {.
+    raises: [].} =
+  ## One record's lags out of its buffer into `d`.
+  let s = plan.lagSpans(cols)
+  let wrap = plan.shift + plan.fft.len
+  for m in 0 ..< s.wrapped: d[m] = T(0)
+  for m in s.wrapped ..< s.direct: d[m] = buf[m + wrap]
+  for m in s.direct ..< s.last: d[m] = buf[m + plan.shift]
+  for m in s.last ..< cols: d[m] = T(0)
 
 {.pop.}
 
 proc correlateInto*[T: SampleType](plan: CorrelationPlan[T], x: openArray[T],
     y: var openArray[T], ws: var Workspace) {.raises: [].} =
   ## Correlates one record `x` (at most `recordSamples`; zeros after it)
-  ## into `y` (`outSamples` values). `ws` must hold `plan.workspaceSize`. An
-  ## `AssertionDefect` for other lengths.
+  ## into `y` (`outSamples` values), through the one-trace FFT. `ws` must
+  ## hold `plan.workspaceSize`. An `AssertionDefect` for other lengths.
   plan.checkPlan
   doAssert x.len <= plan.recordSamples, "a record longer than the plan's recordSamples"
   doAssert y.len == plan.outSamples, "y must have outSamples values"
@@ -235,17 +302,17 @@ proc correlateInto*[T: SampleType](plan: CorrelationPlan[T], x: openArray[T],
   let n = plan.fft.len
   let bins = plan.fft.bins
   let at = plan.fft.workspaceSize.elems(T)
-  let buf = ws.scratch(T, fftLanes * (n + 2 * bins), at)
-  let re = cast[ptr UncheckedArray[T]](addr buf[n * fftLanes])
-  let im = cast[ptr UncheckedArray[T]](addr buf[n * fftLanes + bins * fftLanes])
-  {.push boundChecks: off.}
-  for i in 0 ..< n * fftLanes: buf[i] = T(0)
-  for j in 0 ..< x.len: buf[j * fftLanes] = x[j]
-  {.pop.}
-  plan.runLanes(buf, re, im, ws)
-  for m in 0 ..< y.len:
-    let c = plan.lagIndex(m)
-    y[m] = if c < 0: T(0) else: buf[c * fftLanes]
+  let buf = ws.scratch(T, n + 2 * bins, at)
+  let re = cast[ptr UncheckedArray[T]](addr buf[n])
+  let im = cast[ptr UncheckedArray[T]](addr buf[n + bins])
+  if x.len > 0: copyMem(buf, addr x[0], x.len * sizeof(T))
+  zeroMem(addr buf[x.len], (n - x.len) * sizeof(T))
+  plan.fft.forward(buf.toOpenArray(0, n - 1), re.toOpenArray(0, bins - 1),
+    im.toOpenArray(0, bins - 1), ws)
+  mulSingle(re, im, plan.mulRe, plan.mulIm)
+  plan.fft.inverse(re.toOpenArray(0, bins - 1), im.toOpenArray(0, bins - 1),
+    buf.toOpenArray(0, n - 1), ws)
+  if y.len > 0: plan.scatterOne(buf, cast[Buf[T]](addr y[0]), y.len)
 
 proc checkCorrelate*[T: SampleType](plan: CorrelationPlan[T], src, dst: RowBlock[T],
     meta: ChunkMeta) =
@@ -285,33 +352,24 @@ proc correlateInto*[T: SampleType](plan: CorrelationPlan[T], src, dst: RowBlock[
   var r = 0
   while r < src.len:
     # The next fftLanes rows to correlate.
-    var lanes: array[fftLanes, int]
+    var lanes, live: array[fftLanes, int]
+    var rows: array[fftLanes, Buf[T]]
     var k = 0
     while r < src.len and k < fftLanes:
       if used(r):
         lanes[k] = r
+        rows[k] = src.rowPtr(r)
+        live[k] = meta.liveSamples(r, src.cols)
         inc k
       else:
         let d = dst.rowPtr(r)
         for m in 0 ..< dst.cols: d[m] = T(0)
       inc r
     if k == 0: break
-    {.push boundChecks: off.}
-    for i in 0 ..< n * fftLanes: buf[i] = T(0)
-    for l in 0 ..< k:
-      let row = lanes[l]
-      let s = src.rowPtr(row)
-      let live = meta.liveSamples(row, src.cols)
-      for j in 0 ..< live: buf[j * fftLanes + l] = s[j]
-    {.pop.}
+    gatherLanes(buf, n, rows, live, k)
     plan.runLanes(buf, re, im, ws)
-    for l in 0 ..< k:
-      let d = dst.rowPtr(lanes[l])
-      {.push boundChecks: off.}
-      for m in 0 ..< dst.cols:
-        let c = plan.lagIndex(m)
-        d[m] = if c < 0: T(0) else: buf[c * fftLanes + l]
-      {.pop.}
+    for l in 0 ..< k: rows[l] = dst.rowPtr(lanes[l])
+    plan.scatterLanes(buf, rows, k, dst.cols)
 
 proc correlateInto*[T: SampleType](plan: CorrelationPlan[T], src: Tensor[T],
     dst: var Tensor[T], meta: ChunkMeta, ws: var Workspace) =

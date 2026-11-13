@@ -204,10 +204,14 @@ present, 31 missing, 2858 live stations the XPS does not list, 3 auxiliary trace
 
 ## Amplitude QC
 
-`traceAmplitudeInto(samples, meta, params, amps)` measures each trace: RMS and maximum in
+`traceAmplitudeInto(samples, meta, params, amps, ws)` measures each trace: RMS and maximum in
 dB, the mean, non-finite samples, clipped runs at the maximum, spikes against their
 neighbours, and flags the traces that are dead, constant, clipped, spiky or DC-offset by
-their samples, whatever their header status says. `recordAmplitude(amps, params, ws)` then
+their samples, whatever their header status says. A clip is a run of `clipRun` samples at
+the trace's maximum, of either polarity (an integer recorder's two rails differ by one
+count); the flag needs two runs, or one of twice that length, since weak data recorded as
+integers holds its largest count for a few samples somewhere, which only `clipped`
+counts. `recordAmplitude(amps, params, ws)` then
 takes the record's median and MAD of the RMS in dB, and flags the weak and noisy outliers
 by a robust z-score. Give it one record at a time; amplitudes fall with offset, so the
 near traces of a shot read as noisy (112 of Morgantown's 3954, over whole traces): compare
@@ -242,9 +246,9 @@ samples[40, 700] = 5                             # a spike
 
 let meta = initChunkMeta(rowsOf(keys, counts), dtMs)
 var amps = newSeq[TraceAmplitude](traces)
-traceAmplitudeInto(samples, meta, AmplitudeParams(), amps)
-var ws = initWorkspace()
-ws.reserve(recordAmplitudeWorkspace(traces))
+var ws = initWorkspace()               # scratch for both steps, one after the other
+ws.reserve(max(traceAmplitudeWorkspace(cols), recordAmplitudeWorkspace(traces)))
+traceAmplitudeInto(samples, meta, AmplitudeParams(), amps, ws)
 let rec = recordAmplitude(amps, AmplitudeParams(), ws)
 doAssert amps[10].flags == {afDead}
 doAssert afClipped in amps[20].flags

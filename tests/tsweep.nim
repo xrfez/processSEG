@@ -205,3 +205,55 @@ block validation:
   var bad = linearSweep(8, 80, 8000, 2)
   bad.amplitude = NaN
   doAssertRaises(ValueError): bad.validate
+
+block specs_built_as_objects:
+  # A spec made as an object, not by a constructor, is checked before
+  # anything is sized from it: no defect for a zero interval, no attempt
+  # at 2·10¹² samples.
+  for spec in [SweepSpec(), SweepSpec(law: slLinear, f1Hz: 10, f2Hz: 80, lengthMs: 4e12, dtMs: 2),
+      SweepSpec(law: slLinear, f1Hz: 10, f2Hz: 80, lengthMs: NaN, dtMs: 2),
+      SweepSpec(law: slLinear, f1Hz: 10, f2Hz: 80, lengthMs: 8000, dtMs: -2),
+      SweepSpec(law: slLinear, f1Hz: 10, f2Hz: 80, lengthMs: Inf, dtMs: 2),
+      SweepSpec(law: slLinear, f1Hz: 10, f2Hz: 80, lengthMs: 1, dtMs: 2)]:
+    doAssert spec.sweepLen == 0, $spec.lengthMs
+    doAssertRaises(ValueError): discard spec.sweepSamples(float32)
+    doAssertRaises(ValueError): discard generatePilot(spec)
+    var x = newSeq[float64](4)
+    doAssertRaises(ValueError): spec.sweepInto(x)
+  let ok = SweepSpec(law: slLinear, f1Hz: 10, f2Hz: 80, lengthMs: 8000, dtMs: 2,
+    maxNyquistFraction: 0.8)
+  doAssert ok.sweepLen == 4001 and generatePilot(ok, float32).len == 4001
+
+block steep_boosts_stay_finite:
+  # A boost is bounded by what it adds up to over the band (300 dB for
+  # dB/octave, 150 dB for dB/Hz: beyond that the far end of the law is
+  # below a float64's resolution), and inside the bounds every law gives
+  # finite samples and its two end frequencies exactly. Unbounded,
+  # 3000 dB/octave gave NaN samples and −2 dB/Hz an infinite end frequency.
+  doAssertRaises(ValueError): discard dbPerOctaveSweep(10, 100, 8000, 2, 3000)
+  doAssertRaises(ValueError): discard dbPerOctaveSweep(10, 100, 8000, 2, -100) # 332 dB
+  doAssertRaises(ValueError): discard dbPerOctaveSweep(100, 10, 8000, 2, 100)
+  doAssertRaises(ValueError): discard dbPerHzSweep(10, 110, 8000, 2, -2) # 200 dB
+  doAssertRaises(ValueError): discard dbPerHzSweep(10, 110, 8000, 2, 1.6)
+  var steep = @[dbPerOctaveSweep(10, 100, 8000, 2, 90), dbPerOctaveSweep(10, 100, 8000, 2, -90),
+    dbPerOctaveSweep(100, 10, 8000, 2, -90), dbPerHzSweep(10, 110, 8000, 2, 1.5),
+    dbPerHzSweep(10, 110, 8000, 2, -1.5), dbPerHzSweep(110, 10, 8000, 2, 1.5),
+    # A high band: the law is computed from f2 / f1, not from powers of Hz.
+    dbPerOctaveSweep(900, 1800, 2000, 0.25, 290, maxNyquistFraction = 1),
+    dbPerOctaveSweep(900, 1800, 2000, 0.25, -290, maxNyquistFraction = 1)]
+  for spec in steep:
+    let what = $spec.law & " " & $spec.boostDb
+    doAssert spec.frequencyAt(0) == spec.f1Hz and spec.frequencyAt(spec.lengthMs) == spec.f2Hz,
+      what
+    let lo = min(spec.f1Hz, spec.f2Hz)
+    let hi = max(spec.f1Hz, spec.f2Hz)
+    var last = spec.f1Hz
+    for k in 0 .. 4000:
+      # Dense at the far end, where a steep law runs through most of its band.
+      let t = spec.lengthMs * (1 - pow(10.0, -float64(k) / 250))
+      let f = spec.frequencyAt(t)
+      doAssert f >= lo and f <= hi, what & " at " & $t & ": " & $f
+      doAssert (f - last) * (spec.f2Hz - spec.f1Hz) >= 0, what & ": not monotonic at " & $t
+      last = f
+    for v in spec.sweepSamples(float64):
+      doAssert v.classify in {fcNormal, fcSubnormal, fcZero, fcNegZero}, what

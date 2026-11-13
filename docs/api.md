@@ -327,8 +327,10 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `PickMethod` (`pmStaLta`, `pmEnergyRatio`, `pmCoppens`) | The picker. |
 | `FirstBreakParams` (`pickMethod`, `windowMs`, `ltaMs`, `stabilization`, `lowCutHz`, `highCutHz`, `slopeDbPerOctave`, `searchStartMs`, `searchEndMs`, `guideVelocity`, `guideT0Ms`, `beforeMs`, `afterMs`, `snrWindowMs`, `lowDb`, `highDb`) | Defaults set in the type: energy ratio, 20 ms window, no filter, no guide. |
 | `FirstBreakPlan[T]`; `initFirstBreakPlan(T, params, dtMs, samples)`, `plan.params`, `plan.dtMs`, `plan.samples`, `plan.workspaceSize` | A compiled picker (optional minimum-phase band-pass, fixed or LMO-guided window). |
-| `FirstBreakPick` (`timeMs`, `col`, `snrDb`, `confidence`); `noPick()` | One pick; confidence 0 .. 1 from the SNR (`lowDb` .. `highDb`). |
-| `plan.pick(x, ws, offset = NaN, t0Ms = 0)`, `plan.pickInto(b \| samples, meta, ws, dst)` | Pick one trace, or every live row (others get `noPick`). The samples are not changed. |
+| `plan.requiredMargin` | The samples a zoom window must hold on each side of a row's search window to pick as the whole trace does, bit for bit: what the attribute and the confidence read before the window, plus the band-pass's margin. `plan.samples` for a plan that reads whole traces (no window, or `pmCoppens`). |
+| `FirstBreakPick` (`timeMs`, `col`, `snrDb`, `confidence`); `noPick()` | One pick: its time, its column in the block (an int; −1 without a pick, as `timeMs` and `snrDb` are NaN), confidence 0 .. 1 from the SNR (`lowDb` .. `highDb`). `FirstBreakPick()` is `noPick()`. |
+| `plan.pick(x, ws, offset = NaN, t0Ms = 0)`, `plan.pickInto(b \| samples, meta, ws, dst)` | Pick one trace, or every live row (others get `noPick`). The samples are not changed. With a search window, STA/LTA and the energy ratio read and band-pass only the window and its margins; zeros before a row's first and after its last non-zero sample are not data. |
+| `checkPick(plan, b, meta, picks)`; `pickInto(pool, plan, b \| samples, meta, dst)` | The checks of `pickInto` (`ValueError`); the picks with the rows split across a `ProcessPool`'s workers (identical results). |
 
 ## qc/snr: signal-to-noise ratios
 
@@ -339,14 +341,14 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `DefaultSnrFloorDb` | −40 dB: returned for no signal, and every SNR clamped up to it (`floorDb = -Inf`: no clamp). |
 | `meanPower(x, cols)`, `powerSnrDb(signal, noise, estimator = seRatio, floorDb, stabilization = 0)`, `windowSnrDb(x, signal, noise: Slice[int], estimator, floorDb, stabilization)` | The kernels: mean power over columns (NaN when empty), dB from two mean powers, both on one trace. NaN for an empty window or a zero noise power. |
 | `windowSnrInto(b \| samples, meta, params, [refMs \| guide: Moveout,] dst)` | The windowed SNR of every row, in dB: windows at fixed trace times, relative to a time per row (picks), or to a moveout guide at each offset (LMO). NaN for non-live rows, NaN references, empty windows. |
-| `coherenceSnrWorkspace(cols)`; `coherenceSnrInto(b \| samples, meta, windowMs, ws, dst, floorDb = DefaultSnrFloorDb)` | The SNR of a flattened (NMO/LMO-corrected) gather per column, over a centred window: signal power over noise power per trace from the mean trace and the residuals (an unbiased estimator, the semblance relation). Rows count over their `liveSpan`. |
+| `coherenceSnrWorkspace(cols)`; `coherenceSnrInto(b \| samples, meta, windowMs, ws, dst, floorDb = DefaultSnrFloorDb)` | The SNR of a flattened (NMO/LMO-corrected) gather per column, over a centred window: signal power over noise power per trace from the mean trace and the residuals (an unbiased estimator, the semblance relation). Rows count over their `liveSpan`. The time does not depend on the window; the scratch is `6·cols + 2` float64 (`ValueError` when `ws` holds less). |
 
 ## qc/shotfit: per-shot refraction fit
 
 | Proc | What |
 |---|---|
 | `RefractionModel` (`rmTwoSegment`, `rmOffsetBinned`) | Two lines in \|offset\| (L1 fit), or a median per offset bin. |
-| `ShotFitParams` (`model`, `minConfidence`, `binWidth`, `localTraces`, `residualMs`, `madFactor`, `correlate`, `windowMs`, `maxLagMs`, `lagToleranceMs`, `minCoherence`) | What is checked; defaults set in the type. |
+| `ShotFitParams` (`model`, `minConfidence`, `binWidth`, `localTraces`, `maxResidualMs`, `madFactor`, `correlate`, `windowMs`, `maxLagMs`, `lagToleranceMs`, `minCoherence`) | What is checked; defaults set in the type. |
 | `ShotFit` (`model`, `interceptMs`, `v1`, `v2`, `crossover`, `used`, `asymmetryMs`, `threshold`, `position`, `modelMs`, `residualMs`, `localMs`, `lagMs`, `coherence`, `suspect`) | One shot's fit; the per-row seqs are resized and reused. |
 | `fitShot(meta, picks, params, fit)`, `fitShot(b \| samples, meta, picks, params, fit)` | Fit one shot's rows; flag traces whose residual jumps against their neighbours, and (with samples) the odd ones out by cross-correlation. `asymmetryMs` hints at a misplaced source. |
 
@@ -381,11 +383,11 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 
 | Proc | What |
 |---|---|
-| `AmplitudeFlag` (`afNonFinite`, `afDead`, `afConstant`, `afClipped`, `afSpiky`, `afDcOffset`, `afWeak`, `afNoisy`) | Why a trace stands out: NaN/Inf samples; every finite sample 0, or one non-zero value; runs at the maximum magnitude; samples far above their neighbours; a large mean; RMS far below or above the record's. |
-| `AmplitudeParams` (`startMs`, `endMs`, `clipRun = 3`, `clipTolerance = 0`, `spikeFactor = 10`, `spikeWindowMs = 20`, `dcRatio = 0.2`, `outlierZ = 3.5`), `validate(params)` | The window on the trace axis (default: the whole trace) and the thresholds: a clip is `clipRun` samples at `≥ (1 − clipTolerance)·max`; a spike deviates from the mean by more than `spikeFactor` × its neighbours' RMS deviation within ±`spikeWindowMs` (itself left out); DC: `\|mean\| > dcRatio·σ`; outliers: `\|robustZ\| > outlierZ`. Inf turns `spikeFactor`, `dcRatio`, `outlierZ` off. `validate` raises `ValueError`. |
+| `AmplitudeFlag` (`afNonFinite`, `afDead`, `afConstant`, `afClipped`, `afSpiky`, `afDcOffset`, `afWeak`, `afNoisy`) | Why a trace stands out: NaN/Inf samples; every finite sample 0, or one non-zero value; two runs at the maximum (or one long one); samples far above their neighbours; a large mean; RMS far below or above the record's. |
+| `AmplitudeParams` (`startMs`, `endMs`, `clipRun = 3`, `clipTolerance = 0`, `spikeFactor = 10`, `spikeHalfWindowMs = 20`, `dcRatio = 0.2`, `outlierZ = 3.5`), `validate(params)` | The window on the trace axis (default: the whole trace) and the thresholds: a clip is a run of `clipRun` samples at `≥ (1 − clipTolerance)·max` or `≤ (1 − clipTolerance)·min` (each polarity at its own level when both reach the maximum magnitude within 1 %), flagged from two runs or one of `2·clipRun`; a spike deviates from the mean by more than `spikeFactor` × its neighbours' RMS deviation within ±`spikeHalfWindowMs` (itself left out); DC: `\|mean\| > dcRatio·σ`; outliers: `\|robustZ\| > outlierZ`. Inf turns `spikeFactor`, `dcRatio`, `outlierZ` off. `validate` raises `ValueError`. |
 | `TraceAmplitude` (`samples`, `rmsDb`, `maxDb`, `mean`, `nonFinite`, `clipped`, `spikes`, `robustZ`, `flags`) | One trace over its finite samples; `samples = 0` and NaN for a non-live row or an empty window (a finite window needs `t0Ms`). |
-| `traceAmplitude(x, dtMs, params = AmplitudeParams())` | One trace's samples (the window is not applied). |
-| `traceAmplitudeInto(b \| samples, meta, params, dst)`; `traceAmplitudeInto(pool, b \| samples, meta, params, dst)` | Every row into `dst[row]`, the live samples in the window; with a `ProcessPool`, rows split across its workers (identical results). No allocation. |
+| `traceAmplitude(x, dtMs, params = AmplitudeParams())` | One trace's samples (the window is not applied); allocates its scratch. |
+| `traceAmplitudeWorkspace(cols)`; `traceAmplitudeInto(b \| samples, meta, params, dst, ws)`; `traceAmplitudeInto(pool, b \| samples, meta, params, dst)` | Every row into `dst[row]`, the live samples in the window, with `2·cols + 1` float64 of scratch in `ws` (`ValueError` when it holds less); with a `ProcessPool`, rows split across its workers, each with its own workspace (identical results). No allocation. |
 | `RecordAmplitude` (`traces`, `medianRmsDb`, `madDb`, `counts`, `flagged`), `recordAmplitudeWorkspace(traces)`, `recordAmplitude(traces, params, ws)` | One record: median and MAD of `rmsDb` over the traces with samples, a finite RMS and neither dead nor constant; each one's `robustZ = (rmsDb − median) / (1.4826·MAD)` and `afWeak` / `afNoisy` (set or cleared), counts per flag. No allocation. |
 
 ## pipeline: `Op`, `Pipeline`, `PipelinePlan`
@@ -410,7 +412,8 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 | `pool.apply(plan, b \| samples, meta)`, `pool.apply(plan, src, dst, meta)` (blocks or tensors) | `plan.apply` with the rows split across the workers; blocks until done, identical results. One job at a time; a second caller waits. |
 | `pool.ping` | An empty job: the per-job overhead. |
 | `correlateInto(pool, plan: CorrelationPlan[T], src, dst: RowBlock[T] \| Tensor[T], meta)` | Vibroseis correlation with the rows split across the workers; checks as `checkCorrelate` on the caller's thread. |
-| `traceAmplitudeInto(pool, b \| samples, meta, params, dst)` | Amplitude QC (`qc/amplitude`) with the rows split across the workers. |
+| `traceAmplitudeInto(pool, b \| samples, meta, params, dst)` | Amplitude QC (`qc/amplitude`) with the rows split across the workers, each reserving `traceAmplitudeWorkspace`. |
+| `pickInto(pool, plan: FirstBreakPlan[T], b \| samples, meta, dst)` | First-break picking (`qc/firstbreak`) with the rows split across the workers; checks as `checkPick` on the caller's thread. |
 
 ## adapters: metas from parseSEG reads
 
@@ -419,14 +422,14 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 | `intervalMs(rows: TraceRows)` | The rows' common interval from their keys' `intervalUs` (`ValueError` when unknown, 0 or mixed). |
 | `chunkMeta(c: PrefetchChunk[T], dtMs = NaN)` | The meta of a prefetch chunk: its rows, interval, `firstSample` and `failedRows`, in place. `dtMs` overrides headers without an interval. |
 | `chunkMeta(f, traces: Slice[int] \| openArray[int], [samples: Slice[int],] failed = [], dtMs = NaN)` | The meta of a `readTracesInto` of a range or list (and sample window), with its `failedRows` list. |
-| `pilotFromTrace(f, trace, T = float64, t0Ms = NaN, dtMs = NaN): Pilot[T]` | A recorded pilot (aux sweep or ground-force trace) from a file: samples, interval and start time from its keys, `sweep` from the SEG-Y sweep fields (trace header, else binary) when they describe a linear or exponential sweep. |
+| `pilotFromTrace(f, trace, T = float64, t0Ms = NaN, dtMs = NaN): Pilot[T]` | A recorded pilot (aux sweep or ground-force trace) from a file: samples, interval and start time from its keys, `sweep` from the SEG-Y sweep fields (trace header, else binary) when they describe a linear or exponential sweep that the trace can be: valid at its interval, no longer than it, and reaching the upper half of its band in the samples (`energyAbove`; some controllers write 0.1 Hz). |
 
 ## vibroseis/taper: sweep-end tapers
 
 | Proc | What |
 |---|---|
 | `TaperShape` (`tpLinear`, `tpCosine`, `tpCos2`, `tpHamming`, `tpBlackman`, `tpBlackmanHarris`, `tpKaiser`, `tpGaussian`, `tpPower`) | Ramp shapes, each the rising half of its window. |
-| `SweepTaper` (`startMs`, `endMs`, `shape`, `param`); `initSweepTaper(startMs, endMs, shape = tpCos2, param = NaN)`, `noTaper()` | Start and end ramps in ms (0 or NaN: none); `param` is β, σ or the exponent (NaN: 6, 0.4, 2). |
+| `SweepTaper` (`startMs`, `endMs`, `shape`, `param`); `initSweepTaper(startMs, endMs, shape = tpCos2, param = NaN)`, `noTaper()` | Start and end ramps in ms (0 or NaN: none); `param` is β, σ or the exponent, NaN by default also in an object built by hand: the shape's 6, 0.4 or 2. |
 | `taperWeight(shape, x, param = NaN)` | The ramp `w(x)`, `x` in 0 .. 1. |
 | `applyTaper(x: var openArray[T], dtMs, taper)` | Applies the ramps in place to a sweep of `x.len` samples (`(x.len − 1)·dtMs` ms). |
 | `validate(taper)`, `checkFits(taper, sweepMs)` | `ValueError` for bad lengths or parameters, or ramps that overlap (`startMs + endMs > sweepMs`; meeting is allowed). |
@@ -438,11 +441,11 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 |---|---|
 | `SweepLaw` (`slLinear`, `slDbPerOctave`, `slDbPerHz`, `slExponential`, `slTable`), `SweepPoint` (`tMs`, `fHz`) | How the frequency runs; a table point. |
 | `SweepSpec` (`law`, `f1Hz`, `f2Hz`, `lengthMs`, `dtMs`, `boostDb`, `table`, `startPhaseDeg`, `amplitude`, `taper`, `maxNyquistFraction`) | A sweep. |
-| `linearSweep(f1Hz, f2Hz, lengthMs, dtMs, taper = noTaper(), startPhaseDeg = 0, amplitude = 1, maxNyquistFraction = 0.8)`; `dbPerOctaveSweep(..., dtMs, boostDb, ...)`, `dbPerHzSweep(..., dtMs, boostDb, ...)`, `exponentialSweep(...)`, `tableSweep(points, dtMs, ...)` | Validated specs. A dB boost is of the amplitude spectrum, per octave or per Hz. |
+| `linearSweep(f1Hz, f2Hz, lengthMs, dtMs, taper = noTaper(), startPhaseDeg = 0, amplitude = 1, maxNyquistFraction = 0.8)`; `dbPerOctaveSweep(..., dtMs, boostDb, ...)`, `dbPerHzSweep(..., dtMs, boostDb, ...)`, `exponentialSweep(...)`, `tableSweep(points, dtMs, ...)` | Validated specs. A dB boost is of the amplitude spectrum, per octave or per Hz, and may add up to 300 dB over the band per octave, 150 dB per Hz. |
 | `validate(spec)` | `ValueError`: frequencies ≤ 0, above `maxNyquistFraction`·Nyquist or Nyquist, a length under one sample, a bad table, boost or taper. |
-| `sweepLen(spec)` | Samples: `lengthMs / dtMs + 1` (both ends). |
+| `sweepLen(spec)` | Samples: `lengthMs / dtMs + 1` (both ends); 0 for a spec whose interval or length `validate` rejects. |
 | `sweepSamples(spec, T = float64): seq[T]`, `sweepInto(spec, x: var openArray[T])` | The sweep, `amplitude·taper·sin(φ₀ + 2π∫f)`. |
-| `frequencyAt(spec, tMs)`, `phaseAt(spec, tMs)` | The instantaneous frequency; the phase in radians (closed-form laws; NaN for the dB laws). |
+| `frequencyAt(spec, tMs)`, `phaseAt(spec, tMs)` | The instantaneous frequency (`f1Hz` and `f2Hz` exactly at the two ends, never outside them for the laws that run one way); the phase in radians (closed-form laws; NaN for the dB laws). |
 | `segySweepType(spec)` | SEG-Y sweep type: 1 linear, 3 exponential, 4 other. |
 
 ## vibroseis/pilot: generated and recorded pilots
@@ -454,10 +457,11 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 | `initPilot(samples, dtMs, t0Ms = 0, sweep = none(SweepSpec))`, `validate(pilot)` | A pilot from the caller's samples; `ValueError` for fewer than 2 samples, non-finite or all-zero samples, a bad `dtMs` or `t0Ms`, a sweep at another interval. |
 | `pilotFromRow(meta, data, row, t0Ms = NaN, sweep = none(SweepSpec))` | A recorded pilot from a block row: its live samples, `meta.dtMs`, `sampleTimeMs(row, 0)` as `t0Ms`. |
 | `pilotKeys(pilot): TraceKeys` | Keys for parseSEG's `writeTrace`: interval, start time, trace code 6 (sweep), auxiliary. |
-| `sweepOverrides(spec, binary = false): seq[HeaderOverride]` | The SEG-Y sweep fields (start/end Hz, length, type, taper lengths and type) as `trace.` overrides, or `binary.` fields for `HeaderEditor.setFileField`. |
-| `sweepFromHeaders(f1Hz, f2Hz, lengthMs, sweepType, taperStartMs, taperEndMs, taperType, dtMs): Option[SweepSpec]` | The sweep SEG-Y fields describe (linear or exponential only). |
-| `resamplePilot(pilot, dtMs, cutoffFraction = 0.9, halfWidth = 24)` | Band-limited resampling (Kaiser-windowed sinc at `cutoffFraction` of the lower Nyquist); refuses a sweep above the cutoff. |
-| `InstrumentPhase` (`ipMinimumPhase`, `ipZeroPhase`), `InstrumentFilter` (`highCutHz`, `highSlopeDbPerOctave`, `lowCutHz`, `lowSlopeDbPerOctave`, `phase`) | A recorder's filters as Butterworth responses (SEG-Y bytes 141-152). |
+| `sweepOverrides(spec, binary = false): seq[HeaderOverride]` | The SEG-Y sweep fields (start/end Hz, length, type, taper lengths and type) as `trace.` overrides, or `binary.` fields for `HeaderEditor.setFileField`. The fields are whole Hz and ms: `ValueError` for a fractional value (it is not rounded) or one outside int16. |
+| `sweepFromHeaders(f1Hz, f2Hz, lengthMs, sweepType, taperStartMs, taperEndMs, taperType, dtMs, samples = 0): Option[SweepSpec]` | The sweep SEG-Y fields describe (linear or exponential only), or none unless it is valid at `dtMs` up to Nyquist and, with `samples`, no longer than the trace. |
+| `energyAbove(pilot, fHz): float64` | The fraction of the pilot's energy above `fHz`, from its samples' power spectrum. |
+| `resamplePilot(pilot, dtMs, cutoffFraction = 0.9, halfWidth = 32, bandLimit = false)` | Band-limited resampling (Kaiser-windowed sinc at `cutoffFraction` of the lower Nyquist; flat up to the passband edge `cutoffFraction − 2.736 / halfWidth`, 0.8145 by default, closed from `cutoffFraction + 2.736 / halfWidth`). `ValueError` when over 0.5 % of the samples' energy lies above the passband edge, whatever the sweep description says; `bandLimit` cuts it instead (and drops the description). The description is kept, with the passband edge as its `maxNyquistFraction`, only if still valid. Taps beyond the pilot's ends are made up for by rescaling. |
+| `InstrumentFilter` (`highCutHz`, `highSlopeDbPerOctave`, `lowCutHz`, `lowSlopeDbPerOctave`, `phase: IirPhase = ipMinimum`) | A recorder's filters as Butterworth responses (SEG-Y bytes 141-152). |
 | `applyInstrumentFilter(pilot, filter)` | The pilot through the recorder's filters from rest (causal for minimum phase), same length. |
 
 ## vibroseis/correlate: correlation and sweep deconvolution
@@ -477,10 +481,10 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 |---|---|
 | `RecordStackMode` (`rsVertical`, `rsDiversity`), `DiversityWeight` (`dwInversePower`, `dwInversePowerSq`) | The plain sum, or weights `1/p` or `1/p²` from each trace's power `p` in a centred window. |
 | `RecordStackParams` (`mode = rsVertical`, `windowMs = 128`, `weight = dwInversePower`, `powerFloor = 0.01`, `clipLevel = 0`) | The window, weight, floor (× the trace's median window power) and clip (× its square root; 0 or Inf: none) apply to `rsDiversity`. |
-| `RecordStack[T]`; `initRecordStack[T](rows, samples, dtMs, params = RecordStackParams())`, `recordStackMemory(T, rows, samples, mode = rsVertical)` | Float64 sums and int32 per-sample counts of the output rows, 12 bytes a sample (20 for diversity). `ValueError` for a bad shape, interval or diversity option. |
+| `RecordStack[T]`; `initRecordStack[T](rows, samples, dtMs, params = RecordStackParams())`, `recordStackMemory(rows, samples, mode = rsVertical)` | Float64 sums and int32 per-sample counts of the output rows, 12 bytes a sample (20 for diversity). `ValueError` for a bad shape, interval or diversity option. |
 | `acc.rows`, `acc.samples`, `acc.dtMs`, `acc.params`, `acc.windowSamples`, `acc.workspaceSize`, `acc.countAt(row, j)` | Its shape, window (`2h + 1` samples), scratch (`3·samples + 1` float64, diversity only) and counts. |
 | `acc.add(outRow, x, ws): bool` | Add one trace to an output row, in any order (false: `outRow < 0` or a non-finite sample, nothing added). No allocation once `ws` holds `workspaceSize`. |
-| `acc.addRecord(b \| samples, [meta,] ws, rowMap = []): int` | Add a record's rows, row `r` to output row `rowMap[r]` (`-1`: skipped; empty: row `r`); with a meta only live rows, over their `liveSamples`. Returns the rows added; `ValueError` (nothing added) for a shape or map that does not fit. |
+| `acc.addRecord(b \| samples, [meta,] ws, rowMap = []): int` | Add a record's rows, row `r` to output row `rowMap[r]` (`-1`: skipped; empty: row `r`); with a meta only live rows, over their `liveSamples`. Returns the rows added; `ValueError` (nothing added) for a shape or map that does not fit, and with a meta for another interval than the stack's or a window (`firstSample > 0`). |
 | `acc.merge(other)`, `acc.clear` | Add another thread's share; zero it. |
 | `acc.stackInto(dst, norm = fnFold)`, `acc.foldInto(dst: var Tensor[int32])` | The stack `[rows, samples]`: the mean (diversity: `Σ w·x / Σ w`), × count (`fnNone`) or × √count (`fnSqrtFold`); the per-sample count. |
 

@@ -56,9 +56,9 @@ A `FirstBreakPlan` picks every live row: an optional minimum-phase band-pass
 (`lowCutHz`, `highCutHz`), one of three pickers on the trace energy (`pmStaLta`,
 `pmEnergyRatio`, `pmCoppens`), in a fixed search window (`searchStartMs`, `searchEndMs`)
 or one guided by a linear moveout (`guideVelocity`, `guideT0Ms`, `beforeMs`,
-`afterMs`). Each pick has a time (on the meta's time axis), a fractional column and a
-confidence from 0 to 1, mapped from the SNR around the pick (`lowDb` .. `highDb`). The
-input samples are not changed: the workspace holds the filtered copy.
+`afterMs`). Each pick has a time (on the meta's time axis), the block's column it is on
+and a confidence from 0 to 1, mapped from the SNR around the pick (`lowDb` .. `highDb`).
+The input samples are not changed: the workspace holds the filtered copy.
 
 ```nim
 import std/[math, random]
@@ -104,6 +104,45 @@ The overlay is `picks[row].timeMs` (or `.col` over the block). For one trace,
 `plan.pick(x, ws, offset, t0Ms)` gives the same pick; the plan is shareable across
 threads, one `Workspace` each. The module documentation compares the pickers and their
 biases (energy arrival vs onset).
+
+Zeros before a row's first and after its last non-zero sample (a recording delay,
+padding, a mute) are not data: the row is picked over its `liveSpan`, so the step from
+zeros to data is never the break. A pick with no energy at all in its noise window (the
+end of a dropout) has a NaN `snrDb` and confidence 0. A noise-free synthetic, whose break
+is that very step, is therefore not picked on it: add noise to synthetics, as the
+examples here do.
+
+**The band-pass delays picks, by more at a lower SNR.** The filter is causal, so the
+break grows out of the noise over the filter's rise time, and a picker finds it where
+it clears the noise. Median pick minus onset, in samples, for a 30 Hz onset at 2 ms in a
+guided window (400 traces, default windows):
+
+| noise, of the onset's peak | 2.6 % | 6.6 % | 13 % | 26 % |
+|---|---|---|---|---|
+| `pmStaLta` | 1.9 | 1.9 | 1.9 | 1.8 |
+| `pmStaLta`, 8–60 Hz band-pass | 7.7 | 8.7 | 9.5 | 10.3 |
+| `pmEnergyRatio` | 0.7 | 0.9 | 1.2 | 1.6 |
+| `pmEnergyRatio`, 8–60 Hz | 2.9 | 3.6 | 4.1 | 4.8 |
+| `pmCoppens` | 0.6 | 1.0 | 1.4 | 1.7 |
+| `pmCoppens`, 8–60 Hz | 2.8 | 3.6 | 9.7 | 10.7 |
+
+(Coppens with the band-pass jumps a cycle at 13 %.) Along a spread whose SNR falls with
+offset the band-passed picks therefore lag a few samples more at the far traces: harmless
+for geometry QC, a bias for a velocity read from their slope. Filter only when the noise
+needs it, and compare picks of like SNR.
+
+**Windows, zooms and threads.** With a search window (fixed or guided), `pmStaLta` and
+`pmEnergyRatio` read and band-pass only the stretch of each trace their picks depend on:
+the window, what the attribute and the confidence need around it, and the band-pass's
+settling margin before it. A guided pick on a 3000-sample trace costs what it costs on a
+300-sample one, and a later, stronger event does not move it. `plan.requiredMargin` is
+that stretch's reach in samples: a zoom window that holds as many on each side of every
+row's search window (`decodeWindow(searchColumns, plan.requiredMargin, traceLen)`) gives
+the same picks as the whole traces, bit for bit, so picks do not move as the view pans.
+A plan without a window, and `pmCoppens` (whose ratio is cumulative from the trace's
+start), read whole traces: their `requiredMargin` is `plan.samples`, and their picks do
+change with the block's first sample. `pool.pickInto(plan, samples, meta, picks)` picks
+the rows on a `ProcessPool`'s workers, with the same results.
 
 ## A refraction fit per shot
 
@@ -167,11 +206,12 @@ doAssert abs(fit.v1 - 1000) < 50 and abs(fit.v2 - 3000) < 150
 doAssert abs(fit.asymmetryMs) < 2
 ```
 
-What a swap must exceed to be found: about `Δx / v` against the model (`residualMs`,
+What a swap must exceed to be found: about `Δx / v` against the model (`maxResidualMs`,
 12 ms by default) or against the neighbours' lags (`lagToleranceMs`, 8 ms). An
 adjacent-channel swap on a fast refractor is below both; lower the thresholds for clean
-data and short groups. Pass each receiver line of a 3D shot separately. `fitShot`
-allocates a little scratch per call: it is QC, not a per-frame kernel.
+data and short groups. Pass each receiver line of a 3D shot separately. `fitShot` keeps
+its scratch in the `ShotFit`: reuse one for shot after shot and a call allocates only a
+few times, for its sorts, whatever the number of traces.
 
 ## Signal-to-noise ratios
 

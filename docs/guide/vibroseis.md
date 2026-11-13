@@ -36,7 +36,13 @@ data's anti-alias filter), and the tapers may meet but not overlap.
 recorded in the data (an auxiliary sweep or ground-force trace) becomes the same type
 through `pilotFromRow` (a row of a block you read) or `pilotFromTrace` (a trace of a
 file). `pilotKeys` and `sweepOverrides` give what parseSEG's writer needs to save a pilot
-as SEG-Y with its sweep fields.
+as SEG-Y with its sweep fields. Those fields hold whole Hz and ms: `sweepOverrides` raises
+`ValueError` for a 7.5 Hz start rather than write 8, which would be read back as the
+pilot's sweep; write such a pilot without the overrides. Reading, `pilotFromTrace` takes
+the fields as the pilot's `sweep` only when the trace can be that sweep (valid at its
+interval, no longer than the trace, and with energy in the upper half of its band):
+controllers that write the frequencies in 0.1 Hz are common, and their pilots come back
+without a description, as samples.
 
 ```nim
 import std/os
@@ -73,9 +79,14 @@ The SEG-Y binary header has the same sweep fields (3233-3248). After writing,
 
 **Sample interval.** Correlation refuses a pilot at another interval than the records.
 Vibrator controllers often log the pilot at 0.5 or 1 ms while the data are at 2 ms:
-`resamplePilot` converts it with a band-limited (Kaiser-windowed sinc) interpolation, and
-refuses when the sweep reaches above the new cutoff. A pilot you generate yourself is best
-made at the data's interval directly.
+`resamplePilot` converts it with a band-limited (Kaiser-windowed sinc) interpolation. The
+interpolator is flat up to 0.8145 of the coarser interval's Nyquist frequency with the
+defaults (203 Hz at 2 ms: `cutoffFraction − 2.736 / halfWidth`) and rolls off from there,
+so it refuses a pilot whose samples hold energy above that edge (more than 0.5 % of it;
+`energyAbove(pilot, fHz)` gives the fraction), whatever its headers say of the sweep.
+`bandLimit = true` cuts that energy instead, for records that were decimated through an
+anti-alias filter; the result is then no longer the described sweep and has none. A pilot
+you generate yourself is best made at the data's interval directly.
 
 **Instrument filter.** The data reached the recorder through its anti-alias filter (and
 perhaps a low-cut), often minimum phase. A recorded pilot went through the same filter; a
@@ -99,7 +110,7 @@ doAssert pilot.dtMs == 2 and pilot.len == 3001
 # The recorder's filters, as the decimated 2 ms data went through them: a minimum-phase
 # 3 Hz low-cut and 200 Hz high-cut, 18 dB/octave each.
 let inst = InstrumentFilter(lowCutHz: 3, lowSlopeDbPerOctave: 18,
-  highCutHz: 200, highSlopeDbPerOctave: 18, phase: ipMinimumPhase)
+  highCutHz: 200, highSlopeDbPerOctave: 18, phase: ipMinimum)
 let matched = pilot.applyInstrumentFilter(inst)
 doAssert matched.len == pilot.len and matched.dtMs == 2
 ```
@@ -200,7 +211,9 @@ doAssert leak < 1.0                                              # vertical: abo
 ```
 
 Record blocks go in with `addRecord(samples, meta, ws, rowMap)`, which adds only the live
-rows. For threads, give each its own `RecordStack` and `merge` them at the end.
+rows; the meta must be of whole records at the stack's interval (a window, or another
+`dtMs`, raises `ValueError`). For threads, give each its own `RecordStack` and `merge` them
+at the end.
 
 ## Continuous recordings
 

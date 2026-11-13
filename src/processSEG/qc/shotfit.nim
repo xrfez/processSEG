@@ -21,8 +21,9 @@
 ##   (iteratively reweighted), the crossover by a search over the picks'
 ##   offsets (at least 3 picks on each segment; up to 64 quantiles of them
 ##   on long spreads) refined by golden section, the second segment faster
-##   than the first; a single segment when that fits as well; no model
-##   when all used picks share one offset;
+##   than the first; a single segment when that fits as well (to a part in
+##   10⁶ of the misfit, or to 1e-9 ms a pick); no model when all used picks
+##   share one offset;
 ## - `rmOffsetBinned`: the median pick time in offset bins of `binWidth`,
 ##   linear between the bins' median offsets and extended linearly beyond
 ##   the end bins: for refractors no two lines describe. Bins should be
@@ -45,7 +46,7 @@
 ## `localMs` is the residual minus the median residual of the nearest
 ## `localTraces` traces with a residual on each side (itself excluded; at
 ## least 2 in all, else NaN), which removes the smooth part. A trace is suspect when `|localMs|` exceeds
-## `max(residualMs, madFactor · 1.4826 · MAD)` of the shot's local
+## `max(maxResidualMs, madFactor · 1.4826 · MAD)` of the shot's local
 ## residuals.
 ##
 ## **Cross-correlation** (the form with samples, `correlate`): each trace's
@@ -56,8 +57,12 @@
 ## `maxLagMs`. Windows at the model times align the break when the
 ## geometry is right; `lagMs` is the lag to the neighbour with the smaller
 ## `|lag|` (the better correlation breaks a tie), `coherence` that pair's
-## correlation coefficient. A trace is suspect also when it is the odd one out: its
-## lags to both neighbours exceed `lagToleranceMs` while the two
+## correlation coefficient. The lag is the neighbour's arrival minus the
+## trace's, each counted from its own model time: negative for a trace
+## that arrives late against its neighbour (its header puts it nearer the
+## source than it is), positive for one that arrives early. A trace is
+## suspect also when it is the odd one out: its lags to both neighbours
+## exceed `lagToleranceMs` while the two
 ## neighbours, correlated with each other, agree within it with a
 ## correlation coefficient of at least `minCoherence`. (The neighbour
 ## of a bad trace agrees with its other neighbour; where the model is off,
@@ -81,14 +86,15 @@
 ## **What a swap must exceed.** A trace whose header is `Δx` along the line
 ## from its true station is off the model by about `Δx / v` (`v` the
 ## velocity of the arrival there), and off by `Δx / v` from its neighbours'
-## lags. It is flagged when that exceeds `residualMs` (12 ms) or
+## lags. It is flagged when that exceeds `maxResidualMs` (12 ms) or
 ## `lagToleranceMs` (8 ms): with 25 m groups, an adjacent-channel swap on a
 ## 3000 m/s refractor (8 ms) is below both and is missed, while swaps of
 ## two stations or more, or on slower arrivals, are found. Lower the
 ## thresholds for clean data and short groups.
 ##
 ## `fitShot` resizes the `ShotFit` seqs to the shot's rows and reuses them
-## (QC is not a hot path: it allocates a little scratch per call).
+## and its scratch: after the first shot of a size, a call allocates a few
+## times (its three sorts), whatever the number of rows.
 
 import std/[algorithm, math]
 import parseSEG
@@ -107,7 +113,7 @@ type
     minConfidence*: float64 = 0.5 ## Picks below it are not used.
     binWidth*: float64 = 100      ## `rmOffsetBinned`: the offset bin width.
     localTraces*: int = 3         ## Neighbours on each side for the local median.
-    residualMs*: float64 = 12     ## The smallest `|localMs|` that flags a trace.
+    maxResidualMs*: float64 = 12  ## The largest `|localMs|` that does not flag a trace.
     madFactor*: float64 = 4       ## Robust threshold, in MADs of `localMs`.
     correlate*: bool = true       ## Cross-correlate neighbours (the form with samples).
     windowMs*: float64 = 80       ## Correlation window.
@@ -128,14 +134,15 @@ type
     modelMs*: seq[float64]             ## The model time at the header offset; NaN unknown.
     residualMs*: seq[float64]          ## Pick − model; NaN without a used pick.
     localMs*: seq[float64]             ## Residual − neighbours' median; NaN without one.
-    lagMs*: seq[float64]               ## Best neighbour lag; NaN without correlation.
+    lagMs*: seq[float64]               ## Best neighbour lag (sign: module docs); NaN without.
     coherence*: seq[float64]           ## Its correlation coefficient; NaN without.
     suspect*: seq[bool]                ## Geometry suspect.
     # Scratch, kept for reuse.
-    order: seq[int]
-    xs, ts, ws, tmp: seq[float64]
+    order, idx: seq[int]
+    xs, ts, ws, tmp, sideA, sideB: seq[float64]
     absOffset, segmentMs: seq[float64] ## |offset| per row; the two-segment model.
     bins: seq[(float64, float64)]
+    keyed: seq[(float64, int)]
 
 proc badParams(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
@@ -146,20 +153,52 @@ proc checkParams(p: ShotFitParams) =
   if not (p.binWidth > 0 and p.binWidth < Inf):
     badParams("binWidth must be finite and positive, got " & $p.binWidth)
   if p.localTraces < 1: badParams("localTraces must be ≥ 1, got " & $p.localTraces)
-  if not (p.residualMs >= 0 and p.residualMs < Inf and p.madFactor >= 0 and p.madFactor < Inf):
-    badParams("residualMs and madFactor must be finite and ≥ 0")
+  if not (p.maxResidualMs >= 0 and p.maxResidualMs < Inf and p.madFactor >= 0 and
+      p.madFactor < Inf):
+    badParams("maxResidualMs and madFactor must be finite and ≥ 0")
   if not (p.windowMs > 0 and p.windowMs < Inf and p.maxLagMs >= 0 and p.maxLagMs < Inf and
       p.lagToleranceMs >= 0 and p.lagToleranceMs < Inf):
     badParams("correlation windows must be finite (windowMs > 0, the others ≥ 0)")
   if not (p.minCoherence >= -1 and p.minCoherence <= 1):
     badParams("minCoherence must be in -1 .. 1, got " & $p.minCoherence)
 
-func median(x: var seq[float64]): float64 =
-  # The median of x (sorted in place); NaN when empty.
+func select(x: var openArray[float64], k: int): float64 =
+  # The k-th smallest of x (from 0), reordering x so that nothing before k
+  # is larger and nothing after it smaller: a quickselect, median of three
+  # pivots. No allocation (a sort has its buffer).
+  var lo = 0
+  var hi = x.high
+  while lo < hi:
+    let mid = (lo + hi) shr 1
+    if x[mid] < x[lo]: swap(x[mid], x[lo])
+    if x[hi] < x[lo]: swap(x[hi], x[lo])
+    if x[hi] < x[mid]: swap(x[hi], x[mid])
+    let pivot = x[mid]
+    var i = lo
+    var j = hi
+    while i <= j:
+      while x[i] < pivot: inc i
+      while pivot < x[j]: dec j
+      if i <= j:
+        swap(x[i], x[j])
+        inc i
+        dec j
+    if k <= j: hi = j
+    elif k >= i: lo = i
+    else: return x[k]
+  x[k]
+
+func median(x: var openArray[float64]): float64 =
+  # The median of x (reordered); NaN when empty. The same value as from a
+  # sort: the middle one, or the mean of the two middle ones.
   if x.len == 0: return NaN
-  x.sort()
   let m = x.len div 2
-  if x.len mod 2 == 1: x[m] else: (x[m - 1] + x[m]) / 2
+  let upper = select(x, m)
+  if x.len mod 2 == 1: upper
+  else:
+    var lower = x[0]
+    for i in 1 ..< m: lower = max(lower, x[i])
+    (lower + upper) / 2
 
 # ------------------------------------------------------------- positions --
 
@@ -221,7 +260,8 @@ proc positionsInto(meta: ChunkMeta, pos: var seq[float64]) =
              elif channels: q.channel
              else: float64(r)
 
-proc sortByKey(idx: var seq[int], key: openArray[float64]) {.raises: [].}
+proc sortByKey(idx: var seq[int], key: openArray[float64],
+    keyed: var seq[(float64, int)]) {.raises: [].}
 
 # ----------------------------------------------------------------- models --
 
@@ -309,7 +349,10 @@ proc fitTwoSegment(fit: var ShotFit) =
     if xc == last or xc <= fit.tmp[0] or xc >= fit.tmp[n - 1]: continue
     last = xc
     let s = l1Fit(fit.xs, fit.ts, fit.ws, xc, c)
-    if s < best * (1 - 1e-6) and valid(c):
+    # A second segment must lower the misfit by a part in 10⁶ and by more
+    # than rounding leaves of an exact fit (1e-9 ms a pick): picks on one
+    # line have a misfit near 1e-13, and any split "improves" on that.
+    if s < best * (1 - 1e-6) and best - s > 1e-9 * float64(n) and valid(c):
       best = s
       bestC = c
       bestXc = xc
@@ -363,34 +406,34 @@ proc fitTwoSegment(fit: var ShotFit) =
 
 proc fitBinned(fit: var ShotFit, width: float64) =
   # Median offset and time per bin, ascending; linear between and beyond.
-  var idx = newSeq[int](fit.xs.len)
-  for i in 0 ..< fit.xs.len: idx[i] = i
-  sortByKey(idx, fit.xs)
+  # All in the fit's own scratch: nothing is allocated per bin or per row.
+  fit.idx.setLen fit.xs.len
+  for i in 0 ..< fit.xs.len: fit.idx[i] = i
+  sortByKey(fit.idx, fit.xs, fit.keyed)
   fit.bins.setLen 0
   var i = 0
-  var bx, bt: seq[float64]
-  while i < idx.len:
-    let b = floor(fit.xs[idx[i]] / width)
-    bx.setLen 0
-    bt.setLen 0
-    while i < idx.len and floor(fit.xs[idx[i]] / width) == b:
-      bx.add fit.xs[idx[i]]
-      bt.add fit.ts[idx[i]]
+  while i < fit.idx.len:
+    let b = floor(fit.xs[fit.idx[i]] / width)
+    fit.sideA.setLen 0
+    fit.sideB.setLen 0
+    while i < fit.idx.len and floor(fit.xs[fit.idx[i]] / width) == b:
+      fit.sideA.add fit.xs[fit.idx[i]]
+      fit.sideB.add fit.ts[fit.idx[i]]
       inc i
-    fit.bins.add (median(bx), median(bt))
+    fit.bins.add (median(fit.sideA), median(fit.sideB))
+  template bs: untyped = fit.bins # in place: a `let` copied the bins for every row
   for r in 0 ..< fit.absOffset.len:
     let x = fit.absOffset[r]
-    if x.isNaN: continue
-    let bs = fit.bins
-    var t: float64
-    if bs.len == 1: t = bs[0][1]
-    else:
-      # The segment holding x; the end segments extend beyond the bins.
-      var k = 0
-      while k + 2 < bs.len and bs[k + 1][0] < x: inc k
-      let f = (x - bs[k][0]) / (bs[k + 1][0] - bs[k][0])
-      t = bs[k][1] + f * (bs[k + 1][1] - bs[k][1])
-    fit.modelMs[r] = t
+    if not x.isNaN:
+      var t: float64
+      if bs.len == 1: t = bs[0][1]
+      else:
+        # The segment holding x; the end segments extend beyond the bins.
+        var k = 0
+        while k + 2 < bs.len and bs[k + 1][0] < x: inc k
+        let f = (x - bs[k][0]) / (bs[k + 1][0] - bs[k][0])
+        t = bs[k][1] + f * (bs[k + 1][1] - bs[k][1])
+      fit.modelMs[r] = t
 
 # ------------------------------------------------------------ correlation --
 
@@ -424,7 +467,7 @@ proc correlateInto[T](fit: var ShotFit, b: RowBlock[T], meta: ChunkMeta,
   # window or lag can usefully exceed the block.
   let m = int(clamp(round(p.windowMs / dt), 2.0, float64(max(2, b.cols))))
   let maxLag = int(min(round(p.maxLagMs / dt), float64(b.cols)))
-  let ord = fit.order
+  template ord: untyped = fit.order
   template startCol(r: int): int =
     # The window's first column: windowMs / 4 before the model time.
     let t0 = meta.keys(r).t0Ms
@@ -457,12 +500,14 @@ proc correlateInto[T](fit: var ShotFit, b: RowBlock[T], meta: ChunkMeta,
 
 # -------------------------------------------------------------------- fit --
 
-proc sortByKey(idx: var seq[int], key: openArray[float64]) {.raises: [].} =
-  # Sorts idx by key[idx[i]], stable (ties keep their order).
-  var pairs = newSeq[(float64, int)](idx.len)
-  for i, v in idx: pairs[i] = (key[v], v)
-  pairs.sort() # by key, then index: a stable order (no closure: raises nothing)
-  for i in 0 ..< idx.len: idx[i] = pairs[i][1]
+proc sortByKey(idx: var seq[int], key: openArray[float64],
+    keyed: var seq[(float64, int)]) {.raises: [].} =
+  # Sorts idx by key[idx[i]], stable (ties keep their order), with `keyed`
+  # as its scratch.
+  keyed.setLen idx.len
+  for i, v in idx: keyed[i] = (key[v], v)
+  keyed.sort() # by key, then index: a stable order (no closure: raises nothing)
+  for i in 0 ..< idx.len: idx[i] = keyed[i][1]
 
 proc fitPicks(meta: ChunkMeta, picks: openArray[FirstBreakPick], p: ShotFitParams,
     fit: var ShotFit) =
@@ -488,7 +533,7 @@ proc fitPicks(meta: ChunkMeta, picks: openArray[FirstBreakPick], p: ShotFitParam
   fit.order.setLen 0
   for r in 0 ..< n:
     if not fit.position[r].isNaN: fit.order.add r
-  sortByKey(fit.order, fit.position)
+  sortByKey(fit.order, fit.position, fit.keyed)
   # The confident picks; |offset| of every live row with one, in modelMs.
   fit.xs.setLen 0
   fit.ts.setLen 0
@@ -516,7 +561,7 @@ proc fitPicks(meta: ChunkMeta, picks: openArray[FirstBreakPick], p: ShotFitParam
     if meta.isLive(r) and not q.timeMs.isNaN and q.confidence >= p.minConfidence:
       fit.residualMs[r] = q.timeMs - fit.modelMs[r]
   # Local residuals along the spread: minus the neighbours' median.
-  let ord = fit.order
+  template ord: untyped = fit.order
   for k in 0 ..< ord.len:
     let r = ord[k]
     if fit.residualMs[r].isNaN: continue
@@ -540,16 +585,18 @@ proc fitPicks(meta: ChunkMeta, picks: openArray[FirstBreakPick], p: ShotFitParam
   let mid = median(fit.tmp)
   for v in fit.tmp.mitems: v = abs(v - mid)
   let mad = median(fit.tmp)
-  fit.threshold = max(p.residualMs, p.madFactor * 1.4826 * (if mad.isNaN: 0.0 else: mad))
+  fit.threshold = max(p.maxResidualMs, p.madFactor * 1.4826 * (if mad.isNaN: 0.0 else: mad))
   for r in 0 ..< n:
     if abs(fit.localMs[r]) > fit.threshold: fit.suspect[r] = true
   # Symmetry: negative side minus positive side.
-  var neg, pos: seq[float64]
+  fit.sideA.setLen 0
+  fit.sideB.setLen 0
   for r in 0 ..< n:
     let x = fit.position[r]
-    if fit.residualMs[r].isNaN or x.isNaN or x == 0: continue
-    if x < 0: neg.add fit.residualMs[r] else: pos.add fit.residualMs[r]
-  if neg.len > 0 and pos.len > 0: fit.asymmetryMs = median(neg) - median(pos)
+    if not (fit.residualMs[r].isNaN or x.isNaN or x == 0):
+      if x < 0: fit.sideA.add fit.residualMs[r] else: fit.sideB.add fit.residualMs[r]
+  if fit.sideA.len > 0 and fit.sideB.len > 0:
+    fit.asymmetryMs = median(fit.sideA) - median(fit.sideB)
 
 proc fitShot*(meta: ChunkMeta, picks: openArray[FirstBreakPick], params: ShotFitParams,
     fit: var ShotFit) =

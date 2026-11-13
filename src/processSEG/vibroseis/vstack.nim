@@ -110,16 +110,15 @@ type
 proc badArg(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
 
-func recordStackMemory*(T: typedesc[SampleType], rows, samples: int,
-    mode = rsVertical): int =
+func recordStackMemory*(rows, samples: int, mode = rsVertical): int =
   ## The bytes a stack of `rows × samples` holds: 12 per sample (20 for
-  ## `rsDiversity`), whatever `T`.
+  ## `rsDiversity`), whatever the sample type (the sums are float64).
   rows * samples * (if mode == rsDiversity: 20 else: 12)
 
 proc initRecordStack*[T: SampleType](rows, samples: int, dtMs: float64,
     params = RecordStackParams()): RecordStack[T] =
   ## An empty stack of `rows` traces of `samples` samples at `dtMs` ms.
-  ## Allocates `recordStackMemory(T, rows, samples, params.mode)` bytes,
+  ## Allocates `recordStackMemory(rows, samples, params.mode)` bytes,
   ## zeroed. Raises `ValueError` unless `rows` and `samples` are ≥ 0 (and
   ## their product does not overflow) and `dtMs` is finite and positive, and,
   ## for `rsDiversity`, unless `windowMs` is finite and at least about 3
@@ -361,11 +360,18 @@ proc addRecord*[T](acc: var RecordStack[T], b: RowBlock[T], meta: ChunkMeta,
   ## `liveSamples`, row `r` to output row `rowMap[r]` (`< 0`: skipped; an
   ## empty map: row `r`). Returns the rows added (not counting skipped,
   ## non-live and non-finite rows). Raises `ValueError`, adding nothing,
-  ## when `meta` does not match `b`, `b` is wider than `samples`, or the map
-  ## does not have one entry per row within the stack's rows.
+  ## when `meta` does not match `b`, `b` is wider than `samples`, the
+  ## record's interval is not the stack's, the meta is of a window
+  ## (`firstSample > 0`: column 0 would be stacked onto sample 0), or the
+  ## map does not have one entry per row within the stack's rows.
   meta.checkShape(b)
   if b.cols > acc.samples:
     badArg("the record has " & $b.cols & " samples, the stack " & $acc.samples)
+  if abs(meta.dtMs - acc.dtMs) > 1e-9 * acc.dtMs:
+    badArg("the record is at " & $meta.dtMs & " ms, the stack at " & $acc.dtMs & " ms")
+  if meta.firstSample != 0:
+    badArg("stacking needs whole records from sample 0, got firstSample " &
+      $meta.firstSample)
   acc.checkMap(b.len, rowMap)
   for r in 0..<b.len:
     let o = rowMap.outRowOf(r)
@@ -375,7 +381,9 @@ proc addRecord*[T](acc: var RecordStack[T], b: RowBlock[T], meta: ChunkMeta,
 proc addRecord*[T](acc: var RecordStack[T], b: RowBlock[T], ws: var Workspace,
     rowMap: openArray[int] = []): int =
   ## Adds every row of the record `b`, in full, as the `ChunkMeta` form does
-  ## (no row is dead without a meta). Raises `ValueError` as that form.
+  ## (no row is dead without a meta, and the caller answers for the
+  ## interval and for column 0 being sample 0). Raises `ValueError` as that
+  ## form for the width and the map.
   if b.cols > acc.samples:
     badArg("the record has " & $b.cols & " samples, the stack " & $acc.samples)
   acc.checkMap(b.len, rowMap)
@@ -398,9 +406,9 @@ proc addRecord*[T](acc: var RecordStack[T], samples: Tensor[T], ws: var Workspac
 proc merge*[T](acc: var RecordStack[T], other: RecordStack[T]) =
   ## Adds the sums and counts of `other` (another thread's share of the same
   ## stack) into `acc`. Raises `ValueError` unless they have the same shape,
-  ## interval and parameters.
+  ## interval (within a relative 1e-9) and parameters.
   if other.rows != acc.rows or other.samples != acc.samples or
-      other.dtMs != acc.dtMs or other.params != acc.params:
+      abs(other.dtMs - acc.dtMs) > 1e-9 * acc.dtMs or other.params != acc.params:
     badArg("merging a " & $other.rows & " × " & $other.samples & " record stack into a " &
       $acc.rows & " × " & $acc.samples & " one, or with another interval or parameters")
   {.push boundChecks: off, overflowChecks: off.}

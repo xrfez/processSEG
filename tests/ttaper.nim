@@ -81,3 +81,20 @@ block segy_codes:
   doAssert tpLinear.segyTaperType == 1 and tpCos2.segyTaperType == 2
   for s in [tpCosine, tpHamming, tpBlackman, tpBlackmanHarris, tpKaiser, tpGaussian, tpPower]:
     doAssert s.segyTaperType == 3
+
+block a_taper_built_as_an_object_takes_its_shape_default:
+  # `param` is NaN unless given, and NaN is the shape's default wherever a
+  # taper is used: as a plain zero it made a Kaiser taper of β = 0, which
+  # tapers nothing, and a Gaussian or power one invalid.
+  for shape in [tpKaiser, tpGaussian, tpPower]:
+    let built = SweepTaper(startMs: 4, endMs: 4, shape: shape)
+    doAssert built.param.isNaN
+    built.validate
+    var x, y = newSeq[float64](21)
+    for j in 0 ..< x.len:
+      x[j] = 1
+      y[j] = 1
+    x.applyTaper(1, built)
+    y.applyTaper(1, initSweepTaper(4, 4, shape))
+    doAssert x == y and x[1] < 0.9 and x[10] == 1, $shape & ": " & $x[0 .. 4]
+  doAssert SweepTaper().param.isNaN and noTaper().param.isNaN

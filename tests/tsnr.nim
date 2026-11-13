@@ -343,6 +343,88 @@ block coherence_nan_cases:
   coherenceSnrInto(bad.data, initChunkMeta(bad.rows, cohDt), 10, ws, est)
   doAssert est[20].isNaN and est[15].isNaN and not est[14].isNaN and not est[26].isNaN
 
+proc coherenceByDefinition(d: Tensor[float64], cols, h: int, floorDb: float64): seq[float64] =
+  ## The estimator of the module documentation, each column's window summed
+  ## on its own (every row live from its first to its last non-zero sample).
+  let rows = d.shape[0]
+  var c, res, cnt = newSeq[float64](cols)
+  for j in 0 ..< cols:
+    var sum = 0.0
+    for r in 0 ..< rows:
+      var first = 0
+      while first < cols and d[r, first] == 0: inc first
+      var last = cols - 1
+      while last >= 0 and d[r, last] == 0: dec last
+      if j in first .. last:
+        sum += d[r, j]
+        cnt[j] += 1
+    if cnt[j] > 0:
+      let m = sum / cnt[j]
+      for r in 0 ..< rows:
+        var first = 0
+        while first < cols and d[r, first] == 0: inc first
+        var last = cols - 1
+        while last >= 0 and d[r, last] == 0: dec last
+        if j in first .. last: res[j] += (d[r, j] - m) * (d[r, j] - m)
+      c[j] = cnt[j] * m * m
+  for j in 0 ..< cols:
+    var sr, sc, sn, sw = 0.0
+    for t in max(0, j - h) .. min(cols - 1, j + h):
+      if cnt[t] > 0:
+        sr += res[t]
+        sc += c[t]
+        sn += cnt[t]
+        sw += 1
+    let dof = sn - sw
+    if not (dof > 0): result.add NaN
+    else:
+      let noise = sr / dof
+      let signal = (sc - sw * noise) / sn
+      result.add (if noise.isNaN or signal.isNaN: NaN
+        elif noise == 0: (if signal > 0: Inf else: NaN)
+        elif signal / noise > 0: max(10 * log10(signal / noise), floorDb)
+        else: floorDb)
+
+block coherence_window_sums_against_the_definition:
+  # The window sums come from block sums, in a time that does not depend
+  # on the window. Against a loop over every window: equal within 1e-9 dB
+  # for windows of 1 sample to more than the block, with mutes (columns of
+  # fewer rows, and of none), a loud stretch before a quiet one, and a NaN,
+  # which spoils the windows that hold it and no other.
+  const (rows, cols) = (7, 157)
+  var keys = liveKeys(rows, cohDt)
+  var g = initSynthGather[float64](keys, cols, cohDt)
+  for r in 0 ..< rows:
+    var x = newSeq[float64](cols)
+    x.addNoise(1, 800 + r)
+    x.addSinusoid(cohDt, 20, amp = 2)
+    for j in 0 ..< cols:
+      g.data[r, j] = x[j] * (if j < 40: 1e4 else: 1.0) # loud, then quiet
+    for j in 0 ..< 13 * (r mod 3): g.data[r, j] = 0 # top mutes
+    for j in cols - 9 * (r mod 2) ..< cols: g.data[r, j] = 0
+  for r in 0 ..< rows:
+    for j in 100 .. 103: g.data[r, j] = (if r > 0: 0.0 else: g.data[r, j]) # one row only
+  let meta = initChunkMeta(g.rows, cohDt)
+  var ws = initWorkspace()
+  ws.reserve(coherenceSnrWorkspace(cols))
+  var est = newSeq[float64](cols)
+  for withNaN in [false, true]:
+    if withNaN: g.data[3, 70] = NaN
+    for h in [0, 1, 2, 5, 20, 78, 79, 156, 157, 400]:
+      let windowMs = max(float64(2 * h) * cohDt, 0.5 * cohDt)
+      for floorDb in [-40.0, -Inf]:
+        coherenceSnrInto(g.data, meta, windowMs, ws, est, floorDb = floorDb)
+        let want = coherenceByDefinition(g.data, cols, min(h, cols), floorDb)
+        for j in 0 ..< cols:
+          doAssert (est[j].isNaN and want[j].isNaN) or est[j] == want[j] or
+            abs(est[j] - want[j]) < 1e-9, "h " & $h & " column " & $j & ": " & $est[j] &
+            " vs " & $want[j]
+          if withNaN: doAssert est[j].isNaN == (abs(j - 70) <= h), $h & " " & $j
+  # A workspace reserved for a narrower block is refused.
+  var small = initWorkspace()
+  small.reserve(coherenceSnrWorkspace(cols - 1))
+  doAssertRaises ValueError: coherenceSnrInto(g.data, meta, 20, small, est)
+
 block errors:
   var g = shot(0.1)
   let meta = initChunkMeta(g.rows, dt)

@@ -236,3 +236,99 @@ What changed (each measured, cachegrind first):
 `tvectorized` now also checks `moveoutCols` and `l1Fit` for packed instructions in release
 and danger builds. `nim testRelease` passed (34 files, release and danger) after these
 changes.
+
+### First-break picking in a search window
+
+`bench/bprestack.nim`, the same shot, every pick guided by the refraction
+(`guideVelocity` 2500, 50 ms before and 100 ms after it: 76 of the 2001 columns), one
+thread.
+
+2026-11-12, AMD Ryzen 9 3950X, Nim 2.4.0, gcc 12.2.0,
+`-d:danger --opt:speed --debuginfo:on --linedir:on -march=x86-64-v3`, medians:
+
+| `pickInto`, guided | whole traces read | the window's stretch read |
+|---|---|---|
+| STA/LTA, MER, Coppens | 20.1 / 5.7 / 10.3 ms | 1.36 / 1.04 / 5.55 ms |
+| the same with a 5–60 Hz band-pass | 42.9 / 28.4 / 33.1 ms | 5.84 / 5.21 / 28.1 ms |
+
+- With a search window, STA/LTA and the energy ratio depend on the window's columns and a
+  bounded stretch around them (the STA and LTA or the ratio's windows, the confidence's
+  windows, the causal band-pass's `requiredMargin` before them). `pickInto` and `pick` now
+  copy, band-pass and scan that stretch alone, where they read every trace to its end; the
+  band-pass runs in the same lanes as before, on the stretches. On 2000 traces of 3000
+  samples with a 150 ms window (the reviewer's case, minima of 9): energy ratio 8.2 → 1.0 ms,
+  with an 8–60 Hz band-pass 40.7 → 4.0 ms; STA/LTA 30.1 → 1.3 ms and 62.7 → 4.3 ms.
+- The picks: without a band-pass, the same column on every trace of that case and of
+  21 600 others (three shots, three noise levels, with and without ground roll, guided and
+  fixed windows); the SNR within 0.002 dB (its stabilization is now relative to the stretch).
+  With a band-pass the filter starts at the stretch, not at the trace, and is not preceded
+  by a detrend: 5 of 12 000 picks of the reviewer's case move (four by one sample, one by
+  four, on flat maxima), the mean pick error stays the same to 0.01 ms.
+- Coppens reads the whole trace (its ratio is cumulative from the trace's start and its
+  stabilization relative to the whole trace): same picks, bit for bit. It gains only from
+  its ratio being computed about the window instead of everywhere.
+
+## QC and vibroseis
+
+`nim bench` (bench/bqc.nim), one thread: amplitude QC of a 2000 × 3000 float32 panel, the
+coherence SNR of a 24 × 6000 gather, the correlation of 200 records of 20 s at 2 ms with a
+12 s sweep (nfft 16200) and of one such record, the shot fit of 2000 picks, the resampling
+of a 30 s pilot at 0.25 ms.
+
+2026-11-13, AMD Ryzen 9 3950X, Nim 2.4.0, gcc 12.2.0,
+`-d:danger --opt:speed --debuginfo:on --linedir:on -march=x86-64-v3`, medians:
+
+| operation | before | after |
+|---|---|---|
+| `traceAmplitudeInto`, 2000 × 3000 | 38.6 ms (6.4 ns a sample) | 14.2 ms (2.4 ns) |
+| `coherenceSnrInto`, window 0.1 / 1 / 12 s | 0.375 / 2.42 / 21.0 ms | 0.153 / 0.162 / 0.185 ms |
+| `correlateInto`, 200 records | 7.90 ms (39.5 µs a record) | 6.18 ms (30.9 µs) |
+| `correlateInto`, one record | 254 µs | 86 µs |
+| `fitShot` on 2000 picks, two-segment / binned | 22.6 / 22.8 ms, 1793 / 4111 allocations | 22.3 / 22.4 ms, 2 / 3 allocations |
+| `resamplePilot` to 4 ms / to 0.5 ms | 265 / 259 ms | 5.4 / 5.9 ms |
+
+- **Amplitude QC.** One loop per trace did the sums, the extremes and a finite test
+  sample by sample, a second the clip runs, a third a sliding sum of squares that had to
+  be rebuilt whenever a large term left it. Now: `Σx` and `Σx²` in eight partial sums; the
+  extremes, the finite test and the constant test as three integer reductions on the
+  samples' bits (float `min`/`max` reductions do not vectorize: they would have to be
+  reordered); a vector count of the samples at the maximum, so that only the traces with
+  `clipRun` of them (few) get the run by run pass; and for the spikes the window sums from
+  per-block suffix and prefix sums (no subtraction, so no rebuilding), with the loop over
+  the windows not cut by the trace's ends straight-line, in vectors. A trace with a NaN
+  or an Inf takes the former sample by sample path. Counts and flags are the same on all
+  8800 traces of a comparison (spikes, clips, DC, quantized, short, constant and dead
+  ones); the mean differs in the 13th digit on three (the order of the sums). The spike
+  pass's sums need `2·cols + 1` float64, hence the `Workspace` the call now takes. What
+  is left is mostly two serial sums per sample for the block sums, about 1 ns.
+- **Coherence SNR.** Each output column summed its window: cols × window operations. The
+  four window sums now come from block sums (the residual and the coherent energy, as
+  suffix plus prefix of blocks one window long: no subtraction, so a quiet window after a
+  loud one keeps its precision and a NaN stays in its own windows) and from running sums
+  (the two counts, whole numbers, exact as differences): the time no longer depends on the
+  window. Equal to a loop over every window within 1e-9 dB (tested with a 10⁴ : 1 loud and
+  quiet stretch); the scratch grows from 3 to 6 arrays of `cols`.
+- **Correlation, a block.** The two FFTs are 5.3 of the 6.2 ms now; what was around them
+  cost half as much again. The spectrum's multiplication by the pilot's was vectorized
+  across bins, shuffling the eight lanes in and out of each register (17.3 ms for 250
+  batches of 8101 bins on its own; 4.1 ms as one vector operation per bin, which a kernel
+  that is not inlined gets). The lane buffer is filled and read sample by sample, one pass
+  with a stream per record, and zeroed only past the longest record, where it was zeroed
+  whole and then written lane by lane (9.8 → 3.3 ms and 6.9 → 3.1 ms for 2000 records).
+  2000 records: 77.8 → 64.4 ms.
+- **Correlation, one record.** It ran the eight-lane path with seven empty lanes; it now
+  takes the one-trace FFT.
+- The outputs are equal to the last bit or one from it: 3727 of 105 064 values of four
+  cases differ, by at most 1.9e-8 at a peak of 0.2 (a float32's rounding; the products are
+  fused in another order), and the one-record form agrees with its row of the block form
+  to the same.
+- **Shot fit.** A call allocated once or twice per row: the median of each trace's
+  neighbours sorted a seq (the sort's buffer), and the binned model copied its bins for
+  every row. The medians now select in place (the same values), and every list is scratch
+  kept in the `ShotFit`; what is left is the buffers of the three sorts of a call. The
+  time is the L1 fit's and hardly moves; the outputs are the same to the last bit (five
+  shots of 7 to 2000 rows, both models, with and without samples).
+- **Resampling.** A Bessel series and a sine per tap of every output sample became one
+  kernel per phase of the two intervals' ratio (one for 0.25 → 4 ms, two for 0.25 → 0.5 ms),
+  tabulated once, and a dot product per output. (Before: 24 samples of the coarser
+  interval a side; after: 32, the new default.)

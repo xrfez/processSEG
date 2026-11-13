@@ -7,7 +7,7 @@
 import std/[assertions, math]
 import processSEG
 import parseSEG
-import utils/synth
+import utils/[allocs, synth]
 
 const
   dt = 2.0
@@ -122,6 +122,22 @@ block correlation_without_picks:
   doAssert fit.residualMs[30].isNaN and fit.localMs[30].isNaN
   doAssert suspects(fit) == @[30, 36], $suspects(fit)
 
+block the_sign_of_a_lag:
+  # A trace whose data come 10 ms late against its neighbours' (its header
+  # as it was) has a negative lag; one that comes early, a positive one.
+  for shift in [5, -5]: # samples
+    var s = makeShot(5000)
+    let picks = pickAll(s.g)
+    var row = newSeq[float32](cols)
+    for j in 0 ..< cols:
+      if j - shift in 0 ..< cols: row[j] = s.g.data[60, j - shift]
+    for j in 0 ..< cols: s.g.data[60, j] = row[j]
+    let meta = initChunkMeta(s.g.rows, dt)
+    var fit: ShotFit
+    fitShot(s.g.data, meta, picks, ShotFitParams(), fit)
+    doAssert abs(fit.lagMs[60] + float64(shift) * dt) <= dt, $shift & ": " & $fit.lagMs[60]
+    doAssert abs(fit.lagMs[40]) <= dt
+
 block noisy_picks:
   # Noisier traces and a few wild picks: the wild ones are flagged by the
   # residuals (a bad pick looks like bad geometry, which is why the lags
@@ -210,6 +226,23 @@ block degenerate_fits:
   var fit: ShotFit
   fitShot(meta, picks, ShotFitParams(), fit)
   doAssert fit.v1.isNaN and fit.modelMs[0].isNaN and suspects(fit).len == 0
+  # Picks that one line fits to rounding are one segment. A second one that
+  # lowers the misfit from 1e-13 to 1e-14 ms describes nothing (flat picks
+  # came back as two segments of 2e19 and 8e19 units/s meeting at 425).
+  var line = makeShot(5000, offsets = endOn(24, 25, 25))
+  let lmeta = initChunkMeta(line.g.rows, dt)
+  var lp = newSeq[FirstBreakPick](line.g.len)
+  for slowness in [0.0, 0.5]: # flat; 2000 units/s
+    for r in 0 ..< line.g.len:
+      lp[r] = FirstBreakPick(timeMs: 100 + slowness * abs(line.g.keys[r].offset), col: 0,
+        snrDb: 30, confidence: 1)
+    fitShot(lmeta, lp, ShotFitParams(), fit)
+    doAssert fit.used == 24 and fit.crossover == Inf and fit.v2.isNaN, $slowness & ": " &
+      $fit.crossover & " " & $fit.v2
+    doAssert abs(fit.interceptMs - 100) < 1e-6 and suspects(fit).len == 0
+    for r in 0 ..< line.g.len: doAssert abs(fit.residualMs[r]) < 1e-6
+    if slowness > 0: doAssert abs(fit.v1 - 2000) < 1e-3, $fit.v1
+    else: doAssert fit.v1.isNaN or fit.v1 > 1e9, $fit.v1 # no slope: no velocity
   # A long spread (2000 traces) fits quickly: crossover candidates are capped.
   var big = makeShot(50_000, offsets = splitSpread(1000, 5, 5))
   var bp = newSeq[FirstBreakPick](big.g.len)
@@ -218,6 +251,27 @@ block degenerate_fits:
   let bmeta = initChunkMeta(big.g.rows, dt)
   fitShot(bmeta, bp, ShotFitParams(), fit)
   doAssert abs(fit.v2 - v1) < 100 and suspects(fit).len == 0, $fit.v2 & " " & $suspects(fit)
+
+block a_fit_allocates_a_few_times_whatever_the_rows:
+  # The medians select in place and every list is the fit's own scratch:
+  # once a ShotFit has seen a shot of a size, a call allocates for its
+  # sorts only (it was once or twice per row: 1793 and 4111 for the two
+  # models on 2000 rows). A reused fit gives what a fresh one gives.
+  var big = makeShot(50_000, sigma = 0.05, offsets = splitSpread(1000, 5, 5))
+  let picks = pickAll(big.g)
+  let meta = initChunkMeta(big.g.rows, dt)
+  for model in RefractionModel:
+    let p = ShotFitParams(model: model)
+    var fit: ShotFit
+    fitShot(meta, picks, p, fit)
+    let allocs = allocsIn(fitShot(meta, picks, p, fit))
+    doAssert allocs <= 4, $model & ": " & $allocs & " allocations"
+    var fresh: ShotFit
+    fitShot(meta, picks, p, fresh)
+    doAssert fresh.used == fit.used and fresh.v1 == fit.v1 and fresh.threshold == fit.threshold
+    doAssert fresh.suspect == fit.suspect and fresh.asymmetryMs == fit.asymmetryMs
+    for r in 0 ..< meta.len:
+      doAssert fresh.localMs[r] == fit.localMs[r] or fresh.localMs[r].isNaN
 
 block too_few_picks_and_errors:
   var s = makeShot(5000)
