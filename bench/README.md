@@ -284,6 +284,7 @@ of a 30 s pilot at 0.25 ms.
 | `coherenceSnrInto`, window 0.1 / 1 / 12 s | 0.375 / 2.42 / 21.0 ms | 0.153 / 0.162 / 0.185 ms |
 | `correlateInto`, 200 records | 7.90 ms (39.5 µs a record) | 6.18 ms (30.9 µs) |
 | `correlateInto`, one record | 254 µs | 86 µs |
+| `fitShot` on 2000 picks, two-segment / binned | 22.6 / 22.8 ms, 1793 / 4111 allocations | 22.3 / 22.4 ms, 2 / 3 allocations |
 | `resamplePilot` to 4 ms / to 0.5 ms | 265 / 259 ms | 5.4 / 5.9 ms |
 
 - **Amplitude QC.** One loop per trace did the sums, the extremes and a finite test
@@ -321,6 +322,12 @@ of a 30 s pilot at 0.25 ms.
   cases differ, by at most 1.9e-8 at a peak of 0.2 (a float32's rounding; the products are
   fused in another order), and the one-record form agrees with its row of the block form
   to the same.
+- **Shot fit.** A call allocated once or twice per row: the median of each trace's
+  neighbours sorted a seq (the sort's buffer), and the binned model copied its bins for
+  every row. The medians now select in place (the same values), and every list is scratch
+  kept in the `ShotFit`; what is left is the buffers of the three sorts of a call. The
+  time is the L1 fit's and hardly moves; the outputs are the same to the last bit (five
+  shots of 7 to 2000 rows, both models, with and without samples).
 - **Resampling.** A Bessel series and a sine per tap of every output sample became one
   kernel per phase of the two intervals' ratio (one for 0.25 → 4 ms, two for 0.25 → 0.5 ms),
   tabulated once, and a dot product per output. (Before: 24 samples of the coarser

@@ -209,8 +209,9 @@ doAssert abs(fit.asymmetryMs) < 2
 What a swap must exceed to be found: about `Δx / v` against the model (`maxResidualMs`,
 12 ms by default) or against the neighbours' lags (`lagToleranceMs`, 8 ms). An
 adjacent-channel swap on a fast refractor is below both; lower the thresholds for clean
-data and short groups. Pass each receiver line of a 3D shot separately. `fitShot`
-allocates a little scratch per call: it is QC, not a per-frame kernel.
+data and short groups. Pass each receiver line of a 3D shot separately. `fitShot` keeps
+its scratch in the `ShotFit`: reuse one for shot after shot and a call allocates only a
+few times, for its sorts, whatever the number of traces.
 
 ## Signal-to-noise ratios
 

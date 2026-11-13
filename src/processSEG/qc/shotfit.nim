@@ -92,7 +92,8 @@
 ## thresholds for clean data and short groups.
 ##
 ## `fitShot` resizes the `ShotFit` seqs to the shot's rows and reuses them
-## (QC is not a hot path: it allocates a little scratch per call).
+## and its scratch: after the first shot of a size, a call allocates a few
+## times (its three sorts), whatever the number of rows.
 
 import std/[algorithm, math]
 import parseSEG
@@ -136,10 +137,11 @@ type
     coherence*: seq[float64]           ## Its correlation coefficient; NaN without.
     suspect*: seq[bool]                ## Geometry suspect.
     # Scratch, kept for reuse.
-    order: seq[int]
-    xs, ts, ws, tmp: seq[float64]
+    order, idx: seq[int]
+    xs, ts, ws, tmp, sideA, sideB: seq[float64]
     absOffset, segmentMs: seq[float64] ## |offset| per row; the two-segment model.
     bins: seq[(float64, float64)]
+    keyed: seq[(float64, int)]
 
 proc badParams(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
@@ -159,12 +161,43 @@ proc checkParams(p: ShotFitParams) =
   if not (p.minCoherence >= -1 and p.minCoherence <= 1):
     badParams("minCoherence must be in -1 .. 1, got " & $p.minCoherence)
 
-func median(x: var seq[float64]): float64 =
-  # The median of x (sorted in place); NaN when empty.
+func select(x: var openArray[float64], k: int): float64 =
+  # The k-th smallest of x (from 0), reordering x so that nothing before k
+  # is larger and nothing after it smaller: a quickselect, median of three
+  # pivots. No allocation (a sort has its buffer).
+  var lo = 0
+  var hi = x.high
+  while lo < hi:
+    let mid = (lo + hi) shr 1
+    if x[mid] < x[lo]: swap(x[mid], x[lo])
+    if x[hi] < x[lo]: swap(x[hi], x[lo])
+    if x[hi] < x[mid]: swap(x[hi], x[mid])
+    let pivot = x[mid]
+    var i = lo
+    var j = hi
+    while i <= j:
+      while x[i] < pivot: inc i
+      while pivot < x[j]: dec j
+      if i <= j:
+        swap(x[i], x[j])
+        inc i
+        dec j
+    if k <= j: hi = j
+    elif k >= i: lo = i
+    else: return x[k]
+  x[k]
+
+func median(x: var openArray[float64]): float64 =
+  # The median of x (reordered); NaN when empty. The same value as from a
+  # sort: the middle one, or the mean of the two middle ones.
   if x.len == 0: return NaN
-  x.sort()
   let m = x.len div 2
-  if x.len mod 2 == 1: x[m] else: (x[m - 1] + x[m]) / 2
+  let upper = select(x, m)
+  if x.len mod 2 == 1: upper
+  else:
+    var lower = x[0]
+    for i in 1 ..< m: lower = max(lower, x[i])
+    (lower + upper) / 2
 
 # ------------------------------------------------------------- positions --
 
@@ -226,7 +259,8 @@ proc positionsInto(meta: ChunkMeta, pos: var seq[float64]) =
              elif channels: q.channel
              else: float64(r)
 
-proc sortByKey(idx: var seq[int], key: openArray[float64]) {.raises: [].}
+proc sortByKey(idx: var seq[int], key: openArray[float64],
+    keyed: var seq[(float64, int)]) {.raises: [].}
 
 # ----------------------------------------------------------------- models --
 
@@ -371,34 +405,34 @@ proc fitTwoSegment(fit: var ShotFit) =
 
 proc fitBinned(fit: var ShotFit, width: float64) =
   # Median offset and time per bin, ascending; linear between and beyond.
-  var idx = newSeq[int](fit.xs.len)
-  for i in 0 ..< fit.xs.len: idx[i] = i
-  sortByKey(idx, fit.xs)
+  # All in the fit's own scratch: nothing is allocated per bin or per row.
+  fit.idx.setLen fit.xs.len
+  for i in 0 ..< fit.xs.len: fit.idx[i] = i
+  sortByKey(fit.idx, fit.xs, fit.keyed)
   fit.bins.setLen 0
   var i = 0
-  var bx, bt: seq[float64]
-  while i < idx.len:
-    let b = floor(fit.xs[idx[i]] / width)
-    bx.setLen 0
-    bt.setLen 0
-    while i < idx.len and floor(fit.xs[idx[i]] / width) == b:
-      bx.add fit.xs[idx[i]]
-      bt.add fit.ts[idx[i]]
+  while i < fit.idx.len:
+    let b = floor(fit.xs[fit.idx[i]] / width)
+    fit.sideA.setLen 0
+    fit.sideB.setLen 0
+    while i < fit.idx.len and floor(fit.xs[fit.idx[i]] / width) == b:
+      fit.sideA.add fit.xs[fit.idx[i]]
+      fit.sideB.add fit.ts[fit.idx[i]]
       inc i
-    fit.bins.add (median(bx), median(bt))
+    fit.bins.add (median(fit.sideA), median(fit.sideB))
+  template bs: untyped = fit.bins # in place: a `let` copied the bins for every row
   for r in 0 ..< fit.absOffset.len:
     let x = fit.absOffset[r]
-    if x.isNaN: continue
-    let bs = fit.bins
-    var t: float64
-    if bs.len == 1: t = bs[0][1]
-    else:
-      # The segment holding x; the end segments extend beyond the bins.
-      var k = 0
-      while k + 2 < bs.len and bs[k + 1][0] < x: inc k
-      let f = (x - bs[k][0]) / (bs[k + 1][0] - bs[k][0])
-      t = bs[k][1] + f * (bs[k + 1][1] - bs[k][1])
-    fit.modelMs[r] = t
+    if not x.isNaN:
+      var t: float64
+      if bs.len == 1: t = bs[0][1]
+      else:
+        # The segment holding x; the end segments extend beyond the bins.
+        var k = 0
+        while k + 2 < bs.len and bs[k + 1][0] < x: inc k
+        let f = (x - bs[k][0]) / (bs[k + 1][0] - bs[k][0])
+        t = bs[k][1] + f * (bs[k + 1][1] - bs[k][1])
+      fit.modelMs[r] = t
 
 # ------------------------------------------------------------ correlation --
 
@@ -432,7 +466,7 @@ proc correlateInto[T](fit: var ShotFit, b: RowBlock[T], meta: ChunkMeta,
   # window or lag can usefully exceed the block.
   let m = int(clamp(round(p.windowMs / dt), 2.0, float64(max(2, b.cols))))
   let maxLag = int(min(round(p.maxLagMs / dt), float64(b.cols)))
-  let ord = fit.order
+  template ord: untyped = fit.order
   template startCol(r: int): int =
     # The window's first column: windowMs / 4 before the model time.
     let t0 = meta.keys(r).t0Ms
@@ -465,12 +499,14 @@ proc correlateInto[T](fit: var ShotFit, b: RowBlock[T], meta: ChunkMeta,
 
 # -------------------------------------------------------------------- fit --
 
-proc sortByKey(idx: var seq[int], key: openArray[float64]) {.raises: [].} =
-  # Sorts idx by key[idx[i]], stable (ties keep their order).
-  var pairs = newSeq[(float64, int)](idx.len)
-  for i, v in idx: pairs[i] = (key[v], v)
-  pairs.sort() # by key, then index: a stable order (no closure: raises nothing)
-  for i in 0 ..< idx.len: idx[i] = pairs[i][1]
+proc sortByKey(idx: var seq[int], key: openArray[float64],
+    keyed: var seq[(float64, int)]) {.raises: [].} =
+  # Sorts idx by key[idx[i]], stable (ties keep their order), with `keyed`
+  # as its scratch.
+  keyed.setLen idx.len
+  for i, v in idx: keyed[i] = (key[v], v)
+  keyed.sort() # by key, then index: a stable order (no closure: raises nothing)
+  for i in 0 ..< idx.len: idx[i] = keyed[i][1]
 
 proc fitPicks(meta: ChunkMeta, picks: openArray[FirstBreakPick], p: ShotFitParams,
     fit: var ShotFit) =
@@ -496,7 +532,7 @@ proc fitPicks(meta: ChunkMeta, picks: openArray[FirstBreakPick], p: ShotFitParam
   fit.order.setLen 0
   for r in 0 ..< n:
     if not fit.position[r].isNaN: fit.order.add r
-  sortByKey(fit.order, fit.position)
+  sortByKey(fit.order, fit.position, fit.keyed)
   # The confident picks; |offset| of every live row with one, in modelMs.
   fit.xs.setLen 0
   fit.ts.setLen 0
@@ -524,7 +560,7 @@ proc fitPicks(meta: ChunkMeta, picks: openArray[FirstBreakPick], p: ShotFitParam
     if meta.isLive(r) and not q.timeMs.isNaN and q.confidence >= p.minConfidence:
       fit.residualMs[r] = q.timeMs - fit.modelMs[r]
   # Local residuals along the spread: minus the neighbours' median.
-  let ord = fit.order
+  template ord: untyped = fit.order
   for k in 0 ..< ord.len:
     let r = ord[k]
     if fit.residualMs[r].isNaN: continue
@@ -552,12 +588,14 @@ proc fitPicks(meta: ChunkMeta, picks: openArray[FirstBreakPick], p: ShotFitParam
   for r in 0 ..< n:
     if abs(fit.localMs[r]) > fit.threshold: fit.suspect[r] = true
   # Symmetry: negative side minus positive side.
-  var neg, pos: seq[float64]
+  fit.sideA.setLen 0
+  fit.sideB.setLen 0
   for r in 0 ..< n:
     let x = fit.position[r]
-    if fit.residualMs[r].isNaN or x.isNaN or x == 0: continue
-    if x < 0: neg.add fit.residualMs[r] else: pos.add fit.residualMs[r]
-  if neg.len > 0 and pos.len > 0: fit.asymmetryMs = median(neg) - median(pos)
+    if not (fit.residualMs[r].isNaN or x.isNaN or x == 0):
+      if x < 0: fit.sideA.add fit.residualMs[r] else: fit.sideB.add fit.residualMs[r]
+  if fit.sideA.len > 0 and fit.sideB.len > 0:
+    fit.asymmetryMs = median(fit.sideA) - median(fit.sideB)
 
 proc fitShot*(meta: ChunkMeta, picks: openArray[FirstBreakPick], params: ShotFitParams,
     fit: var ShotFit) =

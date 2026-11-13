@@ -7,7 +7,7 @@
 import std/[assertions, math]
 import processSEG
 import parseSEG
-import utils/synth
+import utils/[allocs, synth]
 
 const
   dt = 2.0
@@ -251,6 +251,27 @@ block degenerate_fits:
   let bmeta = initChunkMeta(big.g.rows, dt)
   fitShot(bmeta, bp, ShotFitParams(), fit)
   doAssert abs(fit.v2 - v1) < 100 and suspects(fit).len == 0, $fit.v2 & " " & $suspects(fit)
+
+block a_fit_allocates_a_few_times_whatever_the_rows:
+  # The medians select in place and every list is the fit's own scratch:
+  # once a ShotFit has seen a shot of a size, a call allocates for its
+  # sorts only (it was once or twice per row: 1793 and 4111 for the two
+  # models on 2000 rows). A reused fit gives what a fresh one gives.
+  var big = makeShot(50_000, sigma = 0.05, offsets = splitSpread(1000, 5, 5))
+  let picks = pickAll(big.g)
+  let meta = initChunkMeta(big.g.rows, dt)
+  for model in RefractionModel:
+    let p = ShotFitParams(model: model)
+    var fit: ShotFit
+    fitShot(meta, picks, p, fit)
+    let allocs = allocsIn(fitShot(meta, picks, p, fit))
+    doAssert allocs <= 4, $model & ": " & $allocs & " allocations"
+    var fresh: ShotFit
+    fitShot(meta, picks, p, fresh)
+    doAssert fresh.used == fit.used and fresh.v1 == fit.v1 and fresh.threshold == fit.threshold
+    doAssert fresh.suspect == fit.suspect and fresh.asymmetryMs == fit.asymmetryMs
+    for r in 0 ..< meta.len:
+      doAssert fresh.localMs[r] == fit.localMs[r] or fresh.localMs[r].isNaN
 
 block too_few_picks_and_errors:
   var s = makeShot(5000)
