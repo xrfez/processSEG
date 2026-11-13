@@ -225,8 +225,17 @@ block errors:
   doAssertRaises(ValueError): plan.pickInto(g.data, meta, ws, ps) # too many columns
   let plan4 = initFirstBreakPlan(float32, guided, 4, cols)
   doAssertRaises(ValueError): plan4.pickInto(g.data, meta, ws, ps) # other interval
-  var short = newSeq[FirstBreakPick](1)
+  # The interval is the plan's within rounding (a relative 1e-9, as the
+  # filters and the correlation take it): 2 ms from a header's 2000 µs and
+  # 2 ms computed are one interval.
   let plan2 = initFirstBreakPlan(float32, guided, dt, cols)
+  ws.reserve(plan2.workspaceSize)
+  var near = newSeq[FirstBreakPick](g.len)
+  plan2.pickInto(g.data, initChunkMeta(g.rows, dt * (1 + 1e-12)), ws, near)
+  doAssert near[5].col >= 0
+  doAssertRaises(ValueError):
+    plan2.pickInto(g.data, initChunkMeta(g.rows, dt * (1 + 1e-6)), ws, near)
+  var short = newSeq[FirstBreakPick](1)
   doAssertRaises(ValueError): plan2.pickInto(g.data, meta, ws, short)
 
 block float64_traces:

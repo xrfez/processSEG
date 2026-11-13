@@ -477,12 +477,12 @@ proc checkPick*[T: SampleType](plan: FirstBreakPlan[T], b: RowBlock[T], meta: Ch
   ## The checks of `pickInto` on `b`, `meta` and the length `picks` of its
   ## `dst`, without picking: raises `ValueError` when `b` does not match
   ## `meta`, has more columns than `plan.samples`, its interval is not the
-  ## plan's, or `picks` is not `meta.len`.
+  ## plan's (beyond a relative 1e-9), or `picks` is not `meta.len`.
   meta.checkShape(b)
   if b.cols > plan.samples:
     raise newException(ValueError, "the block has " & $b.cols & " columns, the plan " &
       "takes " & $plan.samples)
-  if meta.dtMs != plan.dtMs:
+  if abs(meta.dtMs - plan.dtMs) > 1e-9 * plan.dtMs: # as the filters compare intervals
     raise newException(ValueError, "the block's interval " & $meta.dtMs &
       " ms is not the plan's " & $plan.dtMs & " ms")
   if picks != meta.len:

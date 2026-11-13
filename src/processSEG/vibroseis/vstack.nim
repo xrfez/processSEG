@@ -407,9 +407,9 @@ proc addRecord*[T](acc: var RecordStack[T], samples: Tensor[T], ws: var Workspac
 proc merge*[T](acc: var RecordStack[T], other: RecordStack[T]) =
   ## Adds the sums and counts of `other` (another thread's share of the same
   ## stack) into `acc`. Raises `ValueError` unless they have the same shape,
-  ## interval and parameters.
+  ## interval (within a relative 1e-9) and parameters.
   if other.rows != acc.rows or other.samples != acc.samples or
-      other.dtMs != acc.dtMs or other.params != acc.params:
+      abs(other.dtMs - acc.dtMs) > 1e-9 * acc.dtMs or other.params != acc.params:
     badArg("merging a " & $other.rows & " × " & $other.samples & " record stack into a " &
       $acc.rows & " × " & $acc.samples & " one, or with another interval or parameters")
   {.push boundChecks: off, overflowChecks: off.}

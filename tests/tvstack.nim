@@ -421,6 +421,7 @@ block bad_arguments:
   doAssertRaises ValueError: acc.foldInto(fold)
   doAssertRaises ValueError: acc.merge(initRecordStack[float32](2, 10, dt, diversity))
   doAssertRaises ValueError: acc.merge(initRecordStack[float32](2, 10, 4))
+  acc.merge(initRecordStack[float32](2, 10, dt * (1 + 1e-12))) # the same interval, to rounding
 
 block no_allocation_after_reserve:
   proc check(T: typedesc) =
