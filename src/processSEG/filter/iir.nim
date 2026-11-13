@@ -275,13 +275,14 @@ func magnitudeAt*[T](plan: IirPlan[T], f: float64): float64 {.raises: [].} =
     h *= (s.b0 + s.b1 * z1 + s.b2 * z1 * z1) / (1.0 + s.a1 * z1 + s.a2 * z1 * z1)
   if plan.phase == ipZero: abs(h) ^ 2 else: abs(h)
 
-const iirLanes = 24
-  # Traces per batch of the block form. The recursion is serial in time, so
-  # the lanes are what a SIMD register can hold: from 16 lanes GCC keeps the
-  # lane loop and packs it (four float64 per AVX2 register); at 8 it unrolled
-  # the loop and left 48 scalar operations per step. Cycles per 8 lanes per
-  # time step, measured: 28.9 at 8 lanes, 9.3 at 16, 7.3 at 24, 7.0 at 32
-  # (whose buffer starts to leave L2).
+const iirLanes* = 24
+  ## Traces per batch of the block form: a block of `iirLanes` live rows
+  ## (or a multiple) fills every batch.
+  # The recursion is serial in time, so the lanes are what a SIMD register
+  # can hold: from 16 lanes GCC keeps the lane loop and packs it (four
+  # float64 per AVX2 register); at 8 it unrolled the loop and left 48 scalar
+  # operations per step. Cycles per 8 lanes per time step, measured: 28.9 at
+  # 8 lanes, 9.3 at 16, 7.3 at 24, 7.0 at 32 (whose buffer starts to leave L2).
 
 func span[T](plan: IirPlan[T], n: int): int {.inline.} =
   ## The padded length of a trace of `n` samples.

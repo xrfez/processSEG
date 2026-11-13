@@ -438,7 +438,7 @@ processSEG's QC modules score this automatically (experimental for land data):
   picks)` (`qc/firstbreak`): STA/LTA, modified energy ratio or modified Coppens, after an
   optional minimum-phase band-pass, in a fixed or LMO-guided window, with an SNR-based
   confidence per pick. The input samples are not changed: a plan with a band-pass filters
-  `fftLanes` rows at a time into copies in the workspace (`plan.workspaceSize` holds
+  `iirLanes` (24) rows at a time into copies in the workspace (`plan.workspaceSize` holds
   them), one without picks from the rows in place. A plan is shareable, one `Workspace`
   per thread. Picks for the overlay are `picks[row].timeMs`. On a 2000-trace shot, picking
   takes 5–19 ms on one thread, 31–44 ms with the band-pass (bench/README).

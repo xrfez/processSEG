@@ -179,7 +179,8 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `IirPlan[T]`; `initIirPlan(T, spec, dtMs, samples, phase = ipZero, trend = trLinear)` | A cascade for a `butter*` spec without notches; slopes in multiples of 12 dB/octave (zero phase) or 6 (minimum phase). |
 | `plan.requiredMargin`, `plan.samples`, `plan.phase`, `plan.order`, `plan.spec`, `plan.magnitudeAt(f)`, `plan.workspaceSize` | Its margin (before the window for minimum phase), size and response. |
 | `causalEnergyFraction` (0.9999) | The energy a minimum-phase margin holds. |
-| `applyFilter(x \| b, meta \| samples, meta, plan, ws)` | As the FFT plan. |
+| `applyFilter(x \| b, meta \| samples, meta, plan, ws)` | As the FFT plan; the block form filters `iirLanes` live rows at a time. |
+| `iirLanes` (24) | Traces per batch of the block form. |
 
 ## gain/gain: fixed gain, normalization, AGC
 

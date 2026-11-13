@@ -131,7 +131,6 @@ import std/math
 import parseSEG
 import ../core/[rows, types, workspace]
 import ../filter/[design, iir]
-import ../fft/plan as fftplan
 import ../stack/stack
 import snr
 
@@ -285,13 +284,13 @@ func elems(s: WorkspaceSize, T: typedesc): int {.inline.} =
   when T is float32: s.f32 else: s.f64
 
 func copyLen[T](plan: FirstBreakPlan[T]): int {.inline, raises: [].} =
-  # Filtered traces are picked from copies: `fftLanes` rows, filtered as a
+  # Filtered traces are picked from copies: `iirLanes` rows, filtered as a
   # batch (`pickInto`), or one trace (`pick`). Unfiltered ones are read in
   # place.
-  if plan.filtered: fftLanes * plan.samples else: 0
+  if plan.filtered: iirLanes * plan.samples else: 0
 
 func workspaceSize*[T](plan: FirstBreakPlan[T]): WorkspaceSize {.raises: [].} =
-  ## The scratch of `pick` and `pickInto`: the filter's and `fftLanes`
+  ## The scratch of `pick` and `pickInto`: the filter's and `iirLanes`
   ## filtered copies of the traces (for a plan with a band-pass), and two
   ## float64 arrays of `samples + 1`.
   result = plan.filterSize
@@ -508,14 +507,14 @@ proc pickInto*[T: SampleType](plan: FirstBreakPlan[T], b: RowBlock[T], meta: Chu
           dst[row] = plan.pickStretch(cast[ptr UncheckedArray[T]](addr b.rowPtr(row)[s.first]),
             s, ws)
     return
-  # Band-pass the stretches of `fftLanes` rows at a time, as one batch of
+  # Band-pass the stretches of `iirLanes` rows at a time, as one batch of
   # the IIR filter's lanes, in copies (each at the start of its lane's
   # row), then pick each copy. The filter takes its rows' lengths from a
   # meta: one of the lanes, whose sample counts are the stretches'.
-  let c = ws.scratch(T, fftLanes * b.cols, plan.copyBase)
-  var stretches: array[fftLanes, Stretch]
-  var rowOf, counts: array[fftLanes, int]
-  var keys: array[fftLanes, TraceKeys]
+  let c = ws.scratch(T, iirLanes * b.cols, plan.copyBase)
+  var stretches: array[iirLanes, Stretch]
+  var rowOf, counts: array[iirLanes, int]
+  var keys: array[iirLanes, TraceKeys]
   for k in keys.mitems:
     k = initTraceKeys()
     k.status = tsLive
@@ -538,7 +537,7 @@ proc pickInto*[T: SampleType](plan: FirstBreakPlan[T], b: RowBlock[T], meta: Chu
         rowOf[used] = row
         counts[used] = s.len
         inc used
-        if used == fftLanes: flush()
+        if used == iirLanes: flush()
   flush()
 
 proc pickInto*[T: SampleType](plan: FirstBreakPlan[T], samples: Tensor[T],

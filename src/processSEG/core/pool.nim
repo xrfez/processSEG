@@ -50,6 +50,8 @@ import rows, types, workspace
 import ../pipeline
 import ../vibroseis/correlate
 import ../qc/[amplitude, firstbreak]
+from ../fft/plan import fftLanes
+from ../filter/iir import iirLanes
 
 type
   JobFn = proc(ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
@@ -191,11 +193,11 @@ type
 
 const runBytes = 256 * 1024 # of samples per run: the tile of `runPart`
 
-proc reset(q: var RowQueue, rows, cols, sampleBytes: int) =
+proc reset(q: var RowQueue, rows, cols, sampleBytes: int, batch = fftLanes) =
   ## A queue of `rows` rows of `cols` samples of `sampleBytes` bytes each,
-  ## in runs of whole FFT batches.
+  ## in runs of whole batches of `batch` rows (an FFT's lanes by default).
   q.rows = rows
-  q.grain = max(8, runBytes div max(1, cols * sampleBytes) div 8 * 8)
+  q.grain = max(batch, runBytes div max(1, cols * sampleBytes) div batch * batch)
   q.next.store(0)
 
 template eachRun(q: var RowQueue, span, body: untyped) =
@@ -407,7 +409,9 @@ proc pickInto*[T: SampleType](p: ProcessPool, plan: FirstBreakPlan[T], b: RowBlo
   if b.len == 0: return
   var ctx = PickCtx[T](plan: addr plan, src: b, meta: meta,
     dst: cast[ptr UncheckedArray[FirstBreakPick]](addr dst[0]))
-  ctx.queue.reset(b.len, b.cols, sizeof(T))
+  # Runs of whole IIR batches: a run's band-pass then fills every lane
+  # (dead rows aside), where 8-row runs filled a third of them.
+  ctx.queue.reset(b.len, b.cols, sizeof(T), iirLanes)
   acquire p.state.call
   run(p.state, pickJob[T], addr ctx)
   release p.state.call
