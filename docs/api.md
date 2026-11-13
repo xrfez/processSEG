@@ -81,6 +81,7 @@ and the failed rows. It copies no header value.
 | `m.isFailed(row)`, `m.isLive(row)` | A failed row (O(log n)); a live row (status `tsLive`/`tsUnknown`, not failed). |
 | `m.liveSamples(row, cols)` | The live length of the row in a block `cols` wide. |
 | `m.t0Ms(row)`, `m.sampleTimeMs(row, col)` | The time of the trace's sample 0, and of a column of the block (NaN when `t0Ms` is). |
+| `sameInterval(dtMs, planDtMs): bool` | A block's interval fits a plan's: equal within a relative 1e-9 (a header's 2000 µs / 1000 and a computed 1000 / 500 Hz can differ in the last bit). Every block form checks its meta's `dtMs` with it. |
 | `m.sub(rows: Slice[int]): ChunkMeta` | The meta of some rows (row 0 is `rows.a`), sharing the view and failed list: split work with `RowBlock.sub`. |
 | `checkShape(m, samples: Tensor[T])`, `checkShape(m, b: RowBlock[T])` | `ValueError` unless one row per row of `m` (and, for a tensor, rank 2 and C-contiguous). |
 | `SampleType` | parseSEG's `float32 \| float64`, re-exported. |

@@ -857,7 +857,7 @@ proc extractInto*[T: SampleType](plan: SlicePlan, data: RowBlock[T], meta: Chunk
   if compact and meta.len != plan.rowsNeeded.len:
     badSlice("the meta has " & $meta.len & " rows: the plan needs every row (" &
       $plan.rowCount & ") or rowsNeeded (" & $plan.rowsNeeded.len & ")")
-  if abs(meta.dtMs - plan.dtMs) > 1e-9 * plan.dtMs:
+  if not sameInterval(meta.dtMs, plan.dtMs):
     badSlice("the meta's dtMs is " & $meta.dtMs & ", the plan's " & $plan.dtMs)
   if meta.firstSample != plan.firstSample:
     badSlice("the meta's firstSample is " & $meta.firstSample & ", the plan's " &

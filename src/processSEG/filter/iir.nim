@@ -439,7 +439,7 @@ proc applyFilter*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
   ## when `b` does not match `meta`, has more columns than `plan.samples`, or
   ## its rows' interval (`meta.dtMs`) is not the plan's.
   meta.checkShape(b)
-  if abs(meta.dtMs - plan.dtMs) > 1e-9 * plan.dtMs:
+  if not sameInterval(meta.dtMs, plan.dtMs):
     badIir("the rows' interval " & $meta.dtMs & " ms is not the plan's " &
       $(plan.dtMs) & " ms")
   plan.checkPlan

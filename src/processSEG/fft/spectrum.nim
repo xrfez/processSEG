@@ -230,7 +230,7 @@ proc averageAmplitudeInto*[T: SampleType](sp: SpectrumPlan[T], b: RowBlock[T],
   ## `AssertionDefect`, as in the other spectrum procs. No sample of `b`
   ## changes.
   meta.checkShape(b)
-  if abs(meta.dtMs - sp.dtMs) > 1e-9 * sp.dtMs:
+  if not sameInterval(meta.dtMs, sp.dtMs):
     badSpectrum("the rows' interval " & $meta.dtMs & " ms is not the plan's " &
       $(sp.dtMs) & " ms")
   let nb = sp.fft.bins

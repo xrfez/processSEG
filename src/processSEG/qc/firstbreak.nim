@@ -482,7 +482,7 @@ proc checkPick*[T: SampleType](plan: FirstBreakPlan[T], b: RowBlock[T], meta: Ch
   if b.cols > plan.samples:
     raise newException(ValueError, "the block has " & $b.cols & " columns, the plan " &
       "takes " & $plan.samples)
-  if abs(meta.dtMs - plan.dtMs) > 1e-9 * plan.dtMs: # as the filters compare intervals
+  if not sameInterval(meta.dtMs, plan.dtMs):
     raise newException(ValueError, "the block's interval " & $meta.dtMs &
       " ms is not the plan's " & $plan.dtMs & " ms")
   if picks != meta.len:

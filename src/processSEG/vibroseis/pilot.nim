@@ -98,7 +98,7 @@ proc validate*[T](p: Pilot[T]) =
     if x.isNaN or abs(x) == Inf: badPilot("pilot sample " & $i & " is not finite")
     energy += x * x
   if energy == 0: badPilot("the pilot is all zeros")
-  if p.sweep.isSome and abs(p.sweep.get.dtMs - p.dtMs) > 1e-9 * p.dtMs:
+  if p.sweep.isSome and not sameInterval(p.sweep.get.dtMs, p.dtMs):
     badPilot("the pilot's sweep is sampled at " & $p.sweep.get.dtMs & " ms, the pilot at " &
       $p.dtMs & " ms")
 

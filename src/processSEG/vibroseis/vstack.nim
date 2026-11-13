@@ -367,7 +367,7 @@ proc addRecord*[T](acc: var RecordStack[T], b: RowBlock[T], meta: ChunkMeta,
   meta.checkShape(b)
   if b.cols > acc.samples:
     badArg("the record has " & $b.cols & " samples, the stack " & $acc.samples)
-  if abs(meta.dtMs - acc.dtMs) > 1e-9 * acc.dtMs:
+  if not sameInterval(meta.dtMs, acc.dtMs):
     badArg("the record is at " & $meta.dtMs & " ms, the stack at " & $acc.dtMs & " ms")
   if meta.firstSample != 0:
     badArg("stacking needs whole records from sample 0, got firstSample " &
@@ -408,7 +408,7 @@ proc merge*[T](acc: var RecordStack[T], other: RecordStack[T]) =
   ## stack) into `acc`. Raises `ValueError` unless they have the same shape,
   ## interval (within a relative 1e-9) and parameters.
   if other.rows != acc.rows or other.samples != acc.samples or
-      abs(other.dtMs - acc.dtMs) > 1e-9 * acc.dtMs or other.params != acc.params:
+      not sameInterval(other.dtMs, acc.dtMs) or other.params != acc.params:
     badArg("merging a " & $other.rows & " × " & $other.samples & " record stack into a " &
       $acc.rows & " × " & $acc.samples & " one, or with another interval or parameters")
   {.push boundChecks: off, overflowChecks: off.}

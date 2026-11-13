@@ -572,7 +572,7 @@ proc checkApply*[T](plan: PipelinePlan[T], src, dst: RowBlock[T],
     let d0 = cast[uint](dst.rowPtr(0))
     if s0 != d0 and s0 < d0 + uint(bytes) and d0 < s0 + uint(bytes):
       badApply("src and dst overlap without being the same block")
-  if abs(meta.dtMs - plan.dtMs) > 1e-9 * plan.dtMs:
+  if not sameInterval(meta.dtMs, plan.dtMs):
     badApply("the plan is for dtMs = " & $plan.dtMs & ", the rows have " & $meta.dtMs)
   if dst.cols > plan.samples:
     badApply("the block has " & $dst.cols & " columns, the plan takes " &

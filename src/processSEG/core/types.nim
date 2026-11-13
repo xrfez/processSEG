@@ -108,6 +108,17 @@ func dtMs*(m: ChunkMeta): float64 {.inline, raises: [].} =
   ## The sample interval, in ms (finite and positive).
   m.dtMs
 
+func sameInterval*(dtMs, planDtMs: float64): bool {.inline, raises: [].} =
+  ## Whether a block sampled every `dtMs` ms fits a plan (filter, gain,
+  ## correlation, picking, stack) made for `planDtMs`: equal within a relative
+  ## 1e-9, since an interval read from a header (2000 µs / 1000) and one
+  ## computed (1000 / 500 Hz) can differ in the last bit. Every block form
+  ## in processSEG checks its block's interval with this test.
+  runnableExamples:
+    doAssert sameInterval(2000 / 1000, 1000 / 500)
+    doAssert not sameInterval(2.0, 4.0)
+  abs(dtMs - planDtMs) <= 1e-9 * planDtMs
+
 func firstSample*(m: ChunkMeta): int {.inline, raises: [].} =
   ## The trace sample that column 0 of the block holds.
   m.firstSample

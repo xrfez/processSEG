@@ -318,7 +318,7 @@ proc applyGainCurve*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
   ## or has more columns than `plan.samples`.
   meta.checkShape(b)
   plan.checkPlan
-  if abs(meta.dtMs - plan.dtMs) > 1e-9 * plan.dtMs:
+  if not sameInterval(meta.dtMs, plan.dtMs):
     badCurve("the plan is for dtMs = " & $plan.dtMs & ", the rows have " & $meta.dtMs)
   if b.cols > plan.samples:
     badCurve("the block has " & $b.cols & " columns, the plan takes " &
@@ -340,7 +340,7 @@ proc applyGainCurve*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
   ## the other form by a rounding. Raises as that form.
   meta.checkShape(b)
   plan.checkPlan
-  if abs(meta.dtMs - plan.dtMs) > 1e-9 * plan.dtMs:
+  if not sameInterval(meta.dtMs, plan.dtMs):
     badCurve("the plan is for dtMs = " & $plan.dtMs & ", the rows have " & $meta.dtMs)
   if b.cols > plan.samples:
     badCurve("the block has " & $b.cols & " columns, the plan takes " &

@@ -91,7 +91,7 @@ proc initCorrelationPlan*[T, P: SampleType](_: typedesc[T], pilot: Pilot[P],
   ## reaches the output.
   pilot.validate
   if not (dtMs > 0 and dtMs < Inf): badPlan("dtMs must be finite and positive, got " & $dtMs)
-  if abs(pilot.dtMs - dtMs) > 1e-9 * dtMs:
+  if not sameInterval(pilot.dtMs, dtMs):
     badPlan("the pilot is sampled at " & $pilot.dtMs & " ms, the records at " & $dtMs &
       " ms: resample the pilot first (resamplePilot)")
   if recordSamples < 1: badPlan("recordSamples must be ≥ 1, got " & $recordSamples)
@@ -327,7 +327,7 @@ proc checkCorrelate*[T: SampleType](plan: CorrelationPlan[T], src, dst: RowBlock
     badPlan("the records are " & $src.cols & " samples, the plan takes " & $plan.recordSamples)
   if dst.cols != plan.outSamples:
     badPlan("dst must be " & $plan.outSamples & " samples wide, got " & $dst.cols)
-  if abs(meta.dtMs - plan.dtMs) > 1e-9 * plan.dtMs:
+  if not sameInterval(meta.dtMs, plan.dtMs):
     badPlan("the records are at " & $meta.dtMs & " ms, the plan at " & $plan.dtMs & " ms")
   if meta.firstSample != 0:
     badPlan("correlation needs whole records from sample 0, got firstSample " &

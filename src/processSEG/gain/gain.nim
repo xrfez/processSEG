@@ -491,7 +491,7 @@ proc agc*[T: SampleType](x: var openArray[T], plan: AgcPlan, ws: var Workspace,
 proc checkBlock[T](b: RowBlock[T], meta: ChunkMeta, plan: AgcPlan) =
   meta.checkShape(b)
   plan.checkPlan
-  if abs(meta.dtMs - plan.dtMs) > 1e-9 * plan.dtMs:
+  if not sameInterval(meta.dtMs, plan.dtMs):
     badArg("the plan is for dtMs = " & $plan.dtMs & ", the rows have " & $meta.dtMs)
   if b.cols > plan.samples:
     badArg("the block has " & $b.cols & " columns, the plan takes " &
