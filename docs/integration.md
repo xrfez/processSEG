@@ -480,8 +480,10 @@ trace's first and last non-zero samples, so muted zeros do not count.
   bit for any number of workers, run after run.
 - **Memory:** one stack of bins × samples × (sizeof(T) + 4) bytes, whatever the number
   of workers (the sums are normalized in place and become the result), plus the prefetch
-  ring and each worker's scratch (`bruteStackMemory`). A float32 3D stack of 100 000
-  bins × 2001 samples is 1.6 GB.
+  ring and each worker's scratch and cache of velocity columns
+  (`opts.velocityCacheBytes`, 8 MiB: with a field, one column per bin the worker met
+  last, so shot-sorted input reads the field once per bin, not once per trace)
+  (`bruteStackMemory`). A float32 3D stack of 100 000 bins × 2001 samples is 1.6 GB.
 
 The viewer shows the result as an in-memory dataset; processSEG describes results and
 parseSEG writes them (D14): `stackKeys(res, bin)` and `stackOverrides(res, bin)` give each

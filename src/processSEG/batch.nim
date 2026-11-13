@@ -51,10 +51,14 @@
 ## workers, run after run. A `perPanel` normalization in the flow depends
 ## on `chunkTraces`, nothing else does.
 ##
-## **Cost.** A `VelocityField` is read for a bin whenever a worker moves to
-## another bin (the last bin's column is cached), so CDP-sorted input reads
-## it once per CDP and shot-sorted input about once per trace
-## (`samples` interpolations each).
+## **Cost.** A `VelocityField` is read once per bin and worker, as long as
+## the bins a worker is working on fit its cache of velocity columns
+## (`velocityCacheBytes`, 8 MiB per worker by default: 698 bins of 1501
+## samples, kept by bin number): CDP-sorted and shot-sorted input alike,
+## the latter while a shot's traces fall in fewer bins than that. Beyond
+## it a column is computed again when its bin comes back (`samples`
+## interpolations): raise the cache for 3D shots that spread over
+## thousands of bins. The cache never changes the result.
 ##
 ## **Threads.** `bruteStack` blocks its caller: run it on a background
 ## thread of your own. The job only reads the file (its map, index and
@@ -111,6 +115,9 @@ type
     workers*: int ## Prefetch (and processing) threads.
     chunkTraces*: int ## Traces per prefetch chunk.
     maxRingBytes*: int ## Prefetch ring cap (parseSEG's default: 4 MiB).
+    velocityCacheBytes*: int ## Each worker's cache of `VelocityField`
+                               ## columns, one per bin it met last (8 MiB;
+                               ## 0: one column).
 
   StackResult*[T: SampleType] = object
     ## A brute stack: `data[bin, j]` at time `startMs + j·dtMs`.
@@ -126,6 +133,11 @@ type
     stacked*: int        ## Traces stacked.
     skipped*: int        ## Live traces not stacked (see the module documentation).
     failed*: int         ## Traces that could not be decoded.
+
+func cacheSlots(cacheBytes, bins, samples: int): int =
+  ## The velocity columns of a worker's cache: what `cacheBytes` holds, at
+  ## least one, no more than there are bins.
+  clamp(cacheBytes div max(samples, 1) div sizeof(float64), 1, max(bins, 1))
 
 proc badSize(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
@@ -144,30 +156,37 @@ proc initBruteStackOptions*(flow = initPipeline(), nmo = initNmoParams(),
     norm = fnFold, workers = 1): BruteStackOptions =
   ## Options with the flow `flow`, NMO `nmo`, normalization `norm` and
   ## `workers` threads; no statics, the input's length from 0 ms, chunks of
-  ## 256 traces.
+  ## 256 traces, a 4 MiB ring and 8 MiB of velocity columns per worker.
   BruteStackOptions(flow: flow, nmo: nmo, norm: norm, workers: workers,
-    chunkTraces: 256, maxRingBytes: 4 shl 20, staticsInterp: siLinear)
+    chunkTraces: 256, maxRingBytes: 4 shl 20, velocityCacheBytes: 8 shl 20,
+    staticsInterp: siLinear)
 
 func bruteStackMemory*(T: typedesc[SampleType], bins, samples, inSamples,
-    workers: int, chunkTraces = 256, maxRingBytes = 4 shl 20): int =
+    workers: int, chunkTraces = 256, maxRingBytes = 4 shl 20,
+    velocityCacheBytes = 8 shl 20): int =
   ## An estimate of the memory a `bruteStack` holds, in bytes: the stack
   ## (`stackMemory`, once: it becomes the result), the prefetch ring and
   ## the consumer's chunk (chunks of `chunkTraces` rows of `max(inSamples,
   ## samples)` samples), and each worker's scratch (taken as 16 lane rows
   ## of a 4× padded trace, which bounds the FFT filters' scratch, plus
-  ## 1 MiB for a percentile histogram, a velocity column and an output
-  ## trace; a flow of several long filters may need more:
-  ## `plan.workspaceSize` is exact). Raises `ValueError` for a negative
+  ## 1 MiB for a percentile histogram, an output trace and the cache of
+  ## velocity columns: up to `velocityCacheBytes` and no more than every
+  ## bin's, as a `VelocityField` takes; a function takes one column. A flow
+  ## of several long filters may need more: `plan.workspaceSize` is
+  ## exact). Raises `ValueError` for a negative
   ## size, `workers`, `chunkTraces` or `maxRingBytes` that are not
   ## positive, or a total beyond `int`.
-  if inSamples < 0 or workers <= 0 or chunkTraces <= 0 or maxRingBytes <= 0:
-    badSize("inSamples must be ≥ 0 and workers, chunkTraces and " &
-      "maxRingBytes positive")
+  if inSamples < 0 or workers <= 0 or chunkTraces <= 0 or maxRingBytes <= 0 or
+      velocityCacheBytes < 0:
+    badSize("inSamples and velocityCacheBytes must be ≥ 0 and workers, " &
+      "chunkTraces and maxRingBytes positive")
   let stack = stackMemory(T, bins, samples)
   let chunk = mulSize(mulSize(chunkTraces, max(inSamples, samples)), sizeof(T))
   let ring = addSize(max(maxRingBytes, mulSize(addSize(workers, 1), chunk)), chunk)
-  let perWorker = addSize(addSize(mulSize(16 * 4 * 8, inSamples), 1 shl 20),
-    mulSize(2 * 8, samples))
+  let cache = mulSize(mulSize(cacheSlots(velocityCacheBytes, bins, samples),
+    samples), 8)
+  let perWorker = addSize(addSize(addSize(mulSize(16 * 4 * 8, inSamples),
+    1 shl 20), mulSize(8, samples)), cache)
   addSize(addSize(stack, ring), mulSize(workers, perWorker))
 
 type
@@ -175,9 +194,11 @@ type
 
   WorkerState[T] = object
     ws: Workspace
-    vel: seq[float64] # the sloths (1/V²) of bin `lastBin` on the stack's axis
-    row: seq[T]       # one NMO-corrected trace
-    lastBin: int
+    # The cache of velocity columns: `job.slots` columns of `job.samples`
+    # sloths (1/V²) on the stack's axis; slot i holds bin `slotBin[i]`.
+    sloth: seq[float64]
+    slotBin: seq[int]
+    row: seq[T] # one NMO-corrected trace
     failed: bool
     msg: array[240, char]
     msgLen: int
@@ -196,6 +217,7 @@ type
     intervalUs: float64
     inSamples: int          # the flow's row width: the longest live input trace
     samples: int            # the stack's
+    slots: int              # velocity columns each worker caches
     states: ptr UncheckedArray[WorkerState[T]]
     anyFailed: Atomic[bool] # a worker failed: the consumer stops
 
@@ -206,23 +228,29 @@ proc note[T](job: ptr Job[T], s: var WorkerState[T], msg: string) {.raises: [].}
   s.msgLen = min(msg.len, s.msg.len)
   for i in 0 ..< s.msgLen: s.msg[i] = msg[i]
 
-proc velocityAt[T](job: ptr Job[T], s: var WorkerState[T], bin: int) {.
-    raises: [ValueError].} =
-  # Fills s.vel with the bin's sloths on the stack's axis: the RMS
-  # velocities, inverted once for every trace of the bin.
-  if bin == s.lastBin or (job.velKind == velFunction and s.lastBin >= 0):
-    return
-  s.lastBin = bin
-  case job.velKind
-  of velFunction:
-    job.fun[].vrmsInto(job.startMs, job.dtMs, s.vel)
-  of velField:
-    let loc = job.binning[].location(bin)
-    case job.field[].kind
-    of fk2D: job.field[].vrmsInto(loc.cdp, job.startMs, job.dtMs, s.vel)
-    of fk3D: job.field[].vrmsInto(loc.inline, loc.crossline, job.startMs,
-        job.dtMs, s.vel)
-  vrmsToSloth(s.vel)
+proc slothOf[T](job: ptr Job[T], s: var WorkerState[T],
+    bin: int): ptr UncheckedArray[float64] {.raises: [ValueError].} =
+  # The bin's sloths on the stack's axis, from the worker's cache: its RMS
+  # velocities, read and inverted once for every trace of the bin the
+  # worker meets while the column stays in its slot. A column depends on
+  # the bin only, so what the cache holds never shows in the result. A
+  # function has one column for every bin.
+  let key = if job.velKind == velFunction: 0 else: bin
+  let slot = key mod job.slots
+  result = cast[ptr UncheckedArray[float64]](addr s.sloth[slot * job.samples])
+  if s.slotBin[slot] != key:
+    template column: untyped = result.toOpenArray(0, job.samples - 1)
+    case job.velKind
+    of velFunction:
+      job.fun[].vrmsInto(job.startMs, job.dtMs, column)
+    of velField:
+      let loc = job.binning[].location(bin)
+      case job.field[].kind
+      of fk2D: job.field[].vrmsInto(loc.cdp, job.startMs, job.dtMs, column)
+      of fk3D: job.field[].vrmsInto(loc.inline, loc.crossline, job.startMs,
+          job.dtMs, column)
+    vrmsToSloth(column)
+    s.slotBin[slot] = key
 
 func stackable[T](job: ptr Job[T], k: TraceKeys, bin: int): bool {.inline.} =
   # A live trace is corrected and stacked: it has a bin, an offset, a start
@@ -241,7 +269,7 @@ proc correctChunk[T](worker: int, samples: ptr UncheckedArray[T], rows, cols: in
   # touches the stack: the consumer adds the rows, in chunk order.
   let job = cast[ptr Job[T]](user)
   template s: untyped = job.states[worker]
-  if s.failed or rows == 0: return
+  if s.failed or rows == 0 or job.samples == 0: return
   try:
     let meta = initChunkMeta(traces, job.dtMs, 0, failed)
     let n = job.inSamples
@@ -262,11 +290,12 @@ proc correctChunk[T](worker: int, samples: ptr UncheckedArray[T], rows, cols: in
       let k = meta.keys(r)
       let bin = if meta.isLive(r): job.binning[].binOf(k) else: -1
       if job.stackable(k, bin):
+        var sloth: ptr UncheckedArray[float64]
         {.cast(gcsafe).}:
-          velocityAt(job, s, bin)
+          sloth = slothOf(job, s, bin)
         discard nmoSlothInto(b.row(r, meta.liveSamples(r, n)),
           meta.sampleTimeMs(r, 0), s.row, job.startMs, job.dtMs, k.offset,
-          s.vel, job.nmo)
+          sloth.toOpenArray(0, job.samples - 1), job.nmo)
         copyMem(dst, addr s.row[0], job.samples * sizeof(T))
       else:
         zeroMem(dst, job.samples * sizeof(T))
@@ -326,6 +355,9 @@ proc checkOptions(o: BruteStackOptions) =
   if o.workers <= 0 or o.chunkTraces <= 0 or o.maxRingBytes <= 0:
     raise newException(ValueError, "workers, chunkTraces and maxRingBytes " &
       "must be positive")
+  if o.velocityCacheBytes < 0:
+    raise newException(ValueError, "velocityCacheBytes must be ≥ 0, got " &
+      $o.velocityCacheBytes)
   if o.samples < 0:
     raise newException(ValueError, "samples must be ≥ 0, got " & $o.samples)
   if o.startMs.classify in {fcNan, fcInf, fcNegInf}:
@@ -360,13 +392,17 @@ proc runStack[T](f: SeismicFile, sel: TraceSel, binning: Binning,
     checkCovers(job.field[], opts.startMs, dtMs, samples)
   let plan = opts.flow.compile(T, dtMs, max(inSamples, 1))
   # Everything the workers use is allocated here, on the calling thread.
+  job.slots =
+    if job.velKind == velFunction: 1
+    else: cacheSlots(opts.velocityCacheBytes, binning.len, samples)
   var states = newSeq[WorkerState[T]](opts.workers)
   for s in states.mitems:
     s.ws = initWorkspace()
     s.ws.reserve(plan)
-    s.vel = newSeq[float64](samples)
+    s.sloth = newSeq[float64](job.slots * samples)
+    s.slotBin = newSeq[int](job.slots)
+    for b in s.slotBin.mitems: b = -1
     s.row = newSeq[T](samples)
-    s.lastBin = -1
   job.plan = addr plan
   job.binning = addr binning
   job.useStatics = opts.statics.isSome

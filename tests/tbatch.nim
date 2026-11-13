@@ -146,6 +146,27 @@ block same_bits_for_any_worker_count:
       let byField = bruteStack(f, float32, binning, field, opts)
       doAssert byField.data == oneField.data and byField.fold == oneField.fold
 
+block velocity_cache_never_shows:
+  # Each worker caches the field's columns of the bins it met last. The
+  # line is shot-sorted (a shot's 24 traces fall in 24 CDPs), so a cache of
+  # one or three columns is overwritten all the time and the default one
+  # holds every bin: the stack is the same bit for bit.
+  var f = openSeismic(flat.path, keys = true)
+  let field = initVelocityField([1.0, float64(cdps) / 2, float64(cdps)], [vel,
+      gradientVelocity(1900, 500), vel], dtMs = 4, tMaxMs = 2400)
+  var opts = initBruteStackOptions()
+  opts.chunkTraces = 16
+  doAssert opts.velocityCacheBytes == 8 shl 20
+  let want = bruteStack(f, float32, binning, field, opts)
+  for cacheBytes in [0, 3 * ns * 8, 7 * ns * 8 + 5]:
+    for workers in [1, 3]:
+      opts.workers = workers
+      opts.velocityCacheBytes = cacheBytes
+      let res = bruteStack(f, float32, binning, field, opts)
+      doAssert res.data == want.data and res.fold == want.fold, $cacheBytes
+  opts.velocityCacheBytes = -1
+  doAssertRaises ValueError: discard bruteStack(f, float32, binning, field, opts)
+
 proc byHand(f: var SeismicFile, flow: Pipeline, chunkTraces, samples: int,
     startMs: float64, binning: Binning): Tensor[float32] =
   ## The stack of the whole file with the public kernels, trace by trace in
@@ -529,8 +550,20 @@ block memory_bound:
     inSamples = 2001, workers = 4)
   let chunk = 256 * 2001 * 4
   let ring = max(4 shl 20, 5 * chunk) + chunk
-  let scratch = 4 * (16 * 4 * 2001 * 8 + (1 shl 20) + 2 * 2001 * 8)
+  # Per worker: the flow's scratch, an output trace, and the velocity
+  # columns of the bins it met last (8 MiB of them: 524 of 2001 samples).
+  let cache = ((8 shl 20) div (2001 * 8)) * 2001 * 8
+  doAssert cache <= 8 shl 20 and cache > (8 shl 20) - 2001 * 8
+  let scratch = 4 * (16 * 4 * 2001 * 8 + (1 shl 20) + 2001 * 8 + cache)
   doAssert m == stackMemory(float32, 1000, 2001) + ring + scratch
+  # ... of every bin when there are few, and of one bin at least.
+  let small = stackMemory(float32, 3, 2001) + max(4 shl 20, 2 * chunk) + chunk +
+    16 * 4 * 2001 * 8 + (1 shl 20) + 2001 * 8
+  doAssert bruteStackMemory(float32, 3, 2001, 2001, 1) == small + 3 * 2001 * 8
+  doAssert bruteStackMemory(float32, 3, 2001, 2001, 1,
+    velocityCacheBytes = 0) == small + 2001 * 8
+  doAssertRaises ValueError:
+    discard bruteStackMemory(float32, 3, 2001, 2001, 1, velocityCacheBytes = -1)
   let big = stackMemory(float32, 100_000, 2001)
   doAssert bruteStackMemory(float32, 100_000, 2001, 2001, workers = 8) -
     bruteStackMemory(float32, 100_000, 2001, 2001, workers = 1) < big div 4

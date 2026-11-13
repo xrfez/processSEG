@@ -178,6 +178,24 @@ func bracket(k: seq[VelocityKnot], t: float64): int {.inline.} =
     if k[mid].tMs <= t: lo = mid else: hi = mid
   lo
 
+func gradientV2(v0, k, tMs: float64): float64 {.inline.} =
+  ## Vrms² of a gradient function at `tMs`; NaN past the time of Vint = 0.
+  let s = max(tMs, 0) / 1000
+  if k < 0 and s > -v0 / k: NaN
+  else: v0 * v0 + v0 * k * s + k * k * s * s / 3
+
+func knotsV2(k: seq[VelocityKnot], i: int, tMs: float64): float64 {.inline.} =
+  ## Vrms² of a knots function at `tMs`, in its segment `i`
+  ## (`k[i].tMs ≤ tMs < k[i+1].tMs`, after the first knot).
+  if i == 0 and k[0].tMs == 0:
+    # A knot at zero: the RMS velocity is linear from V₀ to V₁ (W = V²t
+    # from (0, 0) would ignore V₀).
+    let v = k[0].vrms + (k[1].vrms - k[0].vrms) * tMs / k[1].tMs
+    v * v
+  else:
+    let w0 = k[i].w
+    (w0 + (k[i + 1].w - w0) * (tMs - k[i].tMs) / (k[i + 1].tMs - k[i].tMs)) / tMs
+
 func vrmsAt*(f: VelocityFunction, tMs: float64): float64 {.raises: [].} =
   ## The RMS velocity at two-way time `tMs` (NaN for a NaN time; times
   ## before 0 take the velocity at 0). A default function gives NaN.
@@ -187,22 +205,13 @@ func vrmsAt*(f: VelocityFunction, tMs: float64): float64 {.raises: [].} =
     if f.v > 0: f.v else: NaN
   of vkGradient:
     if not (f.v0 > 0): return NaN
-    let s = max(tMs, 0) / 1000
-    if f.k < 0 and s > -f.v0 / f.k: return NaN # past Vint = 0
-    sqrt(f.v0 * f.v0 + f.v0 * f.k * s + f.k * f.k * s * s / 3)
+    sqrt(gradientV2(f.v0, f.k, tMs))
   of vkKnots:
-    let k = f.knots
+    template k: untyped = f.knots
     if k.len == 0: return NaN
     if not (tMs > k[0].tMs): return k[0].vrms
     if tMs >= k[^1].tMs: return k[^1].vrms
-    let i = bracket(k, tMs)
-    if i == 0 and k[0].tMs == 0:
-      # A knot at zero: the RMS velocity is linear from V₀ to V₁ (W = V²t
-      # from (0, 0) would ignore V₀).
-      return k[0].vrms + (k[1].vrms - k[0].vrms) * tMs / k[1].tMs
-    let w0 = k[i].w
-    let wt = w0 + (k[i + 1].w - w0) * (tMs - k[i].tMs) / (k[i + 1].tMs - k[i].tMs)
-    sqrt(wt / tMs)
+    sqrt(knotsV2(k, bracket(k, tMs), tMs))
 
 func vintAt*(f: VelocityFunction, tMs: float64): float64 {.raises: [].} =
   ## The interval velocity at two-way time `tMs`: for knots, that of the
@@ -326,6 +335,27 @@ proc checkAxis(xs: openArray[float64], what: string) =
       badArg(what & " " & $i & " (" & $x & ") must be greater than " & what &
         " " & $(i - 1) & " (" & $xs[i - 1] & ")")
 
+proc fillNode(v2: var openArray[float64], f: VelocityFunction, dtMs: float64) =
+  ## `v2[j]` = Vrms² of `f` at `j·dtMs`. The grid times increase, so a knots
+  ## function is swept once, its segment moving forward (no search per
+  ## time), and V² is stored as it comes, `W/t`, not as the square of a
+  ## square root: 0.25 against 0.76 s for 50 000 nodes of 1501 times.
+  case f.kind
+  of vkConstant:
+    for x in v2.mitems: x = f.v * f.v
+  of vkGradient:
+    for j in 0..<v2.len: v2[j] = gradientV2(f.v0, f.k, float64(j) * dtMs)
+  of vkKnots:
+    template k: untyped = f.knots
+    var i = 0
+    for j in 0..<v2.len:
+      let t = float64(j) * dtMs
+      if not (t > k[0].tMs): v2[j] = k[0].vrms * k[0].vrms
+      elif t >= k[^1].tMs: v2[j] = k[^1].vrms * k[^1].vrms
+      else:
+        while k[i + 1].tMs <= t: inc i # ends: t is before the last knot
+        v2[j] = knotsV2(k, i, t)
+
 proc fill(field: var VelocityField, functions: openArray[VelocityFunction]) =
   field.v2 = newSeq[float64](functions.len * field.samples)
   for n, f in functions:
@@ -333,9 +363,8 @@ proc fill(field: var VelocityField, functions: openArray[VelocityFunction]) =
         not (f.v > 0) or f.kind == vkGradient and not (f.v0 > 0):
       badArg("function " & $n & " is not initialized (build it with " &
         "constantVelocity, gradientVelocity, rmsVelocity or intervalVelocity)")
-    for j in 0..<field.samples:
-      let v = f.vrmsAt(float64(j) * field.dtMs)
-      field.v2[n * field.samples + j] = v * v
+    fillNode(field.v2.toOpenArray(n * field.samples, (n + 1) * field.samples - 1),
+      f, field.dtMs)
 
 proc initGrid(dtMs, tMaxMs: float64): int =
   checkGrid(dtMs)
@@ -453,9 +482,12 @@ func v2At(field: VelocityField, ws: Weights, j: int): float64 {.inline.} =
 func vrmsWith(field: VelocityField, ws: Weights,
     tMs: float64): float64 {.inline.} =
   if tMs.isNaN or field.samples == 0: return NaN
-  let u = tMs / field.dtMs
+  # The grid position, by the reciprocal as `fillWith` takes it for a whole
+  # column: a point query and a column agree.
+  let u = tMs * (1 / field.dtMs)
   if not (u > 0): return sqrt(field.v2At(ws, 0))
-  if u >= float64(field.samples - 1): return sqrt(field.v2At(ws, field.samples - 1))
+  if u >= float64(field.samples - 1):
+    return sqrt(field.v2At(ws, field.samples - 1))
   let i = int(u)
   let f = u - float64(i)
   if i == 0:
@@ -483,8 +515,41 @@ func vrmsAt*(field: VelocityField, inline, crossline,
 
 proc fillWith(field: VelocityField, ws: Weights, startMs, dtMs: float64,
     vrms: var openArray[float64]) =
+  # `vrmsWith` at startMs + j·dtMs, for every j. The times increase, so the
+  # grid cell they fall in only moves forward: the nodes are blended once
+  # per grid time (`lo`, `hi`: the V² at the cell's two grid times), not
+  # for each output sample, and the grid position takes a multiplication.
+  let last = field.samples - 1
+  let perGrid = 1 / field.dtMs
+  var cell = -1
+  var lo, hi = 0.0
+  template enter(i: int) =
+    if i != cell:
+      lo = if cell >= 0 and i == cell + 1: hi else: field.v2At(ws, i)
+      hi = field.v2At(ws, min(i + 1, last))
+      cell = i
   for j in 0..<vrms.len:
-    vrms[j] = field.vrmsWith(ws, startMs + float64(j) * dtMs)
+    let u = (startMs + float64(j) * dtMs) * perGrid
+    if u.isNaN:
+      vrms[j] = NaN
+    elif not (u > 0):
+      enter(0)
+      vrms[j] = sqrt(lo)
+    elif u >= float64(last):
+      enter(last)
+      vrms[j] = sqrt(lo)
+    else:
+      let i = int(u)
+      let f = u - float64(i)
+      enter(i)
+      if i == 0:
+        # From time zero W = V²t starts at 0 whatever V is: interpolate V².
+        vrms[j] = sqrt(lo + (hi - lo) * f)
+      else:
+        # Linear in W = V²·t between grid times i and i + 1.
+        let w0 = lo * float64(i)
+        let w1 = hi * float64(i + 1)
+        vrms[j] = sqrt((w0 + (w1 - w0) * f) / u)
 
 proc vrmsInto*(field: VelocityField, location, startMs, dtMs: float64,
     vrms: var openArray[float64]) =

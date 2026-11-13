@@ -3,7 +3,7 @@
 ## round trip and its NaN, non-monotonic input reported, 2D and 3D fields,
 ## and VELF, HANDVEL and CSV picks (tests/data/sample.velf).
 
-import std/[assertions, math, os, strutils]
+import std/[assertions, math, os, random, strutils]
 import processSEG
 import utils/allocs
 
@@ -251,6 +251,80 @@ block field_3d:
     discard initVelocityField([10.0, 20], [1.0, 2, 3], fs[0..4], 8, 1000)
   raisesWith("crossline 2"):
     discard initVelocityField([10.0, 20], [1.0, 3, 2], fs, 8, 1000)
+
+block field_columns_equal_point_queries:
+  # A column (vrmsInto) is the point queries (vrmsAt) at its times, on and
+  # between the nodes, outside them, for output intervals finer and coarser
+  # than the grid, start times before 0 and columns that run past tMax: it
+  # blends the nodes once per grid time, where a point query blends them
+  # for every sample.
+  let fs2 = [rmsVelocity([k(0, 1500), k(400, 1700), k(1000, 2000), k(2000, 2600)]),
+             gradientVelocity(1800, 600),
+             rmsVelocity([k(300, 1600), k(1300, 2300)]),
+             constantVelocity(2100)]
+  let f2 = initVelocityField([100.0, 200, 350, 500], fs2, dtMs = 4, tMaxMs = 2400)
+  var fs3: seq[VelocityFunction]
+  for i in 0..<6: fs3.add fs2[(i * 3) mod 4]
+  let f3 = initVelocityField([10.0, 20, 40], [1.0, 3], fs3, dtMs = 4, tMaxMs = 2400)
+  var rng = initRand(4)
+  var worst = 0.0
+  for it in 0..<300:
+    let dt = [0.5, 1.0, 2.0, 4.0, 5.0, 10.0, 37.0][it mod 7]
+    let start = [0.0, -50.0, 3.0, 1000.5, 2390.0, 5000.0][it mod 6]
+    var v = newSeq[float64](rng.rand(1..600))
+    if it mod 2 == 0:
+      let x = if it mod 10 == 0: [100.0, 200, 500, 50, 900][rng.rand(4)]
+        else: rng.rand(60.0 .. 560.0)
+      f2.vrmsInto(x, start, dt, v)
+      for j in 0..<v.len:
+        let want = f2.vrmsAt(x, start + float64(j) * dt)
+        worst = max(worst, abs(v[j] - want) / want)
+    else:
+      let il = if it mod 9 == 0: 20.0 else: rng.rand(5.0 .. 45.0)
+      let xl = if it mod 15 == 0: 3.0 else: rng.rand(0.0 .. 4.0)
+      f3.vrmsInto(il, xl, start, dt, v)
+      for j in 0..<v.len:
+        let want = f3.vrmsAt(il, xl, start + float64(j) * dt)
+        worst = max(worst, abs(v[j] - want) / want)
+  doAssert worst <= 4e-16, $worst # one ulp: the same sums, another grouping
+  var v = newSeq[float64](5)
+  f2.vrmsInto(150, NaN, 4, v)
+  for x in v: doAssert x.isNaN
+  # One grid time: the same velocity at every time.
+  let flat = initVelocityField([1.0, 2], [constantVelocity(1500),
+      constantVelocity(2500)], dtMs = 4, tMaxMs = 0)
+  doAssert flat.samples == 1
+  flat.vrmsInto(1.5, -8, 4, v)
+  for x in v: doAssert near(x, sqrt((1500.0 ^ 2 + 2500.0 ^ 2) / 2))
+
+block field_nodes_equal_their_functions:
+  # initVelocityField fills each node by one forward sweep over its knots:
+  # on the grid times the node is its function (knots on and off the grid, a
+  # knot at zero, a first knot after zero, one knot, a gradient that runs
+  # out, a constant), and V² is stored without a square root and a square.
+  let fs = [rmsVelocity([k(0, 1500), k(400, 1700), k(1000, 2000), k(2000, 2600)]),
+            rmsVelocity([k(250, 1600), k(1301, 2300), k(1302, 2301), k(1999, 2500)]),
+            rmsVelocity([k(700, 1800)]),
+            rmsVelocity([k(0, 1500), k(3000, 3000)]),
+            rmsVelocity([k(1, 1500), k(2, 1500.5), k(3, 1501), k(5000, 4000)]),
+            gradientVelocity(1800, 600), gradientVelocity(2000, -1500),
+            constantVelocity(2100)]
+  var locs: seq[float64]
+  for i in 0..<fs.len: locs.add float64(10 * i)
+  for dt in [4.0, 1.0, 2.5]:
+    let field = initVelocityField(locs, fs, dtMs = dt, tMaxMs = 2400)
+    for n, f in fs:
+      for j in 0..<field.samples:
+        let t = float64(j) * dt
+        let got = field.vrmsAt(locs[n], t)
+        let want = f.vrmsAt(t)
+        if want.isNaN: doAssert got.isNaN, $n & " " & $t # past Vint = 0
+        elif f.vrmsAt(t + dt).isNaN: discard # the cell's other end is unknown
+        else: doAssert near(got, want, 1e-14), $n & " " & $t & " " & $got
+  # The functions themselves are unchanged by the shared formulas.
+  doAssert fs[0].vrmsAt(200) == 1600 and fs[3].vrmsAt(1500) == 2250
+  doAssert near(fs[5].vrmsAt(1000), sqrt(1800.0 ^ 2 + 1800 * 600 + 600.0 ^ 2 / 3))
+  doAssert fs[6].vrmsAt(1400).isNaN and not fs[6].vrmsAt(1300).isNaN
 
 block field_from_picks:
   let a = constantVelocity(1500)

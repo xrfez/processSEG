@@ -302,7 +302,9 @@ f.close()
   static, no interval, non-finite samples, or fully stretch-muted.
 - Memory: one stack of bins × samples × (sizeof(T) + 4) bytes, whatever the number of
   workers (the sums are normalized in place and become the result), plus the prefetch
-  ring and each worker's scratch; `bruteStackMemory` estimates it. A float32 3D stack of
+  ring and each worker's scratch and velocity columns (`opts.velocityCacheBytes`, 8 MiB:
+  a field is read once per bin while a shot's bins fit it; raise it for 3D shots spread
+  over thousands of bins); `bruteStackMemory` estimates it. A float32 3D stack of
   100 000 bins × 2001 samples is 1.6 GB.
 - Part of a file: pass a range, `bruteStack(f, float32, 0 ..< 5000, binning, ...)`, or a
   list of trace indices (a map selection, one channel set of a mixed SEG-D record),
