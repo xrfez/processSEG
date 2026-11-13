@@ -516,7 +516,11 @@ trace's first and last non-zero samples, so muted zeros do not count.
 
 The viewer shows the result as an in-memory dataset; processSEG describes results and
 parseSEG writes them (D14): `stackKeys(res, bin)` and `stackOverrides(res, bin)` give each
-bin's headers for parseSEG's `writeTrace`. As a convenience, `writeStack(path, res, opts)` saves
+bin's headers for parseSEG's `writeTrace`. Processed pre-stack traces go back out like
+their input (`openSeismicWriter(path, like = f)`) with `writeTrace(w, f, i, samples, keys)`
+(parseSEG 0.11.0): trace `i`'s headers with the geometry of the keys held in memory
+(joined by `applySurvey`, or the viewer's own edits) written into them, in all three
+standards; the guide has an example (velocity-and-stack, "Processed pre-stack traces"). As a convenience, `writeStack(path, res, opts)` saves
 it as SEG-Y, whatever the input standard, one trace per bin (patch F3: headers built from
 `TraceKeys`, no template trace): the bin's CDP number (3D: its 1-based index), inline and
 crossline, as CDP X/Y its centre (line and grid binnings) or the mean midpoint of its

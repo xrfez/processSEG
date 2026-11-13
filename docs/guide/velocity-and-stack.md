@@ -331,3 +331,56 @@ f.close()
   `bruteStack(f, float32, picked, binning, ...)`; a list is stacked in its own order.
 - 3D: `gridBinning` (a rotated grid of midpoints) or `inlineCrosslineBinning` (header
   numbers), and a 3D `VelocityField`.
+
+## Processed pre-stack traces, written like the input
+
+processSEG returns samples and keys; parseSEG writes them. A processed shot goes back out
+in its own standard and layout with `openSeismicWriter(path, like = f)` and
+`writeTrace(w, f, i, samples, keys)`: trace `i`'s headers, then the geometry of `keys`
+where it differs from what they hold, then the new samples. Pass the keys whenever they
+hold more than the file: geometry joined from survey files (`applySurvey`,
+`applyGeometry`) or taken from your own database lives only in memory until it is
+written. Values with no field in the trace (a station line in a standard SEG-Y layout)
+are reported by `close`, not dropped silently.
+
+```nim
+import std/math
+import parseSEG, processSEG
+
+const ns = 500
+block write:                            # a shot of 24 channels without coordinates
+  var w = openSeismicWriter("shot24.sgy", SegyOutputOptions())
+  var x = newSeq[float32](ns)
+  for ch in 1 .. 24:
+    var k = initTraceKeys()
+    (k.record, k.channel, k.t0Ms, k.intervalUs) = (7.0, float64(ch), 0.0, 2000.0)
+    k.status = tsLive
+    for j in 0 ..< ns: x[j] = float32(sin(0.05 * float64(j * ch)))
+    w.writeTrace(k, x)
+  discard w.close()
+
+var f = openSeismic("shot24.sgy", keys = true)
+var raw = zeros[float32](f.len, ns)
+discard f.readTracesInto(0 ..< f.len, raw)
+let meta = chunkMeta(f, 0 ..< f.len)
+let plan = initPipeline([bandPassOp(Corners(f1: 4, f2: 8, f3: 60, f4: 80))]).compile(
+  float32, meta.dtMs, ns)
+var ws = initWorkspace()
+ws.reserve(plan)
+plan.apply(raw, meta, ws)               # processed in place
+
+var w = openSeismicWriter("shot24_bp.sgy", like = f)
+for i in 0 ..< f.len:
+  var k = f.traceKeys(i)                # what the headers give ...
+  (k.srcX, k.srcY) = (500000.0, 6_000_000.0) # ... and coordinates from your database
+  (k.rcvX, k.rcvY) = (500000.0 + 25 * k.channel, 6_000_000.0)
+  w.writeTrace(f, i, raw, i, k)         # trace i's headers, the keys' geometry, row i
+doAssert not w.close().hasErrors
+
+var g = openSeismic("shot24_bp.sgy", keys = true)
+doAssert g.traceKeys(3).rcvX == 500100 and g.traceKeys(3).offset == 100
+doAssert g.traceKeys(3).cmpX == 500050 # the midpoint follows the coordinates
+doAssert abs(g.readTraces(3..3)[0, 200] - raw[3, 200]) < 1e-6
+g.close()
+f.close()
+```
