@@ -24,7 +24,7 @@
 ## spacing the median crossline distance between adjacent lines.
 ##
 ## **Records.** `describePatches` walks every X record (parseSEG
-## `relations`): its receiver lines and the stations on each, its channels,
+## `relationRuns`): its receiver lines and the stations on each, its channels,
 ## the extent of its receivers (inline and crossline, each side), its
 ## maximum offset. A record's half-widths are its farther side in each
 ## direction, so a patch clipped on one side keeps its full width.
@@ -49,6 +49,7 @@
 
 import std/[algorithm, math, sets, strutils, tables]
 import parseSEG
+import ./relwalk
 
 func finite(x: float64): bool {.inline.} = x.classify notin {fcNan, fcInf, fcNegInf}
 
@@ -247,24 +248,15 @@ proc receiverLayout*(g: SurveyGeometry, azimuthDeg = NaN, interval = NaN, lineSp
       raise newException(ValueError, "receiverLayout: fewer than two receiver lines; " &
         "give lineSpacing")
 
-iterator channelRelations(g: SurveyGeometry,
-    record: int64): tuple[channel: int64, relation: StationRelation] =
-  # Every channel of X record `record` with its source and receiver station:
-  # the one place this module walks relations (`describePatches`,
-  # `compareRelations`). parseSEG's `relations` goes channel by channel,
-  # scanning the record's earlier runs for each; a run-level iterator of
-  # parseSEG replaces this body (a loop over the runs and the stations of
-  # each), and its callers stay as they are.
-  for item in g.relations(record): yield item
-
 proc describeRecord(g: SurveyGeometry, layout: ReceiverLayout, record: int64): RecordPatch =
   result = RecordPatch(record: record, sourceX: NaN, sourceY: NaN, inlineMin: NaN,
     inlineMax: NaN, crosslineMin: NaN, crosslineMax: NaN, maxOffset: NaN)
   var first = true
   var sa, sc = NaN
   var seen: HashSet[StationKey] # distinct stations; multi-component channels share one
-  for (_, rel) in g.channelRelations(record):
-    inc result.channels
+  for st in g.stationChannels(record):
+    let rel = st.relation
+    result.channels += st.channels
     if first:
       first = false
       result.source = rel.source
@@ -971,10 +963,12 @@ proc compareRelations*(listed, generated: SurveyGeometry): seq[RecordAgreement] 
     if i > 0 and r == last: continue
     last = r
     var a, b: HashSet[StationKey]
-    for (_, rel) in listed.channelRelations(r):
-      a.incl stationKey(rel.receiver.line, rel.receiver.point, max(1'i16, rel.receiver.index))
-    for (_, rel) in generated.channelRelations(r):
-      b.incl stationKey(rel.receiver.line, rel.receiver.point, max(1'i16, rel.receiver.index))
+    for st in listed.stationChannels(r):
+      let s = st.relation.receiver
+      a.incl stationKey(s.line, s.point, max(1'i16, s.index))
+    for st in generated.stationChannels(r):
+      let s = st.relation.receiver
+      b.incl stationKey(s.line, s.point, max(1'i16, s.index))
     var e = RecordAgreement(record: r, listed: a.len, generated: b.len)
     for k in a:
       if k in b: inc e.common

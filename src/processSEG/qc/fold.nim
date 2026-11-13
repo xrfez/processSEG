@@ -84,10 +84,11 @@
 ## midpoint, so a pre-plot map and one of traces align bin for bin.
 ##
 ## **Pre-plot.** `preplotFold` walks every relation of the geometry (X, or
-## O with `domain = rdReceiver`) with parseSEG's `relations`. Station
-## coordinates come from per-line arrays sorted by point, with a cursor that
-## follows each run of consecutive stations, so a pair costs no hash
-## lookup. Pairs whose stations have no coordinates are counted
+## O with `domain = rdReceiver`) station by station along parseSEG's
+## relation runs (`relationRuns`), with the channels `relations` gives.
+## Station coordinates come from per-line arrays sorted by point, with a
+## cursor that follows each run of consecutive stations, so a pair costs no
+## hash lookup. Pairs whose stations have no coordinates are counted
 ## (`noCoordinates`), as are pairs outside the bins (`outside`). Every
 ## channel is a pair: a multi-component survey counts each component (a 3C
 ## survey shows three times the conventional fold), as `addFold` counts
@@ -111,6 +112,7 @@ import std/[algorithm, math, strutils, tables]
 import parseSEG
 import ../core/types
 import ../stack/binning
+import ../survey/relwalk
 
 func finite(x: float64): bool {.inline.} = x.classify notin {fcNan, fcInf, fcNegInf}
 
@@ -529,15 +531,6 @@ proc find(ix: StationIndex, c: var Cursor, s: StationKey): int {.raises: [].} =
   if found >= 0: c.pos = found
   found
 
-iterator channelRelations(g: SurveyGeometry, record: int64,
-    domain: RelationDomain): tuple[channel: int64, relation: StationRelation] =
-  # Every channel of `record` with its source and receiver station: the one
-  # place the pre-plot fold walks relations. parseSEG's `relations` goes
-  # channel by channel, scanning the record's earlier runs for each; a
-  # run-level iterator of parseSEG replaces this body (a loop over the runs
-  # and the stations of each), and `preplotFold` stays as it is.
-  for item in g.relations(record, domain): yield item
-
 proc preplotFold*(g: SurveyGeometry, binning: Binning, opts = FoldOptions(),
     domain = rdSource, maxBins = 1 shl 26): FoldMap =
   ## The pre-plot fold of `g`'s relations (X; O with `rdReceiver`) over
@@ -554,15 +547,16 @@ proc preplotFold*(g: SurveyGeometry, binning: Binning, opts = FoldOptions(),
   var sc = initCursor()
   var rc = initCursor()
   for record in g.records(domain):
-    for (_, rel) in g.channelRelations(record, domain):
-      let i = sources.find(sc, rel.source)
-      let j = receivers.find(rc, rel.receiver)
+    for st in g.stationChannels(record, domain):
+      # the components of a multi-component station: one pair each
+      let i = sources.find(sc, st.relation.source)
+      let j = receivers.find(rc, st.relation.receiver)
       if i < 0 or j < 0:
-        inc result.noCoordinates
+        result.noCoordinates += st.channels
       else:
         let s = sources.lines[sc.li][i]
         let r = receivers.lines[rc.li][j]
-        result.addPair(s.x, s.y, r.x, r.y)
+        for _ in 1..st.channels: result.addPair(s.x, s.y, r.x, r.y)
 
 proc addTrace(m: var FoldMap, k: TraceKeys) {.raises: [].} =
   let coords = finite(k.srcX) and finite(k.srcY) and finite(k.rcvX) and finite(k.rcvY)

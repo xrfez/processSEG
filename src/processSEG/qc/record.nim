@@ -64,6 +64,7 @@
 import std/[algorithm, math, sets, strutils, tables]
 import parseSEG
 import ../core/types
+import ../survey/relwalk
 
 type
   RecordMatch* = enum
@@ -179,18 +180,9 @@ func statusAt(m: ChunkMeta, i: int): Status {.inline.} =
 func keyAt(r: TraceRows, i: int): lent TraceKeys {.inline.} = r.keysAt(i)
 func statusAt(r: TraceRows, i: int): Status {.inline.} = statusOf(r.keysAt(i))
 
-iterator channelRelations(g: SurveyGeometry,
-    record: int64): tuple[channel: int64, relation: StationRelation] =
-  # Every channel of X record `record` with its source and receiver station:
-  # the one place record completeness walks relations. parseSEG's
-  # `relations` goes channel by channel, scanning the record's earlier runs
-  # for each; a run-level iterator of parseSEG replaces this body (a loop
-  # over the runs and the stations of each), and `check` stays as it is.
-  for item in g.relations(record): yield item
-
 func hasRecord(g: SurveyGeometry, record: int64): bool =
   # The X record lists at least one channel.
-  for _ in g.channelRelations(record): return true
+  for _ in g.stationChannels(record): return true
   false
 
 proc check[S: ChunkMeta | TraceRows](g: SurveyGeometry, src: S, recordMatch: RecordMatch,
