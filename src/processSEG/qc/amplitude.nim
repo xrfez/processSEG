@@ -287,7 +287,7 @@ func usable(a: TraceAmplitude): bool {.inline.} =
   a.samples > 0 and a.rmsDb - a.rmsDb == 0 and
     a.flags * {afDead, afConstant} == {}
 
-proc recordAmplitude*(traces: var openArray[TraceAmplitude], params = AmplitudeParams(),
+proc recordAmplitude*(traces: var openArray[TraceAmplitude], params: AmplitudeParams,
     ws: var Workspace): RecordAmplitude =
   ## The statistics of one record's `traces` (from `traceAmplitudeInto`):
   ## median and MAD of `rmsDb`, each trace's `robustZ`, `afWeak` and

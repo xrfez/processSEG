@@ -110,16 +110,15 @@ type
 proc badArg(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
 
-func recordStackMemory*(T: typedesc[SampleType], rows, samples: int,
-    mode = rsVertical): int =
+func recordStackMemory*(rows, samples: int, mode = rsVertical): int =
   ## The bytes a stack of `rows × samples` holds: 12 per sample (20 for
-  ## `rsDiversity`), whatever `T`.
+  ## `rsDiversity`), whatever the sample type (the sums are float64).
   rows * samples * (if mode == rsDiversity: 20 else: 12)
 
 proc initRecordStack*[T: SampleType](rows, samples: int, dtMs: float64,
     params = RecordStackParams()): RecordStack[T] =
   ## An empty stack of `rows` traces of `samples` samples at `dtMs` ms.
-  ## Allocates `recordStackMemory(T, rows, samples, params.mode)` bytes,
+  ## Allocates `recordStackMemory(rows, samples, params.mode)` bytes,
   ## zeroed. Raises `ValueError` unless `rows` and `samples` are ≥ 0 (and
   ## their product does not overflow) and `dtMs` is finite and positive, and,
   ## for `rsDiversity`, unless `windowMs` is finite and at least about 3

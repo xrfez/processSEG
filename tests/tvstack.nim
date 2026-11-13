@@ -370,8 +370,8 @@ block accessors:
   doAssert acc.workspaceSize == WorkspaceSize(f64: 1201)
   let v = initRecordStack[float32](3, 400, 4)
   doAssert v.windowSamples == 0 and v.workspaceSize == WorkspaceSize()
-  doAssert recordStackMemory(float32, 3, 400) == 3 * 400 * 12
-  doAssert recordStackMemory(float64, 3, 400, rsDiversity) == 3 * 400 * 20
+  doAssert recordStackMemory(3, 400) == 3 * 400 * 12
+  doAssert recordStackMemory(3, 400, rsDiversity) == 3 * 400 * 20
 
 block bad_arguments:
   doAssertRaises ValueError: discard initRecordStack[float32](-1, 10, dt)
