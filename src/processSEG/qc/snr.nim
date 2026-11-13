@@ -82,7 +82,9 @@
 ## `liveSpan` (first to last non-zero sample, `stack/stack`) holds it, so
 ## mutes and zero padding are not data; zeros inside it count. The window
 ## is `windowMs` rounded to an odd number of samples centred on the output
-## sample, cut by the block's ends. Cost: rows·cols twice, plus cols·window.
+## sample, cut by the block's ends. Cost: rows·cols twice, plus cols,
+## whatever the window (its sums come from block sums, not from a loop
+## over each window).
 ##
 ## **The floor.** An estimate of no signal (`Ŝ ≤ 0`, `Ps ≤ Pn` with
 ## `seExcess`, or a zero signal power) has no dB value: it returns
@@ -265,9 +267,50 @@ proc windowSnrInto*[T: SampleType](samples: Tensor[T], meta: ChunkMeta,
 # --------------------------------------------------------------- coherence --
 
 func coherenceSnrWorkspace*(cols: int): WorkspaceSize {.raises: [].} =
-  ## The scratch of `coherenceSnrInto` on a block `cols` samples wide: three
-  ## float64 arrays of `cols`.
-  WorkspaceSize(f64: 3 * max(cols, 0))
+  ## The scratch of `coherenceSnrInto` on a block `cols` samples wide:
+  ## `6·cols + 2` float64 (the columns' sums and their window sums).
+  WorkspaceSize(f64: 6 * max(cols, 0) + 2)
+
+type F64 = ptr UncheckedArray[float64]
+
+{.push boundChecks: off, overflowChecks: off.}
+
+proc blockSums(v, p: F64, n, w: int) {.raises: [].} =
+  ## Turns `v[0 ..< n]` into sums over blocks of `w`: `v[k]` becomes the
+  ## sum from `k` through the end of its block (or `n − 1`), `p[k]` the sum
+  ## from the block's start to before `k`, and `p[n]` closes the last
+  ## block. A window is then one or two of these added, never a
+  ## difference: a quiet window after a loud one keeps its precision, and a
+  ## NaN stays in the windows that hold it.
+  var bs = 0
+  var fwd = 0.0
+  while bs < n:
+    let be = min(bs + w, n)
+    fwd = 0
+    for k in bs ..< be:
+      p[k] = fwd
+      fwd += v[k]
+    var bwd = 0.0
+    for k in countdown(be - 1, bs):
+      bwd += v[k]
+      v[k] = bwd
+    bs = be
+  p[n] = (if n mod w == 0: 0.0 else: fwd)
+
+func windowSum(s, p: F64, n, h, j: int): float64 {.inline, raises: [].} =
+  ## The sum over `max(0, j − h) .. min(n − 1, j + h)` of what
+  ## `blockSums(v, p, n, 2·h + 1)` made `s` and `p` of.
+  let a = j - h
+  let b = j + h
+  if a >= 0 and b < n: s[a] + p[b + 1] # a whole window
+  elif a <= 0: p[min(b, n - 1) + 1] # from the start: inside the first block
+  else:
+    # To the end: the rest of a's block and, if another follows, the last
+    # block, whole.
+    let last = (n - 1) div (2 * h + 1) * (2 * h + 1)
+    if a < last: s[a] + s[last] else: s[a]
+
+{.pop.}
 
 func coherenceDb(residual, coherent, traces, columns, floorDb: float64): float64 {.
     inline, raises: [].} =
@@ -293,8 +336,9 @@ proc coherenceSnrInto*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
   ## from the live rows (see the module documentation for the estimator,
   ## the floor and NaN). `ws` must hold `coherenceSnrWorkspace(b.cols)`.
   ## Raises `ValueError` when `windowMs` is not finite and positive,
-  ## `floorDb` is NaN or +Inf, `b` does not match `meta`, or `dst` is not
-  ## `b.cols` long. Allocates nothing.
+  ## `floorDb` is NaN or +Inf, `b` does not match `meta`, `dst` is not
+  ## `b.cols` long, or the workspace is too small. Allocates nothing; the
+  ## time does not depend on the window.
   meta.checkShape(b)
   if not (finite(windowMs) and windowMs > 0):
     badSnr("windowMs must be finite and positive, got " & $windowMs)
@@ -303,9 +347,15 @@ proc coherenceSnrInto*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
     badSnr("dst holds " & $dst.len & " values, the block " & $b.cols & " columns")
   let cols = b.cols
   if cols == 0: return
+  if not ws.fits(coherenceSnrWorkspace(cols)):
+    badSnr("the workspace holds " & $ws.capacity & "; reserve coherenceSnrWorkspace(" &
+      $cols & ")")
   let mean = ws.scratch(float64, cols, 0) # Σ x, then the mean, then C
-  let count = ws.scratch(float64, cols, cols)
+  let count = ws.scratch(float64, cols, cols) # N, then its running sum
   let resid = ws.scratch(float64, cols, 2 * cols)
+  let live = ws.scratch(float64, cols, 3 * cols) # the running count of columns with N > 0
+  let meanP = ws.scratch(float64, cols + 1, 4 * cols)
+  let residP = ws.scratch(float64, cols + 1, 5 * cols + 1)
   for j in 0 ..< cols:
     mean[j] = 0
     count[j] = 0
@@ -329,16 +379,26 @@ proc coherenceSnrInto*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
         resid[j] += d * d
   for j in 0 ..< cols:
     mean[j] = count[j] * mean[j] * mean[j]
+  # The four window sums of each column, in a time that does not grow with
+  # the window (it was a loop over the window per column: 21 ms for a 12 s
+  # window on 6000 columns). R and C by block sums; N and the columns with
+  # N > 0 are whole numbers, exact as differences of running sums. A column
+  # without a live row has R = C = N = 0 and adds to none.
   let h = int(min(round(windowMs / meta.dtMs / 2), float64(cols)))
+  blockSums(resid, residP, cols, 2 * h + 1)
+  blockSums(mean, meanP, cols, 2 * h + 1)
+  var n, w = 0.0
   for j in 0 ..< cols:
-    var sr, sc, sn, sw = 0.0
-    for t in max(0, j - h) .. min(cols - 1, j + h):
-      if count[t] > 0:
-        sr += resid[t]
-        sc += mean[t]
-        sn += count[t]
-        sw += 1
-    dst[j] = coherenceDb(sr, sc, sn, sw, floorDb)
+    w += float64(count[j] > 0)
+    n += count[j]
+    live[j] = w
+    count[j] = n
+  for j in 0 ..< cols:
+    let lo = max(0, j - h)
+    let hi = min(cols - 1, j + h)
+    let before = (if lo > 0: (count[lo - 1], live[lo - 1]) else: (0.0, 0.0))
+    dst[j] = coherenceDb(windowSum(resid, residP, cols, h, j), windowSum(mean, meanP, cols, h, j),
+      count[hi] - before[0], live[hi] - before[1], floorDb)
   {.pop.}
 
 proc coherenceSnrInto*[T: SampleType](samples: Tensor[T], meta: ChunkMeta,

@@ -281,6 +281,7 @@ of a 30 s pilot at 0.25 ms.
 | operation | before | after |
 |---|---|---|
 | `traceAmplitudeInto`, 2000 × 3000 | 38.6 ms (6.4 ns a sample) | 14.2 ms (2.4 ns) |
+| `coherenceSnrInto`, window 0.1 / 1 / 12 s | 0.375 / 2.42 / 21.0 ms | 0.153 / 0.162 / 0.185 ms |
 | `correlateInto`, 200 records | 7.90 ms (39.5 µs a record) | 6.18 ms (30.9 µs) |
 | `correlateInto`, one record | 254 µs | 86 µs |
 | `resamplePilot` to 4 ms / to 0.5 ms | 265 / 259 ms | 5.4 / 5.9 ms |
@@ -299,6 +300,13 @@ of a 30 s pilot at 0.25 ms.
   ones); the mean differs in the 13th digit on three (the order of the sums). The spike
   pass's sums need `2·cols + 1` float64, hence the `Workspace` the call now takes. What
   is left is mostly two serial sums per sample for the block sums, about 1 ns.
+- **Coherence SNR.** Each output column summed its window: cols × window operations. The
+  four window sums now come from block sums (the residual and the coherent energy, as
+  suffix plus prefix of blocks one window long: no subtraction, so a quiet window after a
+  loud one keeps its precision and a NaN stays in its own windows) and from running sums
+  (the two counts, whole numbers, exact as differences): the time no longer depends on the
+  window. Equal to a loop over every window within 1e-9 dB (tested with a 10⁴ : 1 loud and
+  quiet stretch); the scratch grows from 3 to 6 arrays of `cols`.
 - **Correlation, a block.** The two FFTs are 5.3 of the 6.2 ms now; what was around them
   cost half as much again. The spectrum's multiplication by the pilot's was vectorized
   across bins, shuffling the eight lanes in and out of each register (17.3 ms for 250

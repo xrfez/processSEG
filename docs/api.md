@@ -340,7 +340,7 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `DefaultSnrFloorDb` | −40 dB: returned for no signal, and every SNR clamped up to it (`floorDb = -Inf`: no clamp). |
 | `meanPower(x, cols)`, `powerSnrDb(signal, noise, estimator = seRatio, floorDb, stabilization = 0)`, `windowSnrDb(x, signal, noise: Slice[int], estimator, floorDb, stabilization)` | The kernels: mean power over columns (NaN when empty), dB from two mean powers, both on one trace. NaN for an empty window or a zero noise power. |
 | `windowSnrInto(b \| samples, meta, params, [refMs \| guide: Moveout,] dst)` | The windowed SNR of every row, in dB: windows at fixed trace times, relative to a time per row (picks), or to a moveout guide at each offset (LMO). NaN for non-live rows, NaN references, empty windows. |
-| `coherenceSnrWorkspace(cols)`; `coherenceSnrInto(b \| samples, meta, windowMs, ws, dst, floorDb = DefaultSnrFloorDb)` | The SNR of a flattened (NMO/LMO-corrected) gather per column, over a centred window: signal power over noise power per trace from the mean trace and the residuals (an unbiased estimator, the semblance relation). Rows count over their `liveSpan`. |
+| `coherenceSnrWorkspace(cols)`; `coherenceSnrInto(b \| samples, meta, windowMs, ws, dst, floorDb = DefaultSnrFloorDb)` | The SNR of a flattened (NMO/LMO-corrected) gather per column, over a centred window: signal power over noise power per trace from the mean trace and the residuals (an unbiased estimator, the semblance relation). Rows count over their `liveSpan`. The time does not depend on the window; the scratch is `6·cols + 2` float64 (`ValueError` when `ws` holds less). |
 
 ## qc/shotfit: per-shot refraction fit
 
