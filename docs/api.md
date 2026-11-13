@@ -301,7 +301,7 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `acc.bins`, `acc.samples`, `acc.dtMs`, `acc.startMs`, `acc.foldAt(bin, j)`, `acc.sumAt(bin, j)` | Its shape and contents. |
 | `acc.add(bin, x, first = 0, last = -1): bool`, `acc.addLive(bin, x): bool`, `liveSpan(x)` | Add a trace in any order (false: bin < 0 or a non-finite sample, nothing added); `addLive` counts the fold only between the first and last non-zero samples, so mutes do not count. |
 | `acc.addMidpoint(bin, cmpX, cmpY)`; `acc.tracesAt(bin)`, `acc.cmpXAt(bin)`, `acc.cmpYAt(bin)` | Per bin: the traces added (a fold map), and the mean of the midpoints given for them (NaN when none): where a bin of header numbers lies on the map. |
-| `acc.merge(other)`, `acc.clear` | Add another thread's share; zero it. |
+| `acc.merge(other)`, `acc.clear` | Add another thread's share (`ValueError` unless the bins, samples and time axis agree: the interval by `sameInterval`, the start within 1e-9 of a sample); zero it. |
 | `FoldNorm` (`fnNone`, `fnFold`, `fnSqrtFold`); `acc.stackInto(dst, norm = fnFold)`, `acc.foldInto(dst: var Tensor[int32])` | The normalized stack and the fold copied into caller tensors `[bins, samples]`; the accumulator stays open. |
 | `acc.finishInto(data, fold, norm = fnFold)` | Ends the accumulation without a copy: the sums are normalized in place and the accumulator's storage is moved into `data` and `fold` (a large stack is held once); `acc` is left with no bins. |
 

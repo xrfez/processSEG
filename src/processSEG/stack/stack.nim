@@ -53,6 +53,7 @@
 
 import std/math
 import parseSEG
+import ../core/types
 
 type
   FoldNorm* = enum
@@ -319,9 +320,13 @@ proc mergeInto[T](sum {.noalias.}: ptr UncheckedArray[T],
 proc merge*[T](acc: var StackAccumulator[T], other: StackAccumulator[T]) =
   ## Adds the sums, folds, trace counts and midpoints of `other` into `acc`
   ## (another thread's share of the same stack). Raises `ValueError` unless
-  ## they have the same bins, samples and time axis.
+  ## they have the same bins, samples and time axis: the interval as
+  ## `sameInterval` compares it, the start time within 1e-9 of a sample (two
+  ## accumulators made from a header's interval and a computed one differ in
+  ## the last bit).
   if other.bins != acc.bins or other.samples != acc.samples or
-      other.dtMs != acc.dtMs or other.startMs != acc.startMs:
+      not sameInterval(other.dtMs, acc.dtMs) or
+      not (abs(other.startMs - acc.startMs) <= 1e-9 * acc.dtMs):
     raise newException(ValueError, "merging a " & $other.bins & " × " &
       $other.samples & " stack into a " & $acc.bins & " × " & $acc.samples &
       " one, or with another time axis")

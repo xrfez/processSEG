@@ -115,6 +115,16 @@ block merge_equals_one:
   var other = initStackAccumulator[float64](4, 50, dt)
   doAssertRaises ValueError: a.merge(other) # another start time
   doAssert a.startMs == 100 and a.dtMs == dt and a.bins == 4 and a.samples == 50
+  # An interval read from a header (2000 µs / 1000) and one computed
+  # (1000 / 500 Hz), and start times a rounding apart: the same time axis.
+  var h = initStackAccumulator[float64](1, 10, 2000 / 1000, startMs = 0.1 + 0.2)
+  let p = initStackAccumulator[float64](1, 10, 1000 / 500, startMs = 0.3)
+  doAssert h.startMs != p.startMs # 0.30000000000000004 and 0.3
+  h.merge(p)
+  doAssertRaises ValueError: h.merge(initStackAccumulator[float64](1, 10, 2.0,
+    startMs = 0.3 + 1e-6))
+  doAssertRaises ValueError: h.merge(initStackAccumulator[float64](1, 10, 2.0 + 1e-6,
+    startMs = 0.3))
   a.clear
   doAssert a.sumAt(2, 10) == 0 and a.foldAt(2, 10) == 0
 
