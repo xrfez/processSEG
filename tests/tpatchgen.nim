@@ -181,6 +181,34 @@ block arguments:
   let none = [PatchShot(record: 1, source: stationKey(1, 1, 1))]
   doAssert g.generateRelations(none, initPatchTemplate(4, 11)).len == 0
 
+block stations_out_of_order:
+  # A layout built by hand need not keep its stations in point order. The
+  # stations of a patch are found by bisection only on a line whose slots
+  # ascend; on any other line every station is looked at. By numbers the
+  # patch does not depend on the order at all (slots count from the line's
+  # first station, wherever that is), so the X records must not either.
+  var s = initSyntheticSurvey()
+  let f = s.spsFile
+  var g = initSurveyGeometry()
+  g.addSps(f)
+  var layout = g.receiverLayout
+  for i in [1, 2, 5]: layout.lines[i].stations.reverse()
+  let t = s.numbersTemplate(initPatchTemplate(4, 11))
+  doAssert sameRuns(g.generateRelations(layout, f.patchShots, t), f.relations)
+  # A step that is not positive: the slots descend although the points ascend.
+  layout = g.receiverLayout
+  layout.lines[3].pointStep = -1
+  var want: seq[SpsRelation]
+  for r in f.relations:
+    if r.rcvLine != layout.lines[3].line: want.add r
+  var got: seq[SpsRelation]
+  for r in g.generateRelations(layout, f.patchShots, t):
+    if r.rcvLine != layout.lines[3].line: got.add r
+  doAssert got.len == want.len and got.len > 0
+  for i in 0 ..< got.len:
+    doAssert got[i].fieldRecord == want[i].fieldRecord and
+      got[i].fromReceiver == want[i].fromReceiver and got[i].toReceiver == want[i].toReceiver
+
 block point_index_out_of_range:
   # An SPS record holds a one-digit point index, but a point built in code
   # may hold anything: the station key takes it clamped, as parseSEG's
