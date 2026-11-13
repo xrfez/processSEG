@@ -186,41 +186,120 @@ block validation_and_allocation:
   doAssert allocsIn(applyNmo(b, meta, field, p, ws)) == 0
 
 block nmo_matches_a_reference:
-  # nmoInto against a direct evaluation of the NMO mapping with linear
-  # interpolation (rows longer than the 256-sample column blocks, random
-  # start times, offsets and velocities): exact without a stretch mute, and
-  # from the first unmuted column with one.
-  proc refNmo(src: seq[float64], srcStart: float64, m: int,
-      dstStart, dt, off: float64, vel: seq[float64]): seq[float64] =
+  # nmoInto against a direct evaluation of the NMO mapping (rows longer
+  # than the 256-sample column blocks, random start times, offsets and
+  # velocities, linear and cubic, both sample types): the samples without a
+  # stretch mute, and the mute's start and the samples below it with one.
+  # The kernel multiplies by 1/V² and 1/dt where the reference divides, so
+  # its input columns differ by a few ulps (1e-12 of a column at most) and a
+  # float64 sample by that times the local slope: 1e-9 is asked, where the
+  # division form met 1e-12. A float32 row is interpolated in float32:
+  # within 1e-6 of the float64 reference, relative to the sample's size.
+  proc refCols(n, m: int, srcStart, dstStart, dt, off: float64,
+      vel: seq[float64]): seq[float64] =
+    # The input column of each output sample; NaN before time 0.
     result = newSeq[float64](m)
-    let n = src.len
-    proc at(i: int): float64 = (if i >= 0 and i < n: src[i] else: 0.0)
     for j in 0..<m:
       let t0 = dstStart + float64(j) * dt
-      if t0 < 0: continue
       let tx = 1000 * abs(off) / vel[j]
-      let c = (sqrt(t0 * t0 + tx * tx) - srcStart) / dt
-      if c.isNaN or c <= -2 or c >= float64(n + 1): continue
-      let k = int(floor(c))
-      let f = c - float64(k)
-      result[j] = (1 - f) * at(k) + f * at(k + 1)
-  var r = initRand(3)
-  for it in 0..<200:
-    let n = r.rand(1..1500)
-    let m = r.rand(1..1500)
-    var src = newSeq[float64](n)
-    for v in src.mitems: v = r.gauss()
-    var vel = newSeq[float64](m)
-    for v in vel.mitems: v = r.rand(1500.0 .. 3000.0)
-    let dt = [1.0, 2.0, 4.0][r.rand(2)]
-    let ss = r.rand(-100.0 .. 100.0)
-    let ds = r.rand(-100.0 .. 100.0)
-    let off = r.rand(-3000.0 .. 3000.0)
-    let want = refNmo(src, ss, m, ds, dt, off, vel)
-    var dst = newSeq[float64](m)
-    discard src.nmoInto(ss, dst, ds, dt, off, vel, initNmoParams(maxStretch = Inf))
-    for j in 0..<m: doAssert abs(dst[j] - want[j]) <= 1e-12, $it & " col " & $j
-    var muted = newSeq[float64](m)
-    let first = src.nmoInto(ss, muted, ds, dt, off, vel, initNmoParams(maxStretch = 0.3))
-    for j in 0..<first: doAssert muted[j] == 0
-    for j in first..<m: doAssert abs(muted[j] - want[j]) <= 1e-12
+      result[j] = if t0 < 0: NaN else: (sqrt(t0 * t0 + tx * tx) - srcStart) / dt
+  proc refStart(cols: seq[float64], maxStretch: float64): int =
+    # The first column whose stretch to the next one is at most maxStretch.
+    let m = cols.len
+    if maxStretch == Inf or m <= 1: return 0
+    for j in 0..<m:
+      let d = if j + 1 < m: cols[j + 1] - cols[j] else: cols[j] - cols[j - 1]
+      if d > 0 and 1 / d - 1 <= maxStretch: return j
+    m
+  proc refNmo[T](src: seq[T], cols: seq[float64], interp: ShiftInterp): seq[float64] =
+    let n = src.len
+    proc at(i: int): float64 = (if i >= 0 and i < n: float64(src[i]) else: 0.0)
+    result = newSeq[float64](cols.len)
+    for j, c in cols:
+      if not (c.isNaN or c <= -2 or c >= float64(n + 1)):
+        let k = int(floor(c))
+        let f = c - float64(k)
+        result[j] =
+          if interp == siLinear: (1 - f) * at(k) + f * at(k + 1)
+          else: (-0.5 * f^3 + f^2 - 0.5 * f) * at(k - 1) +
+            (1.5 * f^3 - 2.5 * f^2 + 1) * at(k) +
+            (-1.5 * f^3 + 2 * f^2 + 0.5 * f) * at(k + 1) +
+            (0.5 * f^3 - 0.5 * f^2) * at(k + 2)
+  proc check[T](tol: float64) =
+    var r = initRand(3)
+    for it in 0..<400:
+      let n = if it mod 9 == 0: r.rand(1..5) else: r.rand(1..1500)
+      let m = if it mod 7 == 0: r.rand(1..5) else: r.rand(1..1500)
+      var src = newSeq[T](n)
+      for v in src.mitems: v = T(r.gauss())
+      var vel = newSeq[float64](m)
+      for v in vel.mitems: v = r.rand(1500.0 .. 3000.0)
+      if it mod 5 == 0: # a smooth function: a stretch mute with a clear start
+        for j in 0..<m: vel[j] = 1600 + 0.5 * float64(j)
+      let dt = [1.0, 2.0, 4.0][r.rand(2)]
+      let ss = r.rand(-100.0 .. 100.0)
+      let ds = r.rand(-100.0 .. 100.0)
+      let off = if it mod 11 == 0: 0.0 else: r.rand(-3000.0 .. 3000.0)
+      let interp = [siLinear, siCubic][it mod 2]
+      let cols = refCols(n, m, ss, ds, dt, off, vel)
+      let want = refNmo(src, cols, interp)
+      template close(a, b: float64): bool = abs(a - b) <= tol * max(1, abs(b))
+      var dst = newSeq[T](m)
+      doAssert src.nmoInto(ss, dst, ds, dt, off, vel, initNmoParams(interp,
+        maxStretch = Inf)) == 0
+      for j in 0..<m:
+        doAssert close(float64(dst[j]), want[j]), $T & " " & $it & " col " & $j
+      for maxStretch in [0.3, 0.05]:
+        var muted = newSeq[T](m)
+        let first = src.nmoInto(ss, muted, ds, dt, off, vel, initNmoParams(interp,
+            maxStretch))
+        doAssert first == refStart(cols, maxStretch), $T & " " & $it
+        for j in 0..<first: doAssert muted[j] == 0
+        for j in first..<m: doAssert close(float64(muted[j]), want[j])
+      # The sloth form: the same bits and the same start.
+      var sloth = vel
+      vrmsToSloth(sloth)
+      for j in 0..<m: doAssert sloth[j] == 1 / (vel[j] * vel[j])
+      var bySloth = newSeq[T](m)
+      let p = initNmoParams(interp, maxStretch = 0.3, taperMs = float64(it mod 3) * 10)
+      let a = src.nmoInto(ss, dst, ds, dt, off, vel, p)
+      let b = src.nmoSlothInto(ss, bySloth, ds, dt, off, sloth, p)
+      doAssert a == b and dst == bySloth, $T & " " & $it
+  check[float64](1e-9)
+  check[float32](1e-6)
+
+block unknown_velocities_and_input_ends:
+  # A NaN velocity (or sloth) zeroes its own samples only; the rest of the
+  # row, in the same 256-sample block and in the others, is corrected (a
+  # block with a NaN column is interpolated in float64, the others in
+  # float32: the last bit of a float32 sample may differ).
+  for interp in [siLinear, siCubic]:
+    var src = newSeq[float32](900)
+    for j in 0..<src.len: src[j] = float32(j mod 7) - 3
+    var vel = newSeq[float64](900)
+    for v in vel.mitems: v = 2000
+    var clean = newSeq[float32](900)
+    let p = initNmoParams(interp, maxStretch = Inf)
+    discard src.nmoInto(0, clean, 0, dt, 300, vel, p)
+    vel[10] = NaN
+    vel[400] = NaN
+    vel[899] = 0 # an infinite sloth: zeroed as well
+    var dst = newSeq[float32](900)
+    discard src.nmoInto(0, dst, 0, dt, 300, vel, p)
+    for j in 0..<900:
+      if j in [10, 400, 899]: doAssert dst[j] == 0
+      else: doAssert abs(dst[j] - clean[j]) <= 1e-6 * max(1, abs(clean[j])), $j
+    vrmsToSloth(vel)
+    doAssert vel[10].isNaN and vel[899] == Inf and vel[0] == 1 / (2000.0 * 2000)
+    var bySloth = newSeq[float32](900)
+    discard src.nmoSlothInto(0, bySloth, 0, dt, 300, vel, p)
+    doAssert bySloth == dst
+    doAssert allocsIn(vrmsToSloth(vel)) == 0
+    var count: int
+    doAssert allocsIn((count = src.nmoSlothInto(0, bySloth, 0, dt, 300, vel,
+        p))) == 0 and count == 0
+  when not defined(addressSanitizer):
+    var short = newSeq[float64](2)
+    var dst = newSeq[float32](3)
+    doAssertRaises AssertionDefect:
+      discard [1'f32, 2].nmoSlothInto(0, dst, 0, dt, 100, short, initNmoParams())

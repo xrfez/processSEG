@@ -271,7 +271,8 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 |---|---|
 | `NmoParams`; `initNmoParams(interp = siLinear, maxStretch = 0.3, taperMs = 0)`, `p.interp`, `p.maxStretch`, `p.taperMs` | Interpolation and stretch mute (`maxStretch = Inf`: none). |
 | `nmoStretch(offset, vrms, t0Ms)` | `t/t₀ − 1` at a constant velocity. |
-| `nmoInto(src, srcStartMs, dst, dstStartMs, dtMs, offset, vrms, p): int` | The kernel: one row onto a zero-offset time axis (which may differ from the input's); returns the first unmuted column. |
+| `nmoInto(src, srcStartMs, dst, dstStartMs, dtMs, offset, vrms, p): int` | The kernel: one row onto a zero-offset time axis (which may differ from the input's); returns the first unmuted column. A float32 row is interpolated in float32 (within 1e-6 of the float64 evaluation, relative to the samples' size). |
+| `vrmsToSloth(v)`, `nmoSlothInto(src, srcStartMs, dst, dstStartMs, dtMs, offset, sloth, p): int` | The same kernel fed the sloth `1/Vrms²` of each output sample: convert a velocity column once, in place, and correct many rows with it without a division per sample (the same samples as `nmoInto`). |
 | `nmoWorkspace(T, cols)` | The scratch of the block forms. |
 | `applyNmo(b \| samples, meta, f: VelocityFunction \| field: VelocityField, p, ws)` | NMO in place, each row from its own `t0Ms`; a field is read at each row's location. Rows with a NaN offset, `t0Ms` or location are left alone. |
 

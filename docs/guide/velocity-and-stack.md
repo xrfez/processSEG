@@ -147,7 +147,10 @@ samples.applyStatics(meta, d)           # the datum form: no statics buffer
 
 `applyNmo` corrects each live row in place from its own `t0Ms`, with a `VelocityFunction`
 or a `VelocityField` read at each row's location (the keys' `ensemble` in 2D, `inline`
-and `crossline` in 3D), and mutes where the stretch exceeds `maxStretch`. A
+and `crossline` in 3D), and mutes where the stretch exceeds `maxStretch`. (The kernel
+under it is `nmoInto`, one row with a velocity per output sample; to correct many rows
+with one velocity column yourself, convert the column once with `vrmsToSloth` and call
+`nmoSlothInto`, which gives the same samples without a division per sample.) A
 `StackAccumulator` then sums traces into bins in any order with a **per-sample** fold:
 `addLive` counts only the span between a trace's first and last non-zero samples, so
 muted zeros do not count.

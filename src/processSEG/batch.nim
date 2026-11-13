@@ -175,7 +175,7 @@ type
 
   WorkerState[T] = object
     ws: Workspace
-    vel: seq[float64] # the RMS velocities of bin `lastBin` on the stack's axis
+    vel: seq[float64] # the sloths (1/V²) of bin `lastBin` on the stack's axis
     row: seq[T]       # one NMO-corrected trace
     lastBin: int
     failed: bool
@@ -208,7 +208,8 @@ proc note[T](job: ptr Job[T], s: var WorkerState[T], msg: string) {.raises: [].}
 
 proc velocityAt[T](job: ptr Job[T], s: var WorkerState[T], bin: int) {.
     raises: [ValueError].} =
-  # Fills s.vel with the bin's RMS velocities on the stack's axis.
+  # Fills s.vel with the bin's sloths on the stack's axis: the RMS
+  # velocities, inverted once for every trace of the bin.
   if bin == s.lastBin or (job.velKind == velFunction and s.lastBin >= 0):
     return
   s.lastBin = bin
@@ -221,6 +222,7 @@ proc velocityAt[T](job: ptr Job[T], s: var WorkerState[T], bin: int) {.
     of fk2D: job.field[].vrmsInto(loc.cdp, job.startMs, job.dtMs, s.vel)
     of fk3D: job.field[].vrmsInto(loc.inline, loc.crossline, job.startMs,
         job.dtMs, s.vel)
+  vrmsToSloth(s.vel)
 
 func stackable[T](job: ptr Job[T], k: TraceKeys, bin: int): bool {.inline.} =
   # A live trace is corrected and stacked: it has a bin, an offset, a start
@@ -262,8 +264,9 @@ proc correctChunk[T](worker: int, samples: ptr UncheckedArray[T], rows, cols: in
       if job.stackable(k, bin):
         {.cast(gcsafe).}:
           velocityAt(job, s, bin)
-        discard nmoInto(b.row(r, meta.liveSamples(r, n)), meta.sampleTimeMs(r, 0),
-          s.row, job.startMs, job.dtMs, k.offset, s.vel, job.nmo)
+        discard nmoSlothInto(b.row(r, meta.liveSamples(r, n)),
+          meta.sampleTimeMs(r, 0), s.row, job.startMs, job.dtMs, k.offset,
+          s.vel, job.nmo)
         copyMem(dst, addr s.row[0], job.samples * sizeof(T))
       else:
         zeroMem(dst, job.samples * sizeof(T))
