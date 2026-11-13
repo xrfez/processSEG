@@ -136,6 +136,95 @@ block normalizations:
   var wrongFold = newTensor[int32](1, 4)
   doAssertRaises ValueError: acc.foldInto(wrongFold)
 
+block finish_without_a_copy:
+  # finishInto gives the stack and fold stackInto and foldInto give, from
+  # the accumulator's own storage, for every normalization and both types.
+  proc check[T](norm: FoldNorm) =
+    var rng = initRand(9)
+    var acc = initStackAccumulator[T](5, 40, dt)
+    var x = newSeq[T](40)
+    for i in 0..<60:
+      for j in 0..<40: x[j] = T(rng.rand(-64..64)) / 16
+      doAssert acc.add(rng.rand(0..3), x, rng.rand(0..15), rng.rand(20..40))
+    var want = newTensor[T](5, 40)
+    var wantFold = newTensor[int32](5, 40)
+    acc.stackInto(want, norm)
+    acc.foldInto(wantFold)
+    let copy = acc # a copy owns its sums: finishing one leaves the other
+    var data = newTensor[T](1, 1) # replaced, whatever it held
+    var fold: Tensor[int32]
+    doAssert allocsIn(acc.finishInto(data, fold, norm)) == 0
+    doAssert data == want and fold == wantFold
+    doAssert data.shape == [5, 40] and wantFold[4, 0] == 0 and data[4, 7] == 0
+    doAssert acc.bins == 0 and not acc.add(-1, x)
+    when not defined(addressSanitizer):
+      doAssertRaises AssertionDefect: discard acc.add(0, x) # no bins left
+    doAssert copy.bins == 5 and copy.sumAt(1, 20) != 0
+    var again = newTensor[T](5, 40)
+    copy.stackInto(again, norm)
+    doAssert again == want
+    var finished = acc # a finished accumulator still copies and clears
+    finished.clear
+    doAssert finished.bins == 0
+  for norm in [fnNone, fnFold, fnSqrtFold]:
+    check[float32](norm)
+    check[float64](norm)
+  # A copy does not share the original's sums.
+  var a = initStackAccumulator[float32](1, 3, dt)
+  doAssert a.add(0, [1'f32, 2, 3])
+  var b = a
+  doAssert b.add(0, [1'f32, 1, 1])
+  doAssert a.sumAt(0, 0) == 1 and a.foldAt(0, 0) == 1
+  doAssert b.sumAt(0, 0) == 2 and b.foldAt(0, 0) == 2
+  var none = initStackAccumulator[float32](0, 3, dt)
+  var data: Tensor[float32]
+  var fold: Tensor[int32]
+  none.finishInto(data, fold)
+  doAssert data.size == 0 and fold.size == 0
+
+block traces_and_midpoints_per_bin:
+  # Each bin counts the traces added to it and keeps the mean of the
+  # midpoints given for them: a fold map and a place on the map for a bin
+  # that has no geometry of its own (header CDP or inline/crossline bins).
+  var acc = initStackAccumulator[float32](4, 5, dt)
+  doAssert acc.tracesAt(0) == 0 and acc.cmpXAt(0).isNaN and acc.cmpYAt(0).isNaN
+  for (bin, x, y) in [(0, 100.0, 10.0), (0, 104.0, 14.0), (2, 7.0, -3.0),
+                      (0, 102.0, 12.0)]:
+    doAssert acc.addLive(bin, [1'f32, 2, 3, 0, 0])
+    acc.addMidpoint(bin, x, y)
+  doAssert acc.tracesAt(0) == 3 and acc.tracesAt(1) == 0 and acc.tracesAt(2) == 1
+  doAssert acc.cmpXAt(0) == 102 and acc.cmpYAt(0) == 12
+  doAssert acc.cmpXAt(2) == 7 and acc.cmpYAt(2) == -3 and acc.cmpXAt(1).isNaN
+  # A trace that is refused, or adds no sample, is not counted; a midpoint
+  # with an unknown coordinate, or for no bin, is left out of the mean.
+  doAssert not acc.add(1, [1'f32, NaN, 0, 0, 0])
+  doAssert acc.addLive(1, [0'f32, 0, 0, 0, 0]) and acc.add(1, [1'f32], 0, 0)
+  doAssert acc.tracesAt(1) == 0
+  doAssert acc.add(3, [5'f32])
+  acc.addMidpoint(3, NaN, 4)
+  acc.addMidpoint(3, 4, NaN)
+  acc.addMidpoint(-1, 1, 1)
+  doAssert acc.tracesAt(3) == 1 and acc.cmpXAt(3).isNaN and acc.cmpYAt(3).isNaN
+  acc.addMidpoint(3, 9, 8)
+  doAssert acc.cmpXAt(3) == 9 and acc.cmpYAt(3) == 8
+  # merge adds counts and midpoints; a copy has its own; clear zeroes them.
+  var other = initStackAccumulator[float32](4, 5, dt)
+  doAssert other.add(2, [1'f32, 1])
+  other.addMidpoint(2, 9, 1)
+  var copy = acc
+  copy.merge(other)
+  doAssert copy.tracesAt(2) == 2 and copy.cmpXAt(2) == 8 and copy.cmpYAt(2) == -1
+  doAssert acc.tracesAt(2) == 1 and acc.cmpXAt(2) == 7
+  var added: bool
+  doAssert allocsIn((added = acc.add(2, [1'f32]); acc.addMidpoint(2, 1, 1))) == 0
+  copy.clear
+  doAssert copy.tracesAt(0) == 0 and copy.cmpXAt(0).isNaN
+  when compileOption("boundChecks") and not defined(addressSanitizer):
+    doAssertRaises IndexDefect: discard acc.tracesAt(4)
+    doAssertRaises IndexDefect: discard acc.cmpXAt(-1)
+    doAssertRaises IndexDefect: discard acc.cmpYAt(4)
+    doAssertRaises AssertionDefect: acc.addMidpoint(4, 1, 1)
+
 block refused_traces:
   var acc = initStackAccumulator[float32](2, 4, dt)
   doAssert not acc.add(-1, [1'f32, 1, 1, 1]) # no bin
@@ -154,6 +243,47 @@ block refused_traces:
     doAssertRaises AssertionDefect: discard acc.add(0, [1'f32, 1], 1, 3)
   doAssert acc.add(0, [5'f32, 5]) # shorter than the stack: from sample 0
   doAssert acc.sumAt(0, 0) == 5 and acc.foldAt(0, 3) == 1
+  # A sample past a bin's end is not the next bin's sample: bin and sample
+  # are checked each on its own (foldAt(0, 5) of 2 × 4 read bin 1's sample 1).
+  when compileOption("boundChecks") and not defined(addressSanitizer):
+    doAssert acc.add(1, [0'f32, 7, 0, 0], 1, 2) and acc.foldAt(1, 1) == 1
+    doAssertRaises IndexDefect: discard acc.foldAt(0, 5)
+    doAssertRaises IndexDefect: discard acc.sumAt(0, 5)
+    doAssertRaises IndexDefect: discard acc.foldAt(0, -1)
+    doAssertRaises IndexDefect: discard acc.foldAt(2, 0)
+    doAssertRaises IndexDefect: discard acc.sumAt(-1, 0)
+
+block non_finite_samples_refused_anywhere:
+  # A NaN or an infinity at any position of the span refuses the trace (the
+  # check runs in vector blocks: first, last and odd positions, any length);
+  # the largest, the smallest and negative zero are finite.
+  proc check[T]() =
+    let quiet = T(NaN)
+    let payload =
+      when T is float32: cast[float32](0x7F80_0001'u32) # a signalling NaN
+      else: cast[float64](0xFFF0_0000_0000_0001'u64)
+    let largest = # finite (`high` of a float type is the infinity)
+      when T is float32: 3.4028234e38'f32
+      else: 1.7976931348623157e308
+    for n in [1, 2, 7, 8, 9, 31, 32, 33, 100]:
+      var acc = initStackAccumulator[T](1, n, dt)
+      var x = newSeq[T](n)
+      for j in 0..<n: x[j] = T(j mod 5) - 2
+      x[0] = T(-0.0)
+      x[n - 1] = largest
+      if n > 2: x[1] = T(1e-40) # float32: subnormal
+      doAssert acc.add(0, x), $n
+      for at in 0..<n:
+        for bad in [quiet, payload, T(Inf), T(-Inf)]:
+          var y = x
+          y[at] = bad
+          doAssert not acc.add(0, y), $n & " " & $at
+          # Outside the span it does not count.
+          if at > 0: doAssert acc.add(0, y, 0, at)
+          if at < n - 1: doAssert acc.add(0, y, at + 1, n)
+          acc.clear
+  check[float32]()
+  check[float64]()
 
 block validation_memory_allocation:
   doAssertRaises ValueError: discard initStackAccumulator[float32](-1, 10, dt)
@@ -163,8 +293,20 @@ block validation_memory_allocation:
       int) div 2, 10, dt)
   doAssertRaises ValueError: discard initStackAccumulator[float32](1, high(
       int) div 4, dt)
-  doAssert stackMemory(float32, 10_000, 2001) == 160_080_000
-  doAssert stackMemory(float64, 2, 3) == 72
+  # Per sample a sum and an int32 fold; per bin a trace count and the
+  # midpoint sums (24 bytes).
+  doAssert stackMemory(float32, 10_000, 2001) == 160_080_000 + 240_000
+  doAssert stackMemory(float64, 2, 3) == 72 + 48
+  # A size beyond int is a ValueError in every build mode (it was an
+  # OverflowDefect, and a wrapped number in a danger build).
+  doAssertRaises ValueError: discard stackMemory(float32, high(int) div 2, 10)
+  doAssertRaises ValueError: discard stackMemory(float32, 3_037_000_500, 3_037_000_500)
+  doAssertRaises ValueError: discard stackMemory(float64, high(int) div 35, 1)
+  doAssertRaises ValueError: discard stackMemory(float32, -1, 10)
+  doAssertRaises ValueError: discard stackMemory(float32, 10, -1)
+  doAssert stackMemory(float64, high(int) div 36, 1) == high(int) div 36 * 36
+  doAssert stackMemory(float32, 0, high(int)) == 0
+  doAssert stackMemory(float32, 5, 0) == 5 * 24
   var acc = initStackAccumulator[float32](8, 500, dt)
   var x = newSeq[float32](500)
   for j in 100..<400: x[j] = 1

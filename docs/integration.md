@@ -408,7 +408,14 @@ geometry yet) gives a NaN tick.
   t0Ms)` takes a `VelocityFunction`'s RMS velocity at `t0Ms`, and
   `moveoutTimesInto(meta, field, t0Ms, ticks)` / `moveoutColumnsInto(meta, field, t0Ms,
   ticks)` take a `VelocityField`'s at each row's location (the keys' `ensemble` in 2D,
-  `inline`/`crossline` in 3D; a `locations` overload takes distances along the line).
+  `inline`/`crossline` in 3D; a `locations` overload takes distances along the line);
+- the hyperbolas a stack will correct: `bruteStack` reads its field at each **bin's**
+  numbers (`binning.location(bin)`), which are the traces' header numbers only for
+  `cdpBinning` and `inlineCrosslineBinning`. With `lineBinning` or `gridBinning`, pass
+  the binning: `moveoutTimesInto(meta, field, binning, t0Ms, ticks)` /
+  `moveoutColumnsInto(meta, field, binning, t0Ms, ticks)` read the field at the location
+  of each row's bin (`binning.locationOf(keys)`; NaN for a row in no bin), and
+  `applyNmo(samples, meta, field, binning, p, ws)` previews the NMO itself.
 
 Velocity picks load with `readVelocities(path)` (VELF cards, HANDVEL blocks or CSV,
 detected) into `VelocityPick`s, and `initVelocityField(picks, dtMs, tMaxMs)` builds the
@@ -445,42 +452,69 @@ processSEG's QC modules score this automatically (experimental for land data):
 ## Batch results: brute stack
 
 `bruteStack(f, T, [traces,] binning, velocity, opts, progress)` (`processSEG/batch`) reads
-the file through parseSEG's prefetcher (`uniform = true`). On each chunk, in the
-prefetcher's `transform` hook on its decode worker, it runs datum statics (optional,
-`opts.useStatics` and `opts.statics = datumStatics(datumZ, vReplacement)`), the pre-stack
+the file through parseSEG's prefetcher (`uniform = true`); `traces` is a range or a list
+of trace indices (a map selection, one component, one channel set), the whole file when
+left out. On each chunk, in the
+prefetcher's `transform` hook on its decode worker, it runs datum statics (optional:
+`opts.statics = some(datumStatics(datumZ, vReplacement))`, an `Option`), the pre-stack
 flow (`opts.flow`, a `Pipeline`: mutes, filters, gain), NMO with a stretch mute
-(`opts.nmo = initNmoParams(interp, maxStretch, taperMs)`) onto the stack's time axis, and
-accumulates each live trace into its bin. Stacking is linear and needs no sort; the fold
-is counted per sample, between each trace's first and last non-zero samples, so muted
-zeros do not count.
+(`opts.nmo = initNmoParams(interp, maxStretch, taperMs)`) onto the stack's time axis. The
+calling thread takes the corrected chunks in file order and adds each live trace to its
+bin. Stacking is linear and needs no sort; the fold is counted per sample, between each
+trace's first and last non-zero samples, so muted zeros do not count.
 
 - **Bins:** `cdpBinning` (header CDP), `lineBinning` (midpoints projected onto a line),
   `gridBinning` (a rotated 3D grid) or `inlineCrosslineBinning` (header numbers).
 - **Velocities:** a `VelocityFunction` for every bin, or a `VelocityField` read at each
   bin's location: its CDP number in 2D, its inline and crossline in 3D
-  (`binning.location(bin)`).
-- **Threads:** `opts.workers` prefetch workers, each with its own `Workspace` and
-  `StackAccumulator`, merged at the end; everything is allocated on the calling thread
-  before the workers start.
+  (`binning.location(bin)`). The field must reach the stack's last sample
+  (`field.tMaxMs`; a `ValueError` otherwise, since past its end a field's velocities
+  stay constant).
+- **Threads:** `opts.workers` prefetch workers, each with its own `Workspace`, correct
+  the traces; the calling thread owns the one `StackAccumulator` and adds the chunks in
+  order. Everything is allocated on the calling thread before the workers start.
 - **Progress and cancel:** `progress(done, total)` (parseSEG's `Progress`) after every
   chunk, on the calling thread; returning false stops the workers and raises
-  `SegCancelledError`. A viewer runs `bruteStack` on a background thread of its own.
+  `SegCancelledError`.
+- **Thread contract:** `bruteStack` blocks its caller, so a viewer runs it on a background
+  thread of its own (`progress` is called on that thread, and the result belongs to it
+  until it hands it over). The job only reads the file: its map, its index and its keys.
+  While it runs,
+  - other threads may read the same `SeismicFile`: `readTracesInto`, `traceKeys`,
+    `rowsOf` and metas, and the prefetchers they already have;
+  - other threads may also create and close prefetchers on that file, with parseSEG
+    0.10.0 or later. (A prefetcher pins the file's map, and the job creates and closes
+    one of its own. Before 0.10.0 the pin count is not thread-safe: creating or closing
+    a prefetcher on one thread while another does the same on that file is a data race.
+    With an older parseSEG, create the viewer's prefetchers before the job starts and
+    close them after it has returned.)
+  - no thread may change or close the file until `bruteStack` has returned or raised:
+    no `applySurvey` or `applyGeometry`, no header edit, no assignment to `f.index`, no
+    `close`. To do any of these, cancel the job through `progress` and wait for it.
 - **Result:** a `StackResult`: `data` (`[bins, samples]`, normalized by fold, √fold or
-  not), `fold` (`[bins, samples]`, int32), `binning`, `dtMs`, `startMs`, `stacked`,
+  not), `fold` (`[bins, samples]`, int32), `binning`, `dtMs` (and `intervalUs`, the
+  input's own microseconds, which is what `stackKeys` writes), `startMs`, per bin
+  `binTraces` (the traces stacked into it: a fold map without reading `fold`) and
+  `cmpX`, `cmpY` (their mean midpoint, NaN for an empty bin: where a bin of header
+  CDP or inline/crossline numbers lies on the map), `stacked`,
   `skipped` (live traces outside every bin, with a NaN offset, t0 or static, no
   interval, non-finite samples, or fully stretch-muted) and `failed` (traces that could
-  not be decoded). With several workers the sums are added in a varying order: runs agree
-  to rounding, not bit for bit.
-- **Memory:** `workers + 1` stacks of bins × samples × (sizeof(T) + 4) bytes, plus the
-  prefetch ring and the flow's scratch (`bruteStackMemory`). A float32 3D stack of
-  100 000 bins × 2001 samples is 1.6 GB per copy: use one or two workers for it.
+  not be decoded). The traces are summed in file order: the stack is the same bit for
+  bit for any number of workers, run after run.
+- **Memory:** one stack of bins × samples × (sizeof(T) + 4) bytes, whatever the number
+  of workers (the sums are normalized in place and become the result), plus the prefetch
+  ring and each worker's scratch and cache of velocity columns
+  (`opts.velocityCacheBytes`, 8 MiB: with a field, one column per bin the worker met
+  last, so shot-sorted input reads the field once per bin, not once per trace)
+  (`bruteStackMemory`). A float32 3D stack of 100 000 bins × 2001 samples is 1.6 GB.
 
 The viewer shows the result as an in-memory dataset; processSEG describes results and
 parseSEG writes them (D14): `stackKeys(res, bin)` and `stackOverrides(res, bin)` give each
 bin's headers for parseSEG's `writeTrace`. As a convenience, `writeStack(path, res, opts)` saves
 it as SEG-Y, whatever the input standard, one trace per bin (patch F3: headers built from
 `TraceKeys`, no template trace): the bin's CDP number (3D: its 1-based index), inline and
-crossline, centre as CDP X/Y, offset 0, `startMs` and `dtMs`, the largest per-sample fold
+crossline, as CDP X/Y its centre (line and grid binnings) or the mean midpoint of its
+traces (bins of header numbers), offset 0, `startMs` and `dtMs`, the largest per-sample fold
 in `numHorzStacked`, and a dead trace for a bin with no fold. `opts` is parseSEG's
 `SegyOutputOptions` (revision, byte order, sample format, textual header; trace sorting 4
 by default). `openSeismic` reads the keys back.
@@ -540,7 +574,8 @@ pass it through `user`, with the workspaces.
    it, rebuild views and metas, and recompute anything tagged with an older revision:
    ticks, bins and processed buffers (the raw samples stay valid).
 9. For a brute stack, run `bruteStack` on a background thread, with a `progress` hook
-   that returns false to cancel.
+   that returns false to cancel. Other threads may keep reading the file meanwhile, but
+   none may edit or close it ("Batch results", thread contract).
 
 ## Open questions
 

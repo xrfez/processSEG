@@ -103,6 +103,18 @@ let field = initVelocityField([1.0, 2.0], [constantVelocity(2000),
 for k in keys.mitems: k.ensemble = 2    # the field is read at each row's CDP
 moveoutTimesInto(meta, field, t0Ms = 1000, ticks)
 doAssert abs(ticks[0] - nmoTime(50, 3000, 1000)) < 1e-9
+
+# A stack by midpoints reads the field at each bin's CDP number, not at the
+# header's: give the binning to draw the hyperbolas that stack will correct.
+let line = lineBinning(x0 = 0, y0 = 0, azimuthDeg = 90, binSize = 25, count = 40,
+  firstCdp = 1)
+for k in keys.mitems:
+  k.ensemble = 777                      # a header CDP the stack does not use
+  k.cmpX = 30                           # bin 1 of the line: CDP 2
+  k.cmpY = 0
+moveoutTimesInto(meta, field, line, t0Ms = 1000, ticks)
+doAssert line.locationOf(keys[0]).cdp == 2
+doAssert abs(ticks[0] - nmoTime(50, 3000, 1000)) < 1e-9
 ```
 
 To flatten first breaks on the display, `applyLmo(samples, meta, velocity, biasMs)`
@@ -147,7 +159,13 @@ samples.applyStatics(meta, d)           # the datum form: no statics buffer
 
 `applyNmo` corrects each live row in place from its own `t0Ms`, with a `VelocityFunction`
 or a `VelocityField` read at each row's location (the keys' `ensemble` in 2D, `inline`
-and `crossline` in 3D), and mutes where the stretch exceeds `maxStretch`. A
+and `crossline` in 3D), and mutes where the stretch exceeds `maxStretch`. (The kernel
+under it is `nmoInto`, one row with a velocity per output sample; to correct many rows
+with one velocity column yourself, convert the column once with `vrmsToSloth` and call
+`nmoSlothInto`, which gives the same samples without a division per sample.) To
+preview what `bruteStack` will stack with a `lineBinning` or `gridBinning`, whose bins'
+numbers are not the traces' header numbers, pass the binning:
+`samples.applyNmo(meta, field, binning, p, ws)` reads the field at each row's bin. A
 `StackAccumulator` then sums traces into bins in any order with a **per-sample** fold:
 `addLive` counts only the span between a trace's first and last non-zero samples, so
 muted zeros do not count.
@@ -205,15 +223,23 @@ doAssert fold[1, 50] < 8                # the stretch mute removed far offsets e
 doAssert binning.location(2).cdp == 12
 ```
 
-For threads, give each its own accumulator and `merge` them at the end.
+`stackInto` and `foldInto` copy the stack into your tensors and leave the accumulator
+open for more traces. For a large stack, `acc.finishInto(data, fold, norm)` normalizes in
+place and hands the accumulator's storage over instead, so the stack is held once.
+
+With threads, either correct the traces on the workers and add them on one thread in a
+fixed order (what `bruteStack` does: the sums then do not depend on the threads), or give
+each thread its own accumulator and `merge` them at the end (the last bits of the sums
+then depend on which thread got which trace).
 
 ## A brute stack of a file
 
 `bruteStack` does all of this over a file: it reads through parseSEG's prefetcher
 (`uniform = true`) and, on each decode worker while the chunk is in cache, applies
-optional datum statics, the pre-stack flow (`opts.flow`, a `Pipeline`), NMO onto the
-stack's time axis, and stacks into the trace's bin. Velocities come from a function, or
-from a field read at each bin's location. `writeStack` saves the result as SEG-Y, one
+optional datum statics, the pre-stack flow (`opts.flow`, a `Pipeline`) and NMO onto the
+stack's time axis; the calling thread takes the corrected chunks in file order and stacks
+each trace into its bin. Velocities come from a function, or from a field read at each
+bin's location. `writeStack` saves the result as SEG-Y, one
 trace per bin, whatever the input standard. To write it your own way (other options,
 extra header overrides, some bins only), give parseSEG's `writeTrace(w, keys, samples,
 overrides)` each bin's `stackKeys(res, bin)` and `stackOverrides(res, bin)`: processSEG
@@ -259,7 +285,15 @@ let res = bruteStack(f, float32, cdpBinning(firstCdp = 1, count = 20), velocity,
     true)                               # false cancels: SegCancelledError
 doAssert res.stacked == 240 and res.skipped == 0 and res.failed == 0
 doAssert res.data.shape == [20, ns] and res.fold[5, 700] == 12
+doAssert res.binTraces[5] == 12         # traces per bin: a fold map
 doAssert res.data[5, 300] > 0.8 and res.data[5, 700] > 0.8 and calls > 0
+
+var near: seq[int]                      # a list of traces: the near offsets only
+for t in 0 ..< f.len:
+  if f.traceKeys(t).offset < 500: near.add t
+let nearStack = bruteStack(f, float32, near, cdpBinning(firstCdp = 1, count = 20),
+  velocity, opts)
+doAssert nearStack.stacked == near.len and nearStack.fold[5, 700] == 3
 
 let log = writeStack("stack.sgy", res)  # SEG-Y Rev 2.1, trace sorting 4
 doAssert not log.isFatal
@@ -269,13 +303,31 @@ s.close()
 f.close()
 ```
 
-- Run `bruteStack` on a background thread of your own; it blocks until done. With
-  several workers the float sums are added in a varying order: runs agree to rounding,
-  not bit for bit.
+- Run `bruteStack` on a background thread of your own; it blocks until done, and calls
+  `progress` on that thread. The job only reads the file. While it runs, other threads
+  may read the same `SeismicFile` (`readTracesInto`, `traceKeys`, views, the prefetchers
+  they have) and, with parseSEG 0.10.0 or later, create and close prefetchers on it
+  (before 0.10.0 the map's pin count is not thread-safe: create them before the job
+  starts and close them after it has returned). No thread may `applySurvey`, edit
+  headers or `close` the file until `bruteStack` has returned or raised: cancel through
+  `progress` and wait for it first.
+- The traces are summed in file order whatever `opts.workers` is, so the stack is the
+  same bit for bit for any number of workers (only a `perPanel` normalization in the
+  flow depends on `opts.chunkTraces`).
 - `res.skipped` counts live traces outside every bin or with a NaN offset, `t0Ms` or
   static, no interval, non-finite samples, or fully stretch-muted.
-- Memory: `workers + 1` stacks of bins × samples × (sizeof(T) + 4) bytes, plus the
-  prefetch ring and the flow's scratch; `bruteStackMemory` estimates it. A float32 3D
-  stack of 100 000 bins × 2001 samples is 1.6 GB per copy.
+- `res.binTraces[bin]` is the number of traces stacked into each bin (a fold map), and
+  `res.cmpX[bin]`, `res.cmpY[bin]` their mean midpoint: with `cdpBinning` or
+  `inlineCrosslineBinning` that is where the bin lies on a map, and what `stackKeys` and
+  `writeStack` give as its CDP X/Y (line and grid bins keep their centre).
+- Memory: one stack of bins × samples × (sizeof(T) + 4) bytes, whatever the number of
+  workers (the sums are normalized in place and become the result), plus the prefetch
+  ring and each worker's scratch and velocity columns (`opts.velocityCacheBytes`, 8 MiB:
+  a field is read once per bin while a shot's bins fit it; raise it for 3D shots spread
+  over thousands of bins); `bruteStackMemory` estimates it. A float32 3D stack of
+  100 000 bins × 2001 samples is 1.6 GB.
+- Part of a file: pass a range, `bruteStack(f, float32, 0 ..< 5000, binning, ...)`, or a
+  list of trace indices (a map selection, one channel set of a mixed SEG-D record),
+  `bruteStack(f, float32, picked, binning, ...)`; a list is stacked in its own order.
 - 3D: `gridBinning` (a rotated grid of midpoints) or `inlineCrosslineBinning` (header
   numbers), and a 3D `VelocityField`.

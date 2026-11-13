@@ -9,14 +9,15 @@
 ## var bins = newSeq[int](meta.len)                          # once; reused
 ## binsInto(meta.rows, b3, bins)                             # −1: no bin
 ## let loc = b3.location(bins[0])                            # inline, crossline, x, y
+## let same = b3.locationOf(meta.keys(0))                    # a trace's bin's
 ## ```
 ##
 ## **2D.** `cdpBinning` takes the keys' `ensemble` (the CDP number) as it
 ## is: bin `i` holds CDP `firstCdp + i·step`. `lineBinning` projects the
 ## midpoint (`cmpX`, `cmpY`) onto a straight line from `(x0, y0)` along
 ## `azimuthDeg`: bin `i` is centred `i·binSize` along it and numbered CDP
-## `firstCdp + i`. Midpoints further than `maxOffLine` from the line are in
-## no bin.
+## `firstCdp + i·cdpStep`. Midpoints further than `maxOffLine` from the
+## line are in no bin.
 ##
 ## **3D.** Bins are numbered `inline · crosslines + crossline` (row-major,
 ## the inline index first), `len = inlines · crosslines`. `gridBinning`
@@ -24,13 +25,20 @@
 ## `firstInline`, crossline `firstCrossline`); crossline numbers increase
 ## along `azimuthDeg`, every `crosslineSpacing`; inline numbers increase
 ## 90° clockwise of it (`clockwise = false`: anticlockwise), every
-## `inlineSpacing`. `inlineCrosslineBinning` takes the keys' `inline` and
+## `inlineSpacing`; the numbers go in steps of `inlineStep` and
+## `crosslineStep`. `inlineCrosslineBinning` takes the keys' `inline` and
 ## `crossline` (parseSEG's layout fields).
+##
+## `gridBinning` takes its spacings crossline first and its counts and
+## first numbers inline first: pass them by name, as above.
 ##
 ## **Conventions.** Azimuths are in degrees clockwise from north (+y), so
 ## 90° is +x. Distances are in the file's coordinate units. A trace falls
-## in the nearest bin (a midpoint exactly half-way goes to the higher
-## one); a NaN key, or a position outside the bins, gives −1.
+## in the nearest bin: bin `i` holds the positions from half a bin before
+## its centre (included) to half a bin after it (excluded), so a midpoint
+## exactly half-way goes to the higher one, and the first bin's lower edge
+## is in, the last bin's upper edge out. A NaN key, or a position outside
+## the bins, gives −1; no key gives a bin outside `0 ..< len`.
 
 import std/math
 import parseSEG
@@ -94,35 +102,39 @@ func unitAt(azimuthDeg: float64): (float64, float64) =
   (sin(a), cos(a))
 
 proc lineBinning*(x0, y0, azimuthDeg, binSize: float64, count: int,
-    firstCdp = 1.0, maxOffLine = Inf): Binning =
+    firstCdp = 1.0, maxOffLine = Inf, cdpStep = 1.0): Binning =
   ## 2D bins along a straight line from `(x0, y0)` (the centre of bin 0)
   ## along `azimuthDeg`, `binSize` apart; bin `i` is numbered CDP
-  ## `firstCdp + i`. A midpoint further than `maxOffLine` from the line is in
-  ## no bin. Raises `ValueError` unless the coordinates, azimuth and
-  ## `firstCdp` are finite, `binSize` finite and positive, `count` positive
-  ## and `maxOffLine` positive.
+  ## `firstCdp + i·cdpStep`. A midpoint further than `maxOffLine` from the
+  ## line is in no bin. Raises `ValueError` unless the coordinates, azimuth
+  ## and `firstCdp` are finite, `binSize` and `cdpStep` finite and positive,
+  ## `count` positive and `maxOffLine` positive.
   checkFinite(x0, "x0")
   checkFinite(y0, "y0")
   checkFinite(azimuthDeg, "azimuthDeg")
   checkFinite(firstCdp, "firstCdp")
   checkPositive(binSize, "binSize")
+  checkPositive(cdpStep, "cdpStep")
   checkCount(count, "count")
   if maxOffLine.isNaN or maxOffLine <= 0:
     badBinning("maxOffLine must be positive, got " & $maxOffLine)
   let (ux, uy) = unitAt(azimuthDeg)
   Binning(kind: bnLine, inlines: 1, crosslines: count, first0: firstCdp,
-    step0: 1, x0: x0, y0: y0, ux: ux, uy: uy, size0: binSize,
+    step0: cdpStep, x0: x0, y0: y0, ux: ux, uy: uy, size0: binSize,
     maxOff: maxOffLine)
 
 proc gridBinning*(x0, y0, azimuthDeg, crosslineSpacing, inlineSpacing: float64,
     inlines, crosslines: int, firstInline = 1.0, firstCrossline = 1.0,
-    clockwise = true): Binning =
+    clockwise = true, inlineStep = 1.0, crosslineStep = 1.0): Binning =
   ## 3D bins on a rotated grid: `(x0, y0)` is the centre of the bin of
   ## inline `firstInline`, crossline `firstCrossline`; crossline numbers
-  ## increase along `azimuthDeg` every `crosslineSpacing`, inline numbers 90°
-  ## clockwise of it (anticlockwise with `clockwise = false`) every
-  ## `inlineSpacing`. Raises `ValueError` unless the numbers are finite, the
-  ## spacings finite and positive, and the counts positive.
+  ## increase along `azimuthDeg`, by `crosslineStep` every
+  ## `crosslineSpacing`, inline numbers 90° clockwise of it (anticlockwise
+  ## with `clockwise = false`), by `inlineStep` every `inlineSpacing`.
+  ## Mind the order: the spacings come crossline first, the counts and the
+  ## first numbers inline first; pass them by name. Raises `ValueError`
+  ## unless the numbers are finite, the spacings and steps finite and
+  ## positive, and the counts positive.
   checkFinite(x0, "x0")
   checkFinite(y0, "y0")
   checkFinite(azimuthDeg, "azimuthDeg")
@@ -130,6 +142,8 @@ proc gridBinning*(x0, y0, azimuthDeg, crosslineSpacing, inlineSpacing: float64,
   checkFinite(firstCrossline, "firstCrossline")
   checkPositive(crosslineSpacing, "crosslineSpacing")
   checkPositive(inlineSpacing, "inlineSpacing")
+  checkPositive(inlineStep, "inlineStep")
+  checkPositive(crosslineStep, "crosslineStep")
   checkCount(inlines, "inlines")
   checkCount(crosslines, "crosslines")
   if inlines > high(int) div crosslines:
@@ -137,9 +151,9 @@ proc gridBinning*(x0, y0, azimuthDeg, crosslineSpacing, inlineSpacing: float64,
   let (ux, uy) = unitAt(azimuthDeg)
   let (vx, vy) = unitAt(azimuthDeg + (if clockwise: 90.0 else: -90.0))
   Binning(kind: bnGrid, inlines: inlines, crosslines: crosslines,
-    first0: firstInline, step0: 1, first1: firstCrossline, step1: 1, x0: x0,
-    y0: y0, ux: ux, uy: uy, vx: vx, vy: vy, size0: crosslineSpacing,
-    size1: inlineSpacing)
+    first0: firstInline, step0: inlineStep, first1: firstCrossline,
+    step1: crosslineStep, x0: x0, y0: y0, ux: ux, uy: uy, vx: vx, vy: vy,
+    size0: crosslineSpacing, size1: inlineSpacing)
 
 proc inlineCrosslineBinning*(firstInline: float64, inlines: int,
     firstCrossline: float64, crosslines: int, inlineStep = 1.0,
@@ -181,9 +195,15 @@ func is3D*(b: Binning): bool {.inline, raises: [].} =
   b.kind in {bnGrid, bnInlineCrossline}
 
 func nearest(u: float64, n: int): int {.inline.} =
-  # The index of the nearest bin to position `u` (in bins), −1 outside.
-  if not (u > -0.5 and u < float64(n) - 0.5): return -1
-  int(floor(u + 0.5))
+  # The index of the nearest bin to position `u` (in bins): bin i holds
+  # [i − 0.5, i + 0.5), and −1 is outside [−0.5, n − 0.5) or NaN.
+  # floor(u + 0.5) is not it: one ulp below an upper edge the sum rounds up
+  # to the next integer (pred(0.5) + 0.5 == 1.0), which gave the next bin
+  # and, on the last one, bin n. u − floor(u) is exact, so the half-way test
+  # is; the `min` only guards an n beyond float64's integers.
+  if not (u >= -0.5 and u < float64(n) - 0.5): return -1
+  let whole = floor(u)
+  min(int(whole) + int(u - whole >= 0.5), n - 1)
 
 func gridBin(b: Binning, u, v: float64): int {.inline.} =
   let i = nearest(v, b.inlines)
@@ -233,19 +253,14 @@ proc binsInto*(meta: ChunkMeta, b: Binning, bins: var openArray[int]) =
   ## `binsInto(meta.rows, b, bins)`.
   binsInto(meta.rows, b, bins)
 
-proc location*(b: Binning, bin: int): BinLocation =
-  ## What bin `bin` stands for: its CDP number (2D), its inline and
-  ## crossline numbers (3D) and its centre (line and grid binnings); NaN
-  ## for what the binning does not define. Raises `ValueError` for a bin
-  ## outside `0 ..< len`.
-  if bin < 0 or bin >= b.len:
-    badBinning("bin " & $bin & " is outside 0 ..< " & $b.len)
+func locationAt(b: Binning, bin: int): BinLocation {.raises: [].} =
+  # `location` of a bin known to be in 0 ..< len.
   result = BinLocation(cdp: NaN, inline: NaN, crossline: NaN, x: NaN, y: NaN)
   case b.kind
   of bnCdp:
     result.cdp = b.first0 + float64(bin) * b.step0
   of bnLine:
-    result.cdp = b.first0 + float64(bin)
+    result.cdp = b.first0 + float64(bin) * b.step0
     result.x = b.x0 + float64(bin) * b.size0 * b.ux
     result.y = b.y0 + float64(bin) * b.size0 * b.uy
   of bnGrid, bnInlineCrossline:
@@ -258,3 +273,22 @@ proc location*(b: Binning, bin: int): BinLocation =
       let c = float64(i) * b.size1
       result.x = b.x0 + a * b.ux + c * b.vx
       result.y = b.y0 + a * b.uy + c * b.vy
+
+proc location*(b: Binning, bin: int): BinLocation =
+  ## What bin `bin` stands for: its CDP number (2D), its inline and
+  ## crossline numbers (3D) and its centre (line and grid binnings); NaN
+  ## for what the binning does not define. Raises `ValueError` for a bin
+  ## outside `0 ..< len`.
+  if bin < 0 or bin >= b.len:
+    badBinning("bin " & $bin & " is outside 0 ..< " & $b.len)
+  b.locationAt(bin)
+
+func locationOf*(b: Binning, k: TraceKeys): BinLocation {.raises: [].} =
+  ## The location of the bin a trace with keys `k` falls in,
+  ## `location(binOf(k))`; every field NaN when it falls in none. It is
+  ## where a stack with this binning reads a `VelocityField` for the trace
+  ## (`bruteStack`, and the `Binning` forms of `applyNmo` and
+  ## `moveoutTimesInto`): the bin's numbers, not the trace's header numbers.
+  let bin = b.binOf(k)
+  if bin < 0: BinLocation(cdp: NaN, inline: NaN, crossline: NaN, x: NaN, y: NaN)
+  else: b.locationAt(bin)

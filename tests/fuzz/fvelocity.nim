@@ -13,8 +13,11 @@ fuzzTarget:
     try:
       let picks = parse(text)
       for p in picks:
+        # A pick has a finite place, 2D or 3D, and plausible velocities.
+        let at = if p.cdp.isNaN: p.inline + p.crossline else: p.cdp
+        doAssert at.classify notin {fcNan, fcInf, fcNegInf}
         for k in p.velocity.knots:
-          doAssert not k.tMs.isNaN and k.vrms > 0
+          doAssert not k.tMs.isNaN and k.vrms >= MinPickVelocity
         discard p.velocity.vrmsAt(1000)
         discard p.velocity.vintAt(1000)
       let field = initVelocityField(picks, dtMs = 4, tMaxMs = 2000)

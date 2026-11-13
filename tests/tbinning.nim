@@ -129,6 +129,102 @@ block header_inline_crossline:
   let loc = b.location(5)
   doAssert loc.inline == 1003 and loc.crossline == 15 and loc.x.isNaN
 
+block numbering_steps:
+  # Line and grid bins are numbered in steps: CDP firstCdp + i·cdpStep,
+  # inline firstInline + i·inlineStep, crossline firstCrossline +
+  # j·crosslineStep (1 by default, as before). The steps number the bins;
+  # where a midpoint falls does not depend on them.
+  let plain = lineBinning(500, 800, 30, binSize = 10, count = 50, firstCdp = 1001)
+  let line = lineBinning(500, 800, 30, binSize = 10, count = 50, firstCdp = 1001,
+    cdpStep = 2)
+  for i in [0, 1, 17, 49]:
+    doAssert plain.location(i).cdp == 1001 + float64(i)
+    doAssert line.location(i).cdp == 1001 + 2 * float64(i)
+    doAssert line.location(i).x == plain.location(i).x
+  let k = keysAt(500 + 170 * sin(degToRad(30.0)), 800 + 170 * cos(degToRad(30.0)))
+  doAssert line.binOf(k) == 17 and plain.binOf(k) == 17
+  let half = lineBinning(0, 0, 90, 12.5, 4, firstCdp = 10, maxOffLine = 5,
+    cdpStep = 0.5)
+  doAssert half.location(3).cdp == 11.5
+  let plainGrid = gridBinning(10_000, 20_000, 120, crosslineSpacing = 25,
+    inlineSpacing = 12.5, inlines = 6, crosslines = 9, firstInline = 1001,
+    firstCrossline = 2001)
+  let grid = gridBinning(10_000, 20_000, 120, crosslineSpacing = 25,
+    inlineSpacing = 12.5, inlines = 6, crosslines = 9, firstInline = 1001,
+    firstCrossline = 2001, inlineStep = 2, crosslineStep = 5)
+  for (i, j) in [(0, 0), (1, 0), (0, 1), (5, 8), (3, 4)]:
+    let loc = grid.location(i * 9 + j)
+    doAssert loc.inline == 1001 + 2 * float64(i) and loc.crossline == 2001 +
+        5 * float64(j)
+    let was = plainGrid.location(i * 9 + j)
+    doAssert was.inline == 1001 + float64(i) and was.crossline == 2001 + float64(j)
+    doAssert loc.x == was.x and loc.y == was.y
+    doAssert grid.binAt(loc.x, loc.y) == i * 9 + j
+  for bad in [0.0, -1, NaN, Inf]:
+    doAssertRaises ValueError: discard lineBinning(0, 0, 0, 10, 10, cdpStep = bad)
+    doAssertRaises ValueError: discard gridBinning(0, 0, 0, 25, 25, 2, 2,
+        inlineStep = bad)
+    doAssertRaises ValueError: discard gridBinning(0, 0, 0, 25, 25, 2, 2,
+        crosslineStep = bad)
+
+block bin_edges:
+  # A bin holds [centre − half a bin, centre + half a bin): the lower edge of
+  # bin 0 is in, the upper edge of the last bin is out, and no position gives
+  # a bin past the end. One ulp below an upper edge, u + 0.5 rounds up to the
+  # next integer: with one bin on the axis that was bin `len`, which ended the
+  # process in the stack accumulator of a prefetch worker.
+  let below = 0.49999999999999994 # pred(0.5)
+  doAssert below < 0.5 and below + 0.5 == 1.0
+  let one = lineBinning(0, 0, 90, binSize = 1, count = 1)
+  doAssert one.binAt(below, 0) == 0
+  doAssert one.binAt(-0.5, 0) == 0 and one.binAt(0.5, 0) == -1
+  doAssert one.binAt(-0.5000000000000001, 0) == -1
+  let line = lineBinning(0, 0, 90, binSize = 10, count = 4)
+  for (x, want) in [(-5.0, 0), (-5.000000000000001, -1), (4.999999999999999, 0),
+                    (5.0, 1), (15.0, 2), (25.0, 3), (34.99999999999999, 3),
+                    (35.0, -1)]:
+    doAssert line.binAt(x, 0) == want, $x
+  # Every position of a fine sweep over the line lands in 0 ..< len or −1.
+  for i in -100 .. 4100:
+    let bin = line.binAt(float64(i) * 0.01 - 5.5, 0)
+    doAssert bin >= -1 and bin < line.len
+  var k = initTraceKeys()
+  let cdp = cdpBinning(firstCdp = 0, count = 1)
+  k.ensemble = below
+  doAssert cdp.binOf(k) == 0
+  k.ensemble = -0.5
+  doAssert cdp.binOf(k) == 0
+  let cdps = cdpBinning(firstCdp = 0, count = 4)
+  k.ensemble = below # nearer CDP 0 than CDP 1
+  doAssert cdps.binOf(k) == 0
+  k.ensemble = 0.5 # half-way: the higher one
+  doAssert cdps.binOf(k) == 1
+  k.ensemble = 3.4999999999999996
+  doAssert cdps.binOf(k) == 3
+  k.ensemble = 3.5
+  doAssert cdps.binOf(k) == -1
+  # A 3 × 1 grid: the crossline axis has one bin, so a crossline one ulp
+  # below its upper edge must stay on its own inline (it gave the next
+  # inline's bin, and bin 3 of 3 on the last inline).
+  let grid = inlineCrosslineBinning(0, 3, 0, 1)
+  for il in 0 .. 2:
+    k.inline = float64(il)
+    k.crossline = below
+    doAssert grid.binOf(k) == il, $il
+    k.crossline = -0.5
+    doAssert grid.binOf(k) == il
+    k.crossline = 0.5
+    doAssert grid.binOf(k) == -1
+  # The same on a grid of midpoints (on its first inline: off it, the
+  # rotation's rounding moves a position by an ulp).
+  let rot = gridBinning(0, 0, 90, crosslineSpacing = 1, inlineSpacing = 1,
+    inlines = 3, crosslines = 1, clockwise = false)
+  doAssert rot.binAt(below, 0) == 0 and rot.binAt(-0.5, 0) == 0
+  doAssert rot.binAt(0.5, 0) == -1 and rot.binAt(0, 2.4) == 2
+  var acc = initStackAccumulator[float32](cdp.len, 4, 2.0)
+  k.ensemble = below
+  doAssert acc.addLive(cdp.binOf(k), [0'f32, 1, 0, 0])
+
 block validation_and_allocation:
   doAssertRaises ValueError: discard cdpBinning(NaN, 10)
   doAssertRaises ValueError: discard cdpBinning(1, 0)

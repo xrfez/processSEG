@@ -11,6 +11,7 @@
 ## moveoutColumnsInto(meta, refl, ticks)                  # block columns
 ## let fromModel = hyperbolicMoveout(vfun, t0Ms = 800)    # Vrms(800 ms)
 ## moveoutTimesInto(meta, field, t0Ms = 800, ticks)       # per row's location
+## moveoutTimesInto(meta, field, binning, t0Ms = 800, ticks) # per row's bin
 ## samples.applyLmo(meta, velocity = 1800, biasMs = 50)   # flatten first breaks
 ## ```
 ##
@@ -32,7 +33,12 @@
 ## `VelocityField`, each row takes it at its own location: the keys'
 ## `ensemble` (the CDP) for a 2D field, `inline` and `crossline` for a 3D
 ## one, or caller locations (a distance along the line, from binning). A
-## NaN location gives a NaN time.
+## NaN location gives a NaN time. A stack does not read its field there
+## when its bins come from midpoints (`lineBinning`, `gridBinning`): it
+## reads it at each bin's numbers. The forms with a `Binning` do the same
+## (each row at the location of its bin, `Binning.locationOf`), so a
+## display can show the hyperbolas the stack will correct; a row in no bin
+## gets NaN.
 ##
 ## **LMO on samples.** `applyLmo` moves each live row earlier by
 ## `1000·|x|/v − biasMs` (so a linear event at `t0 + 1000·|x|/v` lands at
@@ -48,6 +54,7 @@
 import std/math
 import parseSEG
 import ../core/[rows, shift, types]
+import ../stack/binning
 import model
 
 export ShiftInterp
@@ -209,14 +216,72 @@ proc moveoutTimesInto*(rows: TraceRows, field: VelocityField,
   for i in 0 ..< rows.len:
     times[i] = nmoTime(rows.keysAt(i).offset, field.vrmsAt(locations[i], t0Ms), t0Ms)
 
+proc toColumns(meta: ChunkMeta, cols: var openArray[float64]) =
+  # Times in ms into fractional block columns, row by row.
+  for i in 0 ..< meta.len:
+    cols[i] = (cols[i] - meta.keys(i).t0Ms) / meta.dtMs - float64(
+        meta.firstSample)
+
 proc moveoutColumnsInto*(meta: ChunkMeta, field: VelocityField, t0Ms: float64,
     cols: var openArray[float64]) =
   ## The field's hyperbolas as fractional block columns, as the constant
   ## `moveoutColumnsInto`. Raises `ValueError` as `moveoutTimesInto`.
   moveoutTimesInto(meta, field, t0Ms, cols)
-  for i in 0 ..< meta.len:
-    cols[i] = (cols[i] - meta.keys(i).t0Ms) / meta.dtMs - float64(
-        meta.firstSample)
+  toColumns(meta, cols)
+
+# ------------------------------------------ a field read as a stack reads it --
+
+proc checkSuits*(field: VelocityField, binning: Binning) =
+  ## Raises `ValueError` unless `field` can be read at the bins of
+  ## `binning`: it has nodes, and it is 2D for a 2D binning (`cdpBinning`,
+  ## `lineBinning`: read at the bin's CDP number) or 3D for a 3D one
+  ## (`gridBinning`, `inlineCrosslineBinning`: at its inline and crossline).
+  if field.len == 0:
+    raise newException(ValueError, "the velocity field is empty")
+  if field.kind == fk2D and binning.is3D:
+    raise newException(ValueError, "a 2D velocity field needs a 2D binning " &
+      "(cdpBinning or lineBinning)")
+  if field.kind == fk3D and not binning.is3D:
+    raise newException(ValueError, "a 3D velocity field needs a 3D binning " &
+      "(gridBinning or inlineCrosslineBinning)")
+
+proc moveoutTimesInto*(rows: TraceRows, field: VelocityField, binning: Binning,
+    t0Ms: float64, times: var openArray[float64]) =
+  ## Fills `times[i]` with the hyperbola through `t0Ms` at row `i`'s offset,
+  ## with the field's RMS velocity at the location of the row's bin
+  ## (`binning.locationOf`: the bin's CDP number for a 2D field, its inline
+  ## and crossline for a 3D one) and `t0Ms`: the velocity a stack with
+  ## `binning` corrects the row with. NaN for a row in no bin or with a NaN
+  ## offset. Raises `ValueError` without keys, for a length mismatch, a
+  ## `t0Ms` that is negative or not finite, or a field that does not suit
+  ## the binning (`checkSuits`). Allocates nothing.
+  if not rows.hasKeys:
+    raise newException(ValueError, "the rows have no keys: open the file with " &
+      "keys = true (or call ensureKeys) before making the view")
+  checkLen(times.len, rows.len)
+  checkT0(t0Ms)
+  checkSuits(field, binning)
+  for i in 0 ..< rows.len:
+    let k = rows.keysAt(i)
+    let loc = binning.locationOf(k)
+    let v =
+      case field.kind
+      of fk2D: field.vrmsAt(loc.cdp, t0Ms)
+      of fk3D: field.vrmsAt(loc.inline, loc.crossline, t0Ms)
+    times[i] = nmoTime(k.offset, v, t0Ms)
+
+proc moveoutTimesInto*(meta: ChunkMeta, field: VelocityField, binning: Binning,
+    t0Ms: float64, times: var openArray[float64]) =
+  ## `moveoutTimesInto(meta.rows, field, binning, t0Ms, times)`.
+  moveoutTimesInto(meta.rows, field, binning, t0Ms, times)
+
+proc moveoutColumnsInto*(meta: ChunkMeta, field: VelocityField,
+    binning: Binning, t0Ms: float64, cols: var openArray[float64]) =
+  ## The hyperbolas of the `Binning` form of `moveoutTimesInto` as
+  ## fractional block columns, ready to draw. Raises `ValueError` as it
+  ## does.
+  moveoutTimesInto(meta, field, binning, t0Ms, cols)
+  toColumns(meta, cols)
 
 # -------------------------------------------------------------- LMO on samples --
 

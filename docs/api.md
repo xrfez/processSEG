@@ -231,8 +231,8 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `VelocityKnot` (`tMs`, `vrms`); `f.knots` | A knot; a copy of a knots function's knots. |
 | `f.vrmsAt(tMs)`, `f.vintAt(tMs)`, `f.vrmsInto(startMs, dtMs, vrms)` | RMS and interval velocity at a time; a column of RMS velocities. |
 | `dixIntervalInto(tMs, vrms, vint)`, `rmsFromIntervalInto(tMs, vint, vrms)` | Dix conversion and its inverse (NaN where Vint² < 0). |
-| `FieldKind` (`fk2D`, `fk3D`), `VelocityField`; `initVelocityField(locations, functions, dtMs, tMaxMs)`, `initVelocityField(inlines, crosslines, functions, dtMs, tMaxMs)`, `initVelocityField(picks, dtMs, tMaxMs)` | Functions at nodes (CDP numbers or distances in 2D, an inline × crossline grid in 3D) resampled onto one time grid; from picks, 2D or 3D is detected. Allocates nodes × samples × 8 bytes. |
-| `field.kind`, `field.len`, `field.dtMs`, `field.samples`, `field.locations`, `field.crosslines` | Its nodes and grid (`locations`: 2D nodes, or the 3D inline axis). |
+| `FieldKind` (`fk2D`, `fk3D`), `VelocityField`; `initVelocityField(locations, functions, dtMs, tMaxMs)`, `initVelocityField(inlines, crosslines, functions, dtMs, tMaxMs)`, `initVelocityField(picks, dtMs, tMaxMs)` | Functions at nodes (CDP numbers or distances in 2D, an inline × crossline grid in 3D) resampled onto one time grid; from picks, 2D or 3D is detected. Allocates nodes × samples × 8 bytes (50 000 nodes of 1501 times: 600 MB, filled in 0.2 s). |
+| `field.kind`, `field.len`, `field.dtMs`, `field.samples`, `field.tMaxMs`, `field.locations`, `field.crosslines` | Its nodes and grid (`locations`: 2D nodes, or the 3D inline axis; `tMaxMs`: the last grid time, after which the velocities stay constant). |
 | `field.vrmsAt(location, tMs)`, `field.vrmsAt(inline, crossline, tMs)`, `field.vrmsInto(location \| inline, crossline, startMs, dtMs, vrms)` | Interpolated RMS velocity (NaN for the other dimensionality or a NaN location). |
 | `VelocityPick` (`cdp`, `inline`, `crossline`, `velocity`) | A function at one place, as a velocity file holds it. |
 
@@ -240,7 +240,8 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 
 | Proc | What |
 |---|---|
-| `parseVelf(text)`, `parseHandvel(text)`, `parseVelocityCsv(text)` | Picks from Western VELF cards, ProMAX HANDVEL blocks, or `cdp,tMs,vrms` / `inline,crossline,tMs,vrms` CSV. `ValueError` naming the line. |
+| `parseVelf(text)`, `parseHandvel(text)`, `parseVelocityCsv(text)` | Picks from Western VELF cards, ProMAX HANDVEL blocks, or `cdp,tMs,vrms` / `inline,crossline,tMs,vrms` CSV. `ValueError` naming the line: a bad number, times that do not increase, a NaN or infinite location, a velocity below `MinPickVelocity`. |
+| `MinPickVelocity` (100) | The least velocity a pick file may hold, in distance units per second: a smaller one is a misread file (a decimal comma in a CSV, a time and a velocity swapped, km/s). |
 | `parseVelocities(text)`, `readVelocities(path)` | The format detected (HANDVEL, VELF, else CSV); from a file (`IOError` when unreadable). |
 
 ## velocity/moveout: overlays and LMO
@@ -252,6 +253,7 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `m.kind`, `m.velocity`, `m.t0Ms`, `m.timeMs(offset)` | Its parameters and its time at an offset. |
 | `moveoutTimesInto(rows \| meta, m, times)` | One time per row, ms, from each row's offset (every row, whatever its status; NaN for a NaN offset). |
 | `moveoutTimesInto(rows \| meta, field, t0Ms, times)`, `moveoutTimesInto(rows, field, locations, t0Ms, times)` | Hyperbolas with a field's velocity at each row's location (`ensemble`, or `inline`/`crossline`), or at caller locations. |
+| `moveoutTimesInto(rows \| meta, field, binning, t0Ms, times)`, `moveoutColumnsInto(meta, field, binning, t0Ms, cols)`, `checkSuits(field, binning)` | Hyperbolas with the field's velocity at the location of each row's bin (`binning.locationOf`): what a stack with `binning` corrects, also for bins from midpoints (`lineBinning`, `gridBinning`), whose numbers are not the header numbers. NaN for a row in no bin. `checkSuits` raises `ValueError` unless the field has nodes and is 2D for a 2D binning, 3D for a 3D one. |
 | `moveoutColumnsInto(meta, m \| field, [t0Ms,] cols)` | The same as fractional block columns, ready to draw: `(t − t0Ms)/dtMs − firstSample`. |
 | `applyLmo(b \| samples, meta, velocity, biasMs = 0, interp = siLinear)`, `removeLmo(...)` | Flatten first breaks in place: every live row earlier by `1000·\|x\|/v − biasMs`; and back. A display transform, not a pipeline op. |
 
@@ -271,42 +273,46 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 |---|---|
 | `NmoParams`; `initNmoParams(interp = siLinear, maxStretch = 0.3, taperMs = 0)`, `p.interp`, `p.maxStretch`, `p.taperMs` | Interpolation and stretch mute (`maxStretch = Inf`: none). |
 | `nmoStretch(offset, vrms, t0Ms)` | `t/t₀ − 1` at a constant velocity. |
-| `nmoInto(src, srcStartMs, dst, dstStartMs, dtMs, offset, vrms, p): int` | The kernel: one row onto a zero-offset time axis (which may differ from the input's); returns the first unmuted column. |
+| `nmoInto(src, srcStartMs, dst, dstStartMs, dtMs, offset, vrms, p): int` | The kernel: one row onto a zero-offset time axis (which may differ from the input's); returns the first unmuted column. A float32 row is interpolated in float32 (within 1e-6 of the float64 evaluation, relative to the samples' size). |
+| `vrmsToSloth(v)`, `nmoSlothInto(src, srcStartMs, dst, dstStartMs, dtMs, offset, sloth, p): int` | The same kernel fed the sloth `1/Vrms²` of each output sample: convert a velocity column once, in place, and correct many rows with it without a division per sample (the same samples as `nmoInto`). |
 | `nmoWorkspace(T, cols)` | The scratch of the block forms. |
 | `applyNmo(b \| samples, meta, f: VelocityFunction \| field: VelocityField, p, ws)` | NMO in place, each row from its own `t0Ms`; a field is read at each row's location. Rows with a NaN offset, `t0Ms` or location are left alone. |
+| `applyNmo(b \| samples, meta, field, binning, p, ws)` | NMO with the field read at the location of each row's bin, as `bruteStack` with that binning reads it: the preview of what will be stacked. Rows in no bin are left alone; `ValueError` when the field does not suit the binning. |
 
 ## stack/binning: CMP bins
 
 | Proc | What |
 |---|---|
 | `BinningKind` (`bnCdp`, `bnLine`, `bnGrid`, `bnInlineCrossline`), `Binning` | A bin definition. |
-| `cdpBinning(firstCdp, count, step = 1)`, `lineBinning(x0, y0, azimuthDeg, binSize, count, firstCdp = 1, maxOffLine = Inf)` | 2D: by header CDP (`ensemble`); by midpoints projected onto a line. |
-| `gridBinning(x0, y0, azimuthDeg, crosslineSpacing, inlineSpacing, inlines, crosslines, firstInline = 1, firstCrossline = 1, clockwise = true)`, `inlineCrosslineBinning(firstInline, inlines, firstCrossline, crosslines, inlineStep = 1, crosslineStep = 1)` | 3D: a rotated grid of midpoints; header inline and crossline numbers. |
+| `cdpBinning(firstCdp, count, step = 1)`, `lineBinning(x0, y0, azimuthDeg, binSize, count, firstCdp = 1, maxOffLine = Inf, cdpStep = 1)` | 2D: by header CDP (`ensemble`); by midpoints projected onto a line, bin `i` numbered CDP `firstCdp + i·cdpStep`. |
+| `gridBinning(x0, y0, azimuthDeg, crosslineSpacing, inlineSpacing, inlines, crosslines, firstInline = 1, firstCrossline = 1, clockwise = true, inlineStep = 1, crosslineStep = 1)`, `inlineCrosslineBinning(firstInline, inlines, firstCrossline, crosslines, inlineStep = 1, crosslineStep = 1)` | 3D: a rotated grid of midpoints, numbered in steps of `inlineStep` and `crosslineStep`; header inline and crossline numbers. `gridBinning` takes its spacings crossline first and its counts and first numbers inline first: pass them by name. |
 | `b.kind`, `b.len`, `b.inlines`, `b.crosslines`, `b.is3D` | Its size. |
 | `b.binOf(k: TraceKeys): int`, `binsInto(rows \| meta, b, bins)` | A trace's bin, −1 for none (NaN key, outside, off the line). |
 | `b.binAt(x, y): int` | The bin of a midpoint position (line and grid binnings; −1 for none, always −1 for header binnings); the maths `binOf` uses. |
-| `BinLocation` (`cdp`, `inline`, `crossline`, `x`, `y`); `b.location(bin)` | What a bin stands for (NaN where undefined). |
+| `BinLocation` (`cdp`, `inline`, `crossline`, `x`, `y`); `b.location(bin)`, `b.locationOf(k: TraceKeys)` | What a bin stands for (NaN where undefined); the location of a trace's bin (all NaN when it is in none): where a stack reads a `VelocityField` for the trace. |
 
 ## stack/stack: `StackAccumulator`
 
 | Proc | What |
 |---|---|
-| `StackAccumulator[T]`; `initStackAccumulator[T](bins, samples, dtMs, startMs = 0)`, `stackMemory(T, bins, samples)` | Sums and per-sample folds, `bins × samples × (sizeof(T) + 4)` bytes. |
+| `StackAccumulator[T]`; `initStackAccumulator[T](bins, samples, dtMs, startMs = 0)`, `stackMemory(T, bins, samples)` | Sums and per-sample folds, and per bin a trace count and the midpoint sums: `bins × (samples × (sizeof(T) + 4) + 24)` bytes (`ValueError` for a negative size or one beyond `int`). A copy (`=copy`, `=dup`) is a full copy of the sums. |
 | `acc.bins`, `acc.samples`, `acc.dtMs`, `acc.startMs`, `acc.foldAt(bin, j)`, `acc.sumAt(bin, j)` | Its shape and contents. |
 | `acc.add(bin, x, first = 0, last = -1): bool`, `acc.addLive(bin, x): bool`, `liveSpan(x)` | Add a trace in any order (false: bin < 0 or a non-finite sample, nothing added); `addLive` counts the fold only between the first and last non-zero samples, so mutes do not count. |
+| `acc.addMidpoint(bin, cmpX, cmpY)`; `acc.tracesAt(bin)`, `acc.cmpXAt(bin)`, `acc.cmpYAt(bin)` | Per bin: the traces added (a fold map), and the mean of the midpoints given for them (NaN when none): where a bin of header numbers lies on the map. |
 | `acc.merge(other)`, `acc.clear` | Add another thread's share; zero it. |
-| `FoldNorm` (`fnNone`, `fnFold`, `fnSqrtFold`); `acc.stackInto(dst, norm = fnFold)`, `acc.foldInto(dst: var Tensor[int32])` | The normalized stack and the fold into caller tensors `[bins, samples]`. |
+| `FoldNorm` (`fnNone`, `fnFold`, `fnSqrtFold`); `acc.stackInto(dst, norm = fnFold)`, `acc.foldInto(dst: var Tensor[int32])` | The normalized stack and the fold copied into caller tensors `[bins, samples]`; the accumulator stays open. |
+| `acc.finishInto(data, fold, norm = fnFold)` | Ends the accumulation without a copy: the sums are normalized in place and the accumulator's storage is moved into `data` and `fold` (a large stack is held once); `acc` is left with no bins. |
 
 ## batch: brute stack of a file
 
 | Proc | What |
 |---|---|
-| `BruteStackOptions` (`flow`, `useStatics`, `statics`, `staticsInterp`, `nmo`, `norm`, `samples`, `startMs`, `workers`, `chunkTraces`, `maxRingBytes`); `initBruteStackOptions(flow = initPipeline(), nmo = initNmoParams(), norm = fnFold, workers = 1)` | The processing and resources of a job. |
-| `bruteStack(f: SeismicFile, T, [traces: Slice[int],] binning, velocity: VelocityField \| VelocityFunction, opts = initBruteStackOptions(), progress: Progress = nil): StackResult[T]` | Statics, the flow, NMO and stacking inside parseSEG's prefetcher (`uniform = true`), `opts.workers` threads. Blocks; `progress(done, total)` counts traces, and false raises `SegCancelledError`. `ValueError` for a file without keys, mixed intervals, a field that does not suit the binning or bad options. |
-| `StackResult[T]` (`data`, `fold`, `binning`, `dtMs`, `startMs`, `stacked`, `skipped`, `failed`) | The stack `[bins, samples]`, its fold and counts. |
-| `bruteStackMemory(T, bins, samples, inSamples, workers, chunkTraces = 256, maxRingBytes = 4 shl 20)` | An estimate of the job's memory in bytes. |
-| `writeStack(path, res, opts = SegyOutputOptions(traceSorting: 4)): DiagLog` | The stack as SEG-Y, one trace per bin, headers from `TraceKeys` (CDP or bin index, inline/crossline, centre, fold in `numHorzStacked`); empty bins are dead traces. Each trace is `stackKeys` + `stackOverrides`. |
-| `stackKeys(res, bin): TraceKeys` | Bin `bin`'s stacked-trace keys (D14): CDP or bin index, inline/crossline, centre as midpoint, offset 0, `startMs`, `dtMs`, `tsDead` with no fold. For parseSEG's `writeTrace(w, keys, samples, overrides)`. |
+| `BruteStackOptions` (`flow`, `statics`, `staticsInterp`, `nmo`, `norm`, `samples`, `startMs`, `workers`, `chunkTraces`, `maxRingBytes`, `velocityCacheBytes`); `initBruteStackOptions(flow = initPipeline(), nmo = initNmoParams(), norm = fnFold, workers = 1)` | The processing and resources of a job. `statics` is an `Option[DatumStatics]`: `some(datumStatics(datumZ, vReplacement))` applies them first, `none` (the default) applies none; the module re-exports std/`options`. `velocityCacheBytes` (8 MiB): each worker's cache of `VelocityField` columns, one per bin it met last, so shot-sorted input reads the field once per bin; it never changes the result. |
+| `bruteStack(f: SeismicFile, T, [traces: Slice[int] \| openArray[int],] binning, velocity: VelocityField \| VelocityFunction, opts = initBruteStackOptions(), progress: Progress = nil): StackResult[T]` | Statics, the flow and NMO inside parseSEG's prefetcher (`uniform = true`) on `opts.workers` threads; the calling thread stacks the corrected traces in order, so the result is the same bit for bit for any number of workers. `traces`: the whole file, a range, or a list of trace indices (a map selection, one channel set; stacked in list order, a trace listed twice counts twice). Blocks; `progress(done, total)` counts traces, and false raises `SegCancelledError`. `ValueError` for a file without keys, a trace outside the file, mixed intervals, a field that does not suit the binning or ends before the stack's last sample (`field.tMaxMs`), or bad options. |
+| `StackResult[T]` (`data`, `fold`, `binning`, `dtMs`, `intervalUs`, `startMs`, `binTraces`, `cmpX`, `cmpY`, `stacked`, `skipped`, `failed`) | The stack `[bins, samples]`, its fold and counts. Per bin: `binTraces`, the traces stacked into it (a fold map), and `cmpX`, `cmpY`, their mean midpoint (NaN for an empty bin). `intervalUs` is the input's interval in µs, which `stackKeys` writes (`dtMs · 1000` is not always whole microseconds; 0 in a result built by hand: `dtMs · 1000`). |
+| `bruteStackMemory(T, bins, samples, inSamples, workers, chunkTraces = 256, maxRingBytes = 4 shl 20, velocityCacheBytes = 8 shl 20)` | An estimate of the job's memory in bytes: one stack (it becomes the result), the prefetch ring and each worker's scratch and velocity columns. `ValueError` for bad arguments or a total beyond `int`. |
+| `writeStack(path, res, opts = SegyOutputOptions(traceSorting: 4)): DiagLog` | The stack as SEG-Y, one trace per bin, headers from `TraceKeys` (CDP or bin index, inline/crossline, centre or mean midpoint, fold in `numHorzStacked`); empty bins are dead traces. Each trace is `stackKeys` + `stackOverrides`. |
+| `stackKeys(res, bin): TraceKeys` | Bin `bin`'s stacked-trace keys (D14): CDP or bin index, inline/crossline, as midpoint the bin centre (line and grid binnings) or the mean midpoint of its traces (header CDP and inline/crossline binnings), offset 0, `startMs`, `intervalUs`, `tsDead` with no fold. For parseSEG's `writeTrace(w, keys, samples, overrides)`. |
 | `stackOverrides(res, bin): array[1, HeaderOverride]` | The fold as `trace.numHorzStacked` (largest per-sample fold, clamped to int16). |
 | `maxFold(res, bin): int32` | The largest per-sample fold of a bin. |
 

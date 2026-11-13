@@ -30,15 +30,19 @@ const
     "agcImpl",
     # Gain curves: the table multiply, on and off the grid.
     "mulTable", "mulTableLerp",
-    # Stacking: the sum and fold update.
-    "accumulate"]
+    # Stacking: the sum and fold update, and the finite check before it
+    # (an OR of exponent-bit flags).
+    "accumulate", "allFinite"]
   # Non-generic kernels: their symbols carry their own module (and GCC clones
   # such as `.constprop.0` count too).
   moduleKernels = [
     # IIR: the recursion across 24 lanes (`mostlyPacked` below).
     ("sosKernel", "ZfilterZiir"),
-    # NMO: the input columns (sqrt and division; -fno-math-errno there).
-    ("moveoutCols", "ZstackZnmo"),
+    # NMO: the input columns (sqrt; -fno-math-errno there), the sloths, the
+      # interior test, and the whole and fractional parts of the columns
+      # (floor: -fno-trapping-math there). The tap loads are scalar.
+    ("moveoutCols", "ZstackZnmo"), ("slothCols", "ZstackZnmo"),
+    ("insideCount", "ZstackZnmo"), ("splitCols", "ZstackZnmo"),
     # The shot fit's normal-equation sums.
     ("l1Fit", "ZqcZshotfit")]
 
