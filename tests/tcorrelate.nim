@@ -38,7 +38,7 @@ block fft_equals_direct:
   let n = 1201
   var x = newSeq[float64](n)
   x.addNoise(1.0, 7)
-  let plan = initCorrelationPlan(float64, pilot, n, 2, normalize = false)
+  let plan = initCorrelationPlan(float64, pilot, 2, n, normalize = false)
   doAssert plan.outSamples == n - pilot.len + 1
   var ws = initWorkspace()
   ws.reserve(plan.workspaceSize)
@@ -51,7 +51,7 @@ block fft_equals_direct:
     peak = max(peak, abs(d))
   doAssert worst < 1e-10 * peak, "FFT vs direct: " & $worst
   # Lags into the record's end correlate with zeros, not its start.
-  let long = initCorrelationPlan(float64, pilot, n, 2, outSamples = n, normalize = false)
+  let long = initCorrelationPlan(float64, pilot, 2, n, outSamples = n, normalize = false)
   var y2 = newSeq[float64](n)
   ws.reserve(long.workspaceSize)
   long.correlateInto(x, y2, ws)
@@ -68,7 +68,7 @@ block whole_sample_pilot_start_times:
   for t0 in [-20.0, 20.0, -900.0, 3000.0]:
     var p = base
     p.t0Ms = t0
-    let plan = initCorrelationPlan(float64, p, n, 2, outSamples = n, normalize = false)
+    let plan = initCorrelationPlan(float64, p, 2, n, outSamples = n, normalize = false)
     var ws = initWorkspace()
     ws.reserve(plan.workspaceSize)
     var y = newSeq[float64](n)
@@ -84,9 +84,9 @@ block whole_sample_pilot_start_times:
   # A start time no lag can reach is refused (and never sizes a huge FFT).
   var far = base
   far.t0Ms = 1e30
-  doAssertRaises(ValueError): discard initCorrelationPlan(float64, far, n, 2)
+  doAssertRaises(ValueError): discard initCorrelationPlan(float64, far, 2, n)
   far.t0Ms = 2e7
-  doAssertRaises(ValueError): discard initCorrelationPlan(float64, far, n, 2)
+  doAssertRaises(ValueError): discard initCorrelationPlan(float64, far, 2, n)
 
 block reflectivity_to_klauder:
   # Spikes convolved with the sweep correlate back to spikes ⊛ Klauder at
@@ -98,7 +98,7 @@ block reflectivity_to_klauder:
   refl[400] = -0.5
   refl[900] = 0.25
   let x = convolve(refl, pilot.samples, n)
-  let plan = initCorrelationPlan(float64, pilot, n, 2)
+  let plan = initCorrelationPlan(float64, pilot, 2, n)
   var ws = initWorkspace()
   ws.reserve(plan.workspaceSize)
   var y = newSeq[float64](plan.outSamples)
@@ -118,7 +118,7 @@ block normalization_is_independent_of_the_pilot:
     let pilot = generatePilot(linearSweep(10, 80, lengthMs, 2, initSweepTaper(200, 200),
       amplitude = amp))
     let x = convolve(refl, pilot.samples, n)
-    let plan = initCorrelationPlan(float64, pilot, n, 2)
+    let plan = initCorrelationPlan(float64, pilot, 2, n)
     var ws = initWorkspace()
     ws.reserve(plan.workspaceSize)
     var y = newSeq[float64](plan.outSamples)
@@ -136,7 +136,7 @@ block deconvolution_flattens_the_spectrum:
   let x = convolve(refl, pilot.samples, n)
   var spectra: array[CorrelationMode, seq[float64]]
   for mode in CorrelationMode:
-    let plan = initCorrelationPlan(float64, pilot, n, 2, outSamples = 2000, mode = mode,
+    let plan = initCorrelationPlan(float64, pilot, 2, n, outSamples = 2000, mode = mode,
       epsPercent = 0.1)
     var ws = initWorkspace()
     ws.reserve(plan.workspaceSize)
@@ -163,9 +163,9 @@ block deconvolution_flattens_the_spectrum:
   # Correlation keeps |P|²: +8 dB/octave over 15–80 Hz, about 19 dB.
   doAssert spread(spectra[cmCorrelate]) > 15
   # A large ε tends to correlation's shape.
-  let big = initCorrelationPlan(float64, pilot, n, 2, outSamples = 2000,
+  let big = initCorrelationPlan(float64, pilot, 2, n, outSamples = 2000,
     mode = cmDeconvolve, epsPercent = 1e6)
-  let corr = initCorrelationPlan(float64, pilot, n, 2, outSamples = 2000)
+  let corr = initCorrelationPlan(float64, pilot, 2, n, outSamples = 2000)
   var ws = initWorkspace()
   ws.reserve(big.workspaceSize)
   var a, b = newSeq[float64](2000)
@@ -188,7 +188,7 @@ block sub_sample_pilot_start:
   var late = newSeq[float64](spec.sweepLen)
   for j in 0 ..< late.len: late[j] = sweepAt(0.6 + float64(j) * dt)
   proc arrival(pilot: Pilot[float64]): float64 =
-    let plan = initCorrelationPlan(float64, pilot, n, dt)
+    let plan = initCorrelationPlan(float64, pilot, dt, n)
     var ws = initWorkspace()
     ws.reserve(plan.workspaceSize)
     var y = newSeq[float64](plan.outSamples)
@@ -228,10 +228,10 @@ block instrument_filter_phase:
     for spec in [butterLowCut(3, 36), butterHighCut(100, 36)]:
       let plan = initIirPlan(float64, spec, dt, buf.len, ipMinimum, trNone)
       ws.reserve(plan.workspaceSize)
-      buf.applyFilter(plan, ws)
+      plan.applyFilter(buf, ws)
     for j in 0 ..< n: rec.samples[j] = buf[lead + j]
   proc phaseErrorDeg(pilot: Pilot[float64]): float64 =
-    let plan = initCorrelationPlan(float64, pilot, n, dt, outSamples = 2001)
+    let plan = initCorrelationPlan(float64, pilot, dt, n, outSamples = 2001)
     var ws = initWorkspace()
     ws.reserve(plan.workspaceSize)
     var y = newSeq[float64](2001)
@@ -275,7 +275,7 @@ block rows_meta_float32_and_allocation:
   counts[5] = 1300 # a shorter record: what is past its live length is ignored
   for j in 1300 ..< n: src[5, j] = 1e6
   let meta2 = initChunkMeta(rowsOf(keys, counts), 2)
-  let plan = initCorrelationPlan(float32, pilot, n, 2)
+  let plan = initCorrelationPlan(float32, pilot, 2, n)
   var dst = zeros[float32](rows, plan.outSamples)
   var ws = initWorkspace()
   ws.reserve(plan.workspaceSize)
@@ -323,7 +323,7 @@ block ragged_batches_and_the_one_record_form:
     keys[1].status = tsDead
     keys[fftLanes + 2].status = tsDead
     let meta = initChunkMeta(rowsOf(keys, counts), 2)
-    let plan = initCorrelationPlan(float32, pilot, n, 2, outSamples = outSamples, mode = mode,
+    let plan = initCorrelationPlan(float32, pilot, 2, n, outSamples = outSamples, mode = mode,
       normalize = false)
     var ws = initWorkspace()
     ws.reserve(plan.workspaceSize)
@@ -360,13 +360,13 @@ block ragged_batches_and_the_one_record_form:
 
 block validation:
   let pilot = generatePilot(linearSweep(10, 70, 2000, 2))
-  doAssertRaises(ValueError): discard initCorrelationPlan(float32, pilot, 1601, 1)
-  doAssertRaises(ValueError): discard initCorrelationPlan(float32, pilot, 500, 2)
-  discard initCorrelationPlan(float32, pilot, 500, 2, outSamples = 500)
-  doAssertRaises(ValueError): discard initCorrelationPlan(float32, pilot, 500, 2, outSamples = 501)
+  doAssertRaises(ValueError): discard initCorrelationPlan(float32, pilot, 1, 1601)
+  doAssertRaises(ValueError): discard initCorrelationPlan(float32, pilot, 2, 500)
+  discard initCorrelationPlan(float32, pilot, 2, 500, outSamples = 500)
+  doAssertRaises(ValueError): discard initCorrelationPlan(float32, pilot, 2, 500, outSamples = 501)
   doAssertRaises(ValueError):
-    discard initCorrelationPlan(float32, pilot, 1601, 2, mode = cmDeconvolve, epsPercent = 0)
-  let plan = initCorrelationPlan(float32, pilot, 1601, 2)
+    discard initCorrelationPlan(float32, pilot, 2, 1601, mode = cmDeconvolve, epsPercent = 0)
+  let plan = initCorrelationPlan(float32, pilot, 2, 1601)
   var keys: seq[TraceKeys]
   var counts: seq[int]
   let meta = metaFor(2, 1601, 2, keys, counts)

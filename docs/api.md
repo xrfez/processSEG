@@ -31,6 +31,20 @@ These hold throughout; a row below only mentions what departs from them.
   argument and raise `ValueError`: `clip` (its limits), `taperPads` (a ramp that does not
   fit) and `percentileAbs` (`p` outside 0 .. 100). The block forms raise only the argument
   `ValueError` above.
+- **Argument order.** One rule for every block, single-trace and pool form:
+  `verb([pool,] [plan,] src[, dst], meta, operands..., results..., ws, options = ...)`.
+  - A compiled plan (`PipelinePlan`, `FilterPlan`, `IirPlan`, `AgcPlan`, `NormalizePlan`,
+    `GainCurvePlan`, `FirstBreakPlan`, `CorrelationPlan`, `SlicePlan`, `SpectrumPlan`,
+    `FftPlan`) comes first, so `plan.verb(...)` reads as the plan applied:
+    `plan.applyFilter(b, meta, ws)`, `plan.pickInto(b, meta, picks, ws)`. A call without
+    a plan starts with its data: `b.applyNmo(meta, velocity, params, ws)`.
+  - The rows (`RowBlock` or tensor), then a separate output block, then the `ChunkMeta`
+    (a single-trace form has no meta: `plan.agc(x, ws)`).
+  - Then what the operation needs besides the data (parameter objects, velocities, statics,
+    picks, a window length), then the caller's arrays it fills per row (picks, amplitudes,
+    SNR, gains).
+  - The `Workspace` is the last required argument; defaulted options follow it.
+  - Plan constructors: `initXPlan(T, what it does..., dtMs, samples, options)`.
 - **NaN means unknown.** Keys are read as parseSEG stores them, NaN where the headers
   cannot give a value (an offset without geometry, an unknown SEG-D `t0Ms`). processSEG
   never substitutes a default: anything derived from an unknown key is NaN (a tick, a
@@ -143,7 +157,7 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 
 | Proc | What |
 |---|---|
-| `SpectrumPlan[T]`; `initSpectrumPlan(T, windowLen, dtMs, taperFraction = 0.1, nfft = 0, demean = true)` | Windowed amplitude spectra: demeaned, Tukey-tapered, zero-padded to `nfft` (0: the next power of two). |
+| `SpectrumPlan[T]`; `initSpectrumPlan(T, dtMs, windowLen, taperFraction = 0.1, nfft = 0, demean = true)` | Windowed amplitude spectra: demeaned, Tukey-tapered, zero-padded to `nfft` (0: the next power of two). |
 | `sp.bins`, `sp.windowLen`, `sp.nfft`, `sp.binHz(k)`, `sp.workspaceSize` | Its axes and scratch. |
 | `sp.averageAmplitudeInto(b \| samples, meta, firstCol, amp: var openArray[float64], ws, rows = 0 .. high(int)): int` | The power-averaged amplitude spectrum of the window `firstCol ..< firstCol + windowLen` over the live rows in `rows`; returns the rows used (rows with NaN or Inf are left out). A sinusoid of amplitude A on a bin reads A. |
 | `sp.amplitudeInto(x, amp, phase, ws)` | One window of one trace: amplitude and phase (radians). |
@@ -169,7 +183,7 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `TrendRemoval` (`trNone`, `trMean`, `trLinear`) | What is removed before padding and added back after, scaled by the gain at 0 Hz. |
 | `FilterPlan[T]`; `initFilterPlan(T, spec, dtMs, samples, trend = trLinear)` | A filter for traces up to `samples` long: odd-reflection pads of `L`, a pad-only taper, an FFT of at least `samples + 4L`. |
 | `plan.requiredMargin`, `plan.samples`, `plan.nfft`, `plan.spec`, `plan.dtMs`, `plan.binHz`, `plan.gainAt(k)`, `plan.workspaceSize` | Its margin `L`, size and response. |
-| `applyFilter(x \| b, meta \| samples, meta, plan, ws)` | Filter one trace, or the live rows in place (`fftLanes` at a time). |
+| `applyFilter(plan, x \| b, meta \| samples, meta, ws)` | Filter one trace, or the live rows in place (`fftLanes` at a time). |
 
 ## filter/iir: `IirPlan` (Butterworth biquads)
 
@@ -179,7 +193,7 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `IirPlan[T]`; `initIirPlan(T, spec, dtMs, samples, phase = ipZero, trend = trLinear)` | A cascade for a `butter*` spec without notches; slopes in multiples of 12 dB/octave (zero phase) or 6 (minimum phase). |
 | `plan.requiredMargin`, `plan.samples`, `plan.phase`, `plan.order`, `plan.spec`, `plan.magnitudeAt(f)`, `plan.workspaceSize` | Its margin (before the window for minimum phase), size and response. |
 | `causalEnergyFraction` (0.9999) | The energy a minimum-phase margin holds. |
-| `applyFilter(x \| b, meta \| samples, meta, plan, ws)` | As the FFT plan; the block form filters `iirLanes` live rows at a time. |
+| `applyFilter(plan, x \| b, meta \| samples, meta, ws)` | As the FFT plan; the block form filters `iirLanes` live rows at a time. |
 | `iirLanes` (24) | Traces per batch of the block form. |
 
 ## gain/gain: fixed gain, normalization, AGC
@@ -189,11 +203,11 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `dbToFactor(dB)`; `scaleDb(x \| b, meta \| samples, meta, dB)` | 10^(dB/20); multiply by it (`ValueError` unless finite). |
 | `NormStat` (`normMax`, `normRms`, `normPercentile`), `NormScope` (`perTrace`, `perPanel`) | What normalization brings to its target, per trace or per block. |
 | `NormalizePlan`; `initNormalizePlan(stat, samples, scope = perTrace, target = 1, percentile = 99)` | A normalization; `p.stat`, `p.scope`, `p.target`, `p.percentile`, `p.samples`, `p.workspaceSize`. |
-| `normalize(x \| b, meta \| samples, meta, plan, ws)` | Normalize in place; an all-zero or non-finite trace (panel) is left alone. |
-| `panelFactor(b, meta, plan, ws): float64` | The one factor a `perPanel` normalization would apply (NaN: none), for a display-gain uniform. |
+| `normalize(plan, x \| b, meta \| samples, meta, ws)` | Normalize in place; an all-zero or non-finite trace (panel) is left alone. |
+| `plan.panelFactor(b, meta, ws): float64` | The one factor a `perPanel` normalization would apply (NaN: none), for a display-gain uniform. |
 | `AgcMode` (`agcRms`, `agcMeanAbs`); `AgcPlan`; `initAgcPlan(windowMs, dtMs, samples, mode = agcRms, target = 1, epsilon = 1e-9)` | AGC over a centred window of `2h + 1` samples. |
 | `p.requiredMargin` (h), `p.windowSamples`, `p.windowMs`, `p.mode`, `p.samples`, `p.target`, `p.epsilon`, `p.dtMs`, `p.workspaceSize` | Its window and size. |
-| `agc(x \| b, meta \| samples, meta, plan, ws[, gain \| gains])` | AGC in place; the forms with `gain`/`gains` keep each sample's gain (1 where untouched). |
+| `agc(plan, x \| b, meta \| samples, meta[, gain \| gains], ws)` | AGC in place; the forms with `gain`/`gains` keep each sample's gain (1 where untouched). |
 | `removeGain(x, gain)`, `removeGain(b \| samples, meta, gains)` | Divide by a kept gain: undo AGC. |
 
 ## gain/curves: time-variant gain
@@ -204,8 +218,8 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `knotGain(knots)`, `powerGain(power, refMs = 1000, minMs = 1)`, `exponentialGain(dbPerS)` | Linear in dB between knots; `(t/refMs)^power` (2: spherical divergence); dB per second. Validated. |
 | `c.gainDbAt(tMs)`, `c.factorAt(tMs)` | The gain at a time, in dB and as a factor. |
 | `GainCurvePlan[T]`; `initGainCurvePlan(T, curve, dtMs, samples, tMinMs = 0, tMaxMs = NaN)` | The curve tabulated over `tMinMs .. tMaxMs` (NaN: the record length); times outside the table are exact but slower. `p.samples`, `p.dtMs`, `p.curve`, `p.tableLen`, `p.tableMs`. |
-| `applyGainCurve(x, plan, startMs)`, `applyGainCurve(b \| samples, meta, plan)` | Multiply each live row by the curve at its own times (`t0Ms`, `firstSample`). |
-| `applyGainCurve(b \| samples, meta, plan, ws)`, `p.workspaceSize` | The same for blocks that may lie off the table (a zoom window, a recording delay): the factors off it are computed once per run of rows with one time axis, not per sample (the pipeline uses this form). Results off the table differ from the other form by a rounding. |
+| `applyGainCurve(plan, x, startMs)`, `applyGainCurve(plan, b \| samples, meta)` | Multiply each live row by the curve at its own times (`t0Ms`, `firstSample`). |
+| `applyGainCurve(plan, b \| samples, meta, ws)`, `p.workspaceSize` | The same for blocks that may lie off the table (a zoom window, a recording delay): the factors off it are computed once per run of rows with one time axis, not per sample (the pipeline uses this form). Results off the table differ from the other form by a rounding. |
 
 ## gain/stats: statistics for display gain
 
@@ -337,7 +351,7 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `FirstBreakPlan[T]`; `initFirstBreakPlan(T, params, dtMs, samples)`, `plan.params`, `plan.dtMs`, `plan.samples`, `plan.workspaceSize` | A compiled picker (optional minimum-phase band-pass, fixed or LMO-guided window). |
 | `plan.requiredMargin` | The samples a zoom window must hold on each side of a row's search window to pick as the whole trace does, bit for bit: what the attribute and the confidence read before the window, plus the band-pass's margin. `plan.samples` for a plan that reads whole traces (no window, or `pmCoppens`). |
 | `FirstBreakPick` (`timeMs`, `col`, `snrDb`, `confidence`); `noPick()` | One pick: its time, its column in the block (an int; −1 without a pick, as `timeMs` and `snrDb` are NaN), confidence 0 .. 1 from the SNR (`lowDb` .. `highDb`). `FirstBreakPick()` is `noPick()`. |
-| `plan.pick(x, ws, offset = NaN, t0Ms = 0)`, `plan.pickInto(b \| samples, meta, ws, dst)` | Pick one trace, or every live row (others get `noPick`). The samples are not changed. With a search window, STA/LTA and the energy ratio read and band-pass only the window and its margins; zeros before a row's first and after its last non-zero sample are not data. |
+| `plan.pick(x, ws, offset = NaN, t0Ms = 0)`, `plan.pickInto(b \| samples, meta, dst, ws)` | Pick one trace, or every live row (others get `noPick`). The samples are not changed. With a search window, STA/LTA and the energy ratio read and band-pass only the window and its margins; zeros before a row's first and after its last non-zero sample are not data. |
 | `checkPick(plan, b, meta, picks)`; `pickInto(pool, plan, b \| samples, meta, dst)` | The checks of `pickInto` (`ValueError`); the picks with the rows split across a `ProcessPool`'s workers (identical results). |
 
 ## qc/snr: signal-to-noise ratios
@@ -349,7 +363,7 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `DefaultSnrFloorDb` | −40 dB: returned for no signal, and every SNR clamped up to it (`floorDb = -Inf`: no clamp). |
 | `meanPower(x, cols)`, `powerSnrDb(signal, noise, estimator = seRatio, floorDb, stabilization = 0)`, `windowSnrDb(x, signal, noise: Slice[int], estimator, floorDb, stabilization)` | The kernels: mean power over columns (NaN when empty), dB from two mean powers, both on one trace. NaN for an empty window or a zero noise power. |
 | `windowSnrInto(b \| samples, meta, params, [refMs \| guide: Moveout,] dst)` | The windowed SNR of every row, in dB: windows at fixed trace times, relative to a time per row (picks), or to a moveout guide at each offset (LMO). NaN for non-live rows, NaN references, empty windows. |
-| `coherenceSnrWorkspace(cols)`; `coherenceSnrInto(b \| samples, meta, windowMs, ws, dst, floorDb = DefaultSnrFloorDb)` | The SNR of a flattened (NMO/LMO-corrected) gather per column, over a centred window: signal power over noise power per trace from the mean trace and the residuals (an unbiased estimator, the semblance relation). Rows count over their `liveSpan`. The time does not depend on the window; the scratch is `6·cols + 2` float64 (`ValueError` when `ws` holds less). |
+| `coherenceSnrWorkspace(cols)`; `coherenceSnrInto(b \| samples, meta, windowMs, dst, ws, floorDb = DefaultSnrFloorDb)` | The SNR of a flattened (NMO/LMO-corrected) gather per column, over a centred window: signal power over noise power per trace from the mean trace and the residuals (an unbiased estimator, the semblance relation). Rows count over their `liveSpan`. The time does not depend on the window; the scratch is `6·cols + 2` float64 (`ValueError` when `ws` holds less). |
 
 ## qc/shotfit: per-shot refraction fit
 
@@ -410,7 +424,7 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 | `plan.generation`, `plan.dtMs`, `plan.samples`, `plan.recordSamples`, `plan.len`, `plan.requiredMargin`, `plan.workspaceSize`, `ws.reserve(plan)` | A plan's id (never 0, increasing), size, zoom margin (sum of the ops'), scratch. Any block up to `samples` wide works. |
 | `p.requiredMargin(dtMs)`, `decodeWindow(shown, margin, traceLen)` | The margin without compiling; the samples to decode for a zoom (shown ± margin, clamped). |
 | `plan.apply(b \| samples, meta, ws)`, `plan.apply(src, dst, meta, ws)` (blocks or tensors) | Run in place, or `src → dst` with the copy fused into the first op; tiles of about 256 KB. Never grows `ws`; `dst` is not resized. |
-| `checkApply(plan, src, dst, meta)`, `plan.partCount`, `plan.partNeedsPanel(part)`, `plan.panelFactorOf(part, b, meta, ws)`, `plan.runPart(part, src, dst, meta, factor, ws)` | The pieces of `apply`, for a caller's own threads: a per-panel normalization splits the plan into parts. |
+| `checkApply(plan, src, dst, meta)`, `plan.partCount`, `plan.partNeedsPanel(part)`, `plan.panelFactorOf(b, meta, part, ws)`, `plan.runPart(src, dst, meta, part, factor, ws)` | The pieces of `apply`, for a caller's own threads: a per-panel normalization splits the plan into parts. |
 
 ## core/pool: `ProcessPool`
 
@@ -477,7 +491,7 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 | Proc | What |
 |---|---|
 | `CorrelationMode` (`cmCorrelate`, `cmDeconvolve`) | `X·conj(P)`, or `X·conj(P)/(\|P\|² + ε)`. |
-| `initCorrelationPlan(T, pilot, recordSamples, dtMs, outSamples = 0, mode = cmCorrelate, epsPercent = 1, normalize = true)` | A plan for records of up to `recordSamples`; `outSamples` 0 is the listen time `recordSamples − pilot.len + 1`. `ValueError` for a pilot at another `dtMs` (use `resamplePilot`), no listen time, a bad `outSamples` or `epsPercent`. |
+| `initCorrelationPlan(T, pilot, dtMs, recordSamples, outSamples = 0, mode = cmCorrelate, epsPercent = 1, normalize = true)` | A plan for records of up to `recordSamples`; `outSamples` 0 is the listen time `recordSamples − pilot.len + 1`. `ValueError` for a pilot at another `dtMs` (use `resamplePilot`), no listen time, a bad `outSamples` or `epsPercent`. |
 | `recordSamples`, `outSamples`, `pilotSamples`, `dtMs`, `mode`, `nfft`, `scale`, `workspaceSize` | Plan accessors; `scale` is the normalization (1/wavelet peak). |
 | `correlateInto(plan, x: openArray[T], y: var openArray[T], ws)` | One record. |
 | `correlateInto(plan, src, dst: RowBlock[T] \| Tensor[T], meta, ws)`, `checkCorrelate(plan, src, dst, meta)` | All rows but dead and failed ones, each to its live length; column `m` at the record's `t0Ms + m·dtMs` (the pilot's `t0Ms` removed exactly). `ValueError` for shapes, `dtMs`, `firstSample > 0`. |
@@ -513,7 +527,7 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 | `SliceOverlap` (`earlier`, `later`, `first`, `samples`), `plan.overlaps`; `SliceTimingIssue` (`earlier`, `later`, `residual`), `plan.timingIssues` | Overlaps (the later segment wins, always); segments off the previous one's sample grid (tolerance max(0.01 sample, 1 µs)). |
 | `sliceKeys(plan, trace)` | The output trace's `TraceKeys` (D14): receiver keys; record, source line, point, index and coordinates from the shot alone; `time` = shot time, `t0Ms` = `startMs`; `intervalUs` exactly as the receiver's keys hold it (`dtMs · 1000` when they hold none). |
 | `sliceWorkspace(T, plan)`, `SliceReport`, `initSliceReport(plan)` | Scratch (only with interpolation) and a report sized for the plan. |
-| `extractInto(plan, data, meta, dst, report, ws)` (blocks or tensors) | Copies and stitches into `dst` (`plan.len × plan.samples`) from all rows of the planning view or only `rowsNeeded` (read as `tracesNeeded`); gaps zero. Allocates nothing. |
+| `extractInto(plan, data, dst, meta, report, ws)` (blocks or tensors) | Copies and stitches into `dst` (`plan.len × plan.samples`) from all rows of the planning view or only `rowsNeeded` (read as `tracesNeeded`); gaps zero. Allocates nothing. |
 | `report.len`, `report.gapSamples(trace)`, `report.gapCount(trace)`, `gaps(report, trace)` (`SliceGap`: `first`, `count`) | Zero-filled column runs per trace, failed rows included. |
 | `OverlapStatus` (`osNotRead`, `osMatch`, `osMismatch`), `SliceOverlapCheck` (`status`, `differing`, `maxAbsDiff`), `report.overlapCheck(i)`, `report.mismatches` | Overlapping samples compared when both rows are read; a mismatch is a timing error. |
 | `driftCorrectTimes(times, t0, offset0, t1, offset1)`, `driftCorrectedTimes(...)` | Linear clock-drift correction of one receiver's times, in place or a copy, before `planSlices`. |

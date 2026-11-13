@@ -39,7 +39,7 @@ block normalize_per_trace:
     var x = newSeq[float64](100)
     x.addNoise(1, seed = 3)
     x.addSpike(10, amp = 30)
-    normalize(x, plan, ws)
+    normalize(plan, x, ws)
     let s = traceStats(x)
     var w2 = initWorkspace()
     w2.reserve(percentileWorkspace(100))
@@ -52,13 +52,13 @@ block normalize_per_trace:
   # Zero and NaN traces are left as they are.
   let plan = initNormalizePlan(normRms, samples = 10)
   var z = newSeq[float32](10)
-  normalize(z, plan, ws)
+  normalize(plan, z, ws)
   doAssert z == newSeq[float32](10)
   var n = @[1.0, NaN, 2]
-  normalize(n, plan, ws)
+  normalize(plan, n, ws)
   doAssert n[0] == 1 and n[2] == 2
   var tiny = @[1e-320, -1e-320] # target / level overflows: left alone
-  normalize(tiny, plan, ws)
+  normalize(plan, tiny, ws)
   doAssert tiny == @[1e-320, -1e-320]
   doAssertRaises ValueError: discard initNormalizePlan(normMax, samples = 0)
   doAssertRaises ValueError: discard initNormalizePlan(normMax, 10, target = 0)
@@ -75,7 +75,7 @@ block normalize_block:
   var ws = initWorkspace()
   let trace = initNormalizePlan(normMax, samples = 50)
   var a = g.data.clone()
-  a.normalize(meta, trace, ws)
+  trace.normalize(a, meta, ws)
   for r in [0, 2, 3]:
     var m = 0.0
     for j in 0..<50: m = max(m, abs(a[r, j]))
@@ -86,7 +86,7 @@ block normalize_block:
     let panel = initNormalizePlan(stat, samples = 50, scope = perPanel, target = 3)
     ws.reserve(max(panel.workspaceSize, panelStatsWorkspace))
     var b = g.data.clone()
-    b.normalize(meta, panel, ws)
+    panel.normalize(b, meta, ws)
     let p = panelStats(b, meta, ws, clipPercentile = 99)
     let got =
       case stat
@@ -99,7 +99,7 @@ block normalize_block:
     doAssert b[1, 5] == g.data[1, 5]
   var wide = gather(5, 60)
   doAssertRaises ValueError:
-    wide.data.normalize(initChunkMeta(wide.rows, dtMs = 2), trace, ws)
+    trace.normalize(wide.data, initChunkMeta(wide.rows, dtMs = 2), ws)
 
 proc refAgc(x: seq[float64], h: int, mode: AgcMode, target, epsilon: float64): (
     seq[float64], seq[float64]) =
@@ -132,9 +132,9 @@ block agc_matches_reference:
       let (want, wantG) = refAgc(x, plan.requiredMargin, mode, 2, 1e-9)
       var y = x
       var g = newSeq[float64](n)
-      agc(y, plan, ws, g)
+      agc(plan, y, g, ws)
       var z = x
-      agc(z, plan, ws)
+      agc(plan, z, ws)
       for i in 0..<n:
         doAssert near(y[i], want[i], 1e-12), $mode & " n " & $n & " at " & $i
         doAssert near(g[i], wantG[i], 1e-12)
@@ -151,7 +151,7 @@ block agc_matches_reference:
       var f = newSeq[float32](n)
       for i in 0..<n: f[i] = float32(x[i])
       var g = newSeq[float32](n)
-      agc(f, plan, ws, g)
+      agc(plan, f, g, ws)
       for i in 0..<n:
         doAssert near(float64(f[i]), want[i], 1e-5), $mode & " " & $n & " " & $i
         doAssert near(float64(g[i]), wantG[i], 1e-5)
@@ -175,7 +175,7 @@ block agc_flattens_a_decay:
   var x = newSeq[float32](n)
   x.addSinusoid(dtMs = 2, freqHz = 25)
   for i in 0..<n: x[i] *= float32(10.0 ^ (-3.0 * float64(i) / float64(n)))
-  agc(x, plan, ws)
+  agc(plan, x, ws)
   # Sliding RMS over 200 ms windows: target 1 everywhere, within 2 %.
   for c in countup(50, n - 101, 50): # whole AGC windows (cut ones hold part of a period)
     var s = 0.0
@@ -196,7 +196,7 @@ block agc_precision_at_120_db:
     x[i] *= (if i < 1000: 1.0 else: 1e-6)
   let (want, _) = refAgc(x, plan.requiredMargin, agcRms, 1, 1e-12)
   var y = x
-  agc(y, plan, ws)
+  agc(plan, y, ws)
   for i in 0..<n:
     doAssert near(y[i], want[i], 1e-12), $i
   var tail = 0.0
@@ -205,7 +205,7 @@ block agc_precision_at_120_db:
   # float32 data: the float64 sums keep the tail at unit level too.
   var f = newSeq[float32](n)
   for i in 0..<n: f[i] = float32(x[i])
-  agc(f, plan, ws)
+  agc(plan, f, ws)
   var ft = 0.0
   for i in 1200..<n: ft += float64(f[i]) ^ 2
   doAssert abs(sqrt(ft / float64(n - 1200)) - 1) < 0.05
@@ -227,14 +227,14 @@ block agc_block_rows:
   ws.reserve(plan.workspaceSize)
   var a = g.data.clone()
   var gains = zeros[float64](5, 300)
-  a.agc(meta, plan, ws, gains)
+  plan.agc(a, meta, gains, ws)
   doAssert a[0, 7] == g.data[0, 7] and a[1, 7] == g.data[1, 7], "failed, dead untouched"
   for j in 0..<300:
     doAssert gains[0, j] == 1 and gains[1, j] == 1 and gains[4, j] == 1
     doAssert a[4, j] == 0, "dead and zero traces stay zero"
   var live2 = newSeq[float64](120)
   for j in 0..<120: live2[j] = g.data[2, j]
-  agc(live2, plan, ws)
+  agc(plan, live2, ws)
   for j in 0..<120: doAssert a[2, j] == live2[j], "AGC stops at the live length"
   for j in 120..<300: doAssert a[2, j] == 0 and gains[2, j] == 1
   for j in 0..<300: # a NaN row is left as it is, like normalize does
@@ -242,17 +242,17 @@ block agc_block_rows:
     doAssert gains[3, j] == 1
   # The plain form gives the same samples; removing the gain restores them.
   var b = g.data.clone()
-  b.agc(meta, plan, ws)
+  plan.agc(b, meta, ws)
   for r in [0, 1, 2, 3, 4]:
     for j in 0..<300: doAssert b[r, j] == a[r, j] or (r == 3 and j == 50)
   a.removeGain(meta, gains)
   for r in [0, 1, 2, 4]:
     for j in 0..<300: doAssert near(a[r, j], g.data[r, j], 1e-12), $r & " " & $j
   var wrong = zeros[float64](5, 299)
-  doAssertRaises ValueError: a.agc(meta, plan, ws, wrong)
+  doAssertRaises ValueError: plan.agc(a, meta, wrong, ws)
   doAssertRaises ValueError: a.removeGain(meta, wrong)
   let short = initAgcPlan(40, dtMs = 2, samples = 299)
-  doAssertRaises ValueError: a.agc(meta, short, ws)
+  doAssertRaises ValueError: short.agc(a, meta, ws)
 
 block agc_zoom_margin:
   # A window decoded with requiredMargin each side matches the whole trace's
@@ -265,11 +265,11 @@ block agc_zoom_margin:
   var ws = initWorkspace()
   ws.reserve(plan.workspaceSize)
   var whole = full
-  agc(whole, plan, ws)
+  agc(plan, whole, ws)
   let m = plan.requiredMargin
   let (a, b) = (600, 900)
   var win = full[a - m ..< b + m]
-  agc(win, plan, ws)
+  agc(plan, win, ws)
   for j in a..<b: doAssert near(win[j - a + m], whole[j], 1e-7), $j
 
 block factors_that_do_not_fit_float32:
@@ -278,7 +278,7 @@ block factors_that_do_not_fit_float32:
   var ws = initWorkspace()
   let big = initNormalizePlan(normMax, samples = 4, target = 1e20)
   var x = @[1e-20'f32, 0, 0, 0]
-  normalize(x, big, ws)
+  normalize(big, x, ws)
   doAssert x == @[1e-20'f32, 0, 0, 0]
   for (target, level) in [(1e30, 1e-10), (1.0, 1e-39)]:
     let plan = initAgcPlan(6, dtMs = 2, samples = 8, target = target)
@@ -286,14 +286,14 @@ block factors_that_do_not_fit_float32:
     var y = @[float32(level), 0, 0, 0, float32(level), 0, 0, 0]
     let before = y
     var g = newSeq[float32](8)
-    agc(y, plan, ws, g)
+    agc(plan, y, g, ws)
     doAssert y == before, $target
     for v in g: doAssert v == 1
   # float64 data has the range: the same AGC works there.
   let plan = initAgcPlan(6, dtMs = 2, samples = 8, target = 1e30)
   ws.reserve(plan.workspaceSize)
   var z = @[1e-10, 0, 0, 0, 1e-10, 0, 0, 0]
-  agc(z, plan, ws)
+  agc(plan, z, ws)
   for v in z: doAssert v.classify in {fcNormal, fcZero}
   doAssert z[0] > 1e29
 
@@ -303,7 +303,7 @@ block plan_dt_must_match_the_rows:
   let plan = initAgcPlan(40, dtMs = 2, samples = 50)
   var ws = initWorkspace()
   ws.reserve(plan.workspaceSize)
-  doAssertRaises ValueError: g.data.agc(meta, plan, ws)
+  doAssertRaises ValueError: plan.agc(g.data, meta, ws)
   doAssert plan.target == 1 and plan.epsilon == 1e-9
   doAssert initNormalizePlan(normPercentile, 10, percentile = 95).percentile == 95
 
@@ -320,11 +320,11 @@ block no_allocation:
   var gains = zeros[float64](16, 500)
   let n = allocsIn:
     for _ in 0..<3:
-      g.data.agc(meta, plan, ws)
-      g.data.agc(meta, plan, ws, gains)
+      plan.agc(g.data, meta, ws)
+      plan.agc(g.data, meta, gains, ws)
       g.data.removeGain(meta, gains)
-      g.data.normalize(meta, np, ws)
-      g.data.normalize(meta, pp, ws)
+      np.normalize(g.data, meta, ws)
+      pp.normalize(g.data, meta, ws)
       g.data.scaleDb(meta, 3)
   doAssert n == 0, $n & " allocations"
 

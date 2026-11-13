@@ -139,7 +139,7 @@ proc main() =
       let plan = initFirstBreakPlan(float32, params, dt, ns)
       ws.reserve(plan.workspaceSize)
       let r = bench("pickInto " & $m & (if filtered: " + band-pass" else: ""), bytes):
-        plan.pickInto(g0.data, meta, ws, picks)
+        plan.pickInto(g0.data, meta, picks, ws)
       r.report
       echo "    ", r.ms
   var fit: ShotFit

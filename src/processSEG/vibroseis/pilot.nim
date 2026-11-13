@@ -425,7 +425,7 @@ proc applyInstrumentFilter*[T: SampleType](p: Pilot[T], f: InstrumentFilter): Pi
     ws.reserve(plan.workspaceSize)
     var buf = newSeq[T](n + 2 * pad)
     for j in 0 ..< n: buf[pad + j] = p.samples[j]
-    buf.applyFilter(plan, ws)
+    plan.applyFilter(buf, ws)
     result = p
     for j in 0 ..< n: result.samples[j] = buf[pad + j]
   of ipZero:
@@ -436,6 +436,6 @@ proc applyInstrumentFilter*[T: SampleType](p: Pilot[T], f: InstrumentFilter): Pi
     ws.reserve(plan.workspaceSize)
     var buf = newSeq[T](n + 2 * pad)
     for j in 0 ..< n: buf[pad + j] = p.samples[j]
-    buf.applyFilter(plan, ws)
+    plan.applyFilter(buf, ws)
     result = p
     for j in 0 ..< n: result.samples[j] = buf[pad + j]

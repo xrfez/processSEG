@@ -5,12 +5,12 @@
 ## samples.scaleDb(meta, 6)                              # × 2, live rows only
 ##
 ## let norm = initNormalizePlan(normPercentile, samples = 2001, scope = perPanel)
-## let agc = initAgcPlan(windowMs = 500, dtMs = 2, samples = 2001)
+## let auto = initAgcPlan(windowMs = 500, dtMs = 2, samples = 2001)
 ## var ws = initWorkspace()
-## ws.reserve(max(norm.workspaceSize, agc.workspaceSize))
-## samples.normalize(meta, norm, ws)
-## samples.agc(meta, agc, ws)                            # in place
-## samples.agc(meta, agc, ws, gains)                     # and keep the gain
+## ws.reserve(max(norm.workspaceSize, auto.workspaceSize))
+## norm.normalize(samples, meta, ws)
+## auto.agc(samples, meta, ws)                           # in place
+## auto.agc(samples, meta, gains, ws)                    # and keep the gain
 ## samples.removeGain(meta, gains)                       # undo it later
 ## ```
 ##
@@ -209,7 +209,7 @@ proc scaleToTarget[T](x: var openArray[T], level, target: float64) {.inline.} =
   if level.finitePositive and fitsIn(T, target / level):
     scale(x, target / level)
 
-proc normalize*[T: SampleType](x: var openArray[T], plan: NormalizePlan,
+proc normalize*[T: SampleType](plan: NormalizePlan, x: var openArray[T],
     ws: var Workspace) {.raises: [].} =
   ## Normalizes one trace, `x` (its live samples, at most `plan.samples`; an
   ## `AssertionDefect` otherwise), whatever the plan's scope. `ws` must hold
@@ -218,8 +218,8 @@ proc normalize*[T: SampleType](x: var openArray[T], plan: NormalizePlan,
   doAssert x.len <= plan.samples, "a trace longer than the plan's samples"
   scaleToTarget(x, traceStatOf(x, plan, ws), plan.target)
 
-proc panelFactor*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
-    plan: NormalizePlan, ws: var Workspace): float64 =
+proc panelFactor*[T: SampleType](plan: NormalizePlan, b: RowBlock[T], meta: ChunkMeta,
+    ws: var Workspace): float64 =
   ## The one factor a `perPanel` normalization of `b` multiplies its live
   ## rows by (whatever `plan.scope` says), or NaN when it would leave the
   ## block alone (a statistic of 0 or not finite, or a factor that does not
@@ -239,8 +239,8 @@ proc panelFactor*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
   if level.finitePositive and fitsIn(T, plan.target / level): plan.target / level
   else: NaN
 
-proc normalize*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
-    plan: NormalizePlan, ws: var Workspace) =
+proc normalize*[T: SampleType](plan: NormalizePlan, b: RowBlock[T], meta: ChunkMeta,
+    ws: var Workspace) =
   ## Normalizes the live rows of `b` in place, per trace or with one factor
   ## for the block (module documentation). `ws` must hold
   ## `plan.workspaceSize`. Raises `ValueError`, before any sample changes,
@@ -254,18 +254,18 @@ proc normalize*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
   of perTrace:
     for r in 0..<b.len:
       if meta.isLive(r):
-        normalize(b.row(r, meta.liveSamples(r, b.cols)), plan, ws)
+        normalize(plan, b.row(r, meta.liveSamples(r, b.cols)), ws)
   of perPanel:
-    let f = panelFactor(b, meta, plan, ws)
+    let f = plan.panelFactor(b, meta, ws)
     if not f.isNaN:
       scale(b, meta, f)
 
-proc normalize*[T: SampleType](samples: var Tensor[T], meta: ChunkMeta,
-    plan: NormalizePlan, ws: var Workspace) =
+proc normalize*[T: SampleType](plan: NormalizePlan, samples: var Tensor[T],
+    meta: ChunkMeta, ws: var Workspace) =
   ## `normalize` on a `[rows, cols]` tensor (C-contiguous; raises
   ## `ValueError` otherwise).
   meta.checkShape(samples)
-  rowBlock(samples).normalize(meta, plan, ws)
+  plan.normalize(rowBlock(samples), meta, ws)
 
 # ---------------------------------------------------------------------- AGC --
 
@@ -466,7 +466,7 @@ proc agcDispatch[T](x: ptr UncheckedArray[T], n: int, plan: AgcPlan,
   of agcRms: agcImpl(x, n, plan, ws, g, agcRms, keep)
   of agcMeanAbs: agcImpl(x, n, plan, ws, g, agcMeanAbs, keep)
 
-proc agc*[T: SampleType](x: var openArray[T], plan: AgcPlan,
+proc agc*[T: SampleType](plan: AgcPlan, x: var openArray[T],
     ws: var Workspace) {.raises: [].} =
   ## AGC on one trace, `x` (its live samples, at most `plan.samples`; an
   ## `AssertionDefect` otherwise), in place. `ws` must hold
@@ -476,8 +476,8 @@ proc agc*[T: SampleType](x: var openArray[T], plan: AgcPlan,
   if x.len == 0: return
   agcDispatch(cast[ptr UncheckedArray[T]](addr x[0]), x.len, plan, ws, nil, keep = false)
 
-proc agc*[T: SampleType](x: var openArray[T], plan: AgcPlan, ws: var Workspace,
-    gain: var openArray[T]) {.raises: [].} =
+proc agc*[T: SampleType](plan: AgcPlan, x: var openArray[T], gain: var openArray[T],
+    ws: var Workspace) {.raises: [].} =
   ## `agc` on one trace, also storing the gain of each sample in `gain`
   ## (`gain.len == x.len`, an `AssertionDefect` otherwise; 1 everywhere for
   ## an all-zero trace).
@@ -497,7 +497,7 @@ proc checkBlock[T](b: RowBlock[T], meta: ChunkMeta, plan: AgcPlan) =
     badArg("the block has " & $b.cols & " columns, the plan takes " &
       $plan.samples & " samples")
 
-proc agc*[T: SampleType](b: RowBlock[T], meta: ChunkMeta, plan: AgcPlan,
+proc agc*[T: SampleType](plan: AgcPlan, b: RowBlock[T], meta: ChunkMeta,
     ws: var Workspace) =
   ## AGC on the live rows of `b` in place, each to its live length. `ws` must
   ## hold `plan.workspaceSize`. Raises `ValueError`, before any sample
@@ -508,8 +508,8 @@ proc agc*[T: SampleType](b: RowBlock[T], meta: ChunkMeta, plan: AgcPlan,
     if meta.isLive(r):
       agcDispatch(b.rowPtr(r), meta.liveSamples(r, b.cols), plan, ws, nil, keep = false)
 
-proc agc*[T: SampleType](b: RowBlock[T], meta: ChunkMeta, plan: AgcPlan,
-    ws: var Workspace, gains: RowBlock[T]) =
+proc agc*[T: SampleType](plan: AgcPlan, b: RowBlock[T], meta: ChunkMeta,
+    gains: RowBlock[T], ws: var Workspace) =
   ## `agc` on the live rows of `b`, also storing each sample's gain in
   ## `gains` (a block of the same shape): 1 for every sample left untouched
   ## (rows that are not live, padding past a trace's end, all-zero traces).
@@ -525,19 +525,19 @@ proc agc*[T: SampleType](b: RowBlock[T], meta: ChunkMeta, plan: AgcPlan,
       agcDispatch(b.rowPtr(r), n, plan, ws, g, keep = true)
     for j in n..<b.cols: g[j] = T(1)
 
-proc agc*[T: SampleType](samples: var Tensor[T], meta: ChunkMeta, plan: AgcPlan,
+proc agc*[T: SampleType](plan: AgcPlan, samples: var Tensor[T], meta: ChunkMeta,
     ws: var Workspace) =
   ## `agc` on a `[rows, cols]` tensor (C-contiguous; raises `ValueError`
   ## otherwise).
   meta.checkShape(samples)
-  rowBlock(samples).agc(meta, plan, ws)
+  plan.agc(rowBlock(samples), meta, ws)
 
-proc agc*[T: SampleType](samples: var Tensor[T], meta: ChunkMeta, plan: AgcPlan,
-    ws: var Workspace, gains: var Tensor[T]) =
+proc agc*[T: SampleType](plan: AgcPlan, samples: var Tensor[T], meta: ChunkMeta,
+    gains: var Tensor[T], ws: var Workspace) =
   ## `agc` on a tensor, keeping the gain in `gains`, a tensor of the same
   ## shape (C-contiguous; raises `ValueError` otherwise).
   meta.checkShape(samples)
-  rowBlock(samples).agc(meta, plan, ws, rowBlock(gains))
+  plan.agc(rowBlock(samples), meta, rowBlock(gains), ws)
 
 # ------------------------------------------------------------ gain removal --
 

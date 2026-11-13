@@ -591,8 +591,8 @@ func partNeedsPanel*[T](plan: PipelinePlan[T], part: int): bool {.inline,
   let r = plan.parts[part]
   r.len > 0 and plan.steps[r.a].kind == stNormPanel
 
-proc panelFactorOf*[T](plan: PipelinePlan[T], part: int, b: RowBlock[T],
-    meta: ChunkMeta, ws: var Workspace): float64 {.raises: [].} =
+proc panelFactorOf*[T](plan: PipelinePlan[T], b: RowBlock[T], meta: ChunkMeta, part: int,
+    ws: var Workspace): float64 {.raises: [].} =
   ## The factor of part `part`'s per-panel normalization over the whole
   ## block `b` (the data as the previous parts left it), or NaN when it
   ## leaves the block alone. Needs `checkApply` first; an
@@ -602,7 +602,7 @@ proc panelFactorOf*[T](plan: PipelinePlan[T], part: int, b: RowBlock[T],
     "part " & $part & " has no per-panel normalization"
   doAssert ws.fits(plan.ws), "reserve the workspace for the plan first"
   try:
-    panelFactor(b, meta, plan.steps[plan.parts[part].a].norm, ws)
+    plan.steps[plan.parts[part].a].norm.panelFactor(b, meta, ws)
   except ValueError as e:
     raiseAssert "checked by checkApply: " & e.msg
 
@@ -616,15 +616,15 @@ proc runStep[T](s: Step[T], b: RowBlock[T], meta: ChunkMeta,
   of stClip: clip(b, meta, s.lo, s.hi)
   of stMuteTop: muteTop(b, meta, s.mute, s.taperMs)
   of stMuteBottom: muteBottom(b, meta, s.mute, s.taperMs)
-  of stFilter: applyFilter(b, meta, s.filter, ws)
-  of stIir: applyFilter(b, meta, s.iir, ws)
-  of stAgc: agc(b, meta, s.agc, ws)
-  of stNormTrace: normalize(b, meta, s.norm, ws)
+  of stFilter: applyFilter(s.filter, b, meta, ws)
+  of stIir: applyFilter(s.iir, b, meta, ws)
+  of stAgc: agc(s.agc, b, meta, ws)
+  of stNormTrace: normalize(s.norm, b, meta, ws)
   of stNormPanel: discard # its factor is applied by runPart
-  of stGainCurve: applyGainCurve(b, meta, s.curve, ws)
+  of stGainCurve: applyGainCurve(s.curve, b, meta, ws)
 
-proc runPart*[T](plan: PipelinePlan[T], part: int, src, dst: RowBlock[T],
-    meta: ChunkMeta, factor: float64, ws: var Workspace) {.raises: [].} =
+proc runPart*[T](plan: PipelinePlan[T], src, dst: RowBlock[T], meta: ChunkMeta, part: int,
+    factor: float64, ws: var Workspace) {.raises: [].} =
   ## Runs part `part` of `plan` on the rows of `dst`, tile by tile. When
   ## `src` has rows, each tile is first copied from `src` (the same shape as
   ## `dst`), so pass it for the first part of a `src → dst` apply only. A
@@ -666,8 +666,8 @@ proc applyBlocks[T](plan: PipelinePlan[T], src, dst: RowBlock[T],
     let from0 = part == 0 and src.len > 0
     var factor = NaN
     if plan.partNeedsPanel(part):
-      factor = plan.panelFactorOf(part, (if from0: src else: dst), meta, ws)
-    plan.runPart(part, (if from0: src else: RowBlock[T]()), dst, meta, factor, ws)
+      factor = plan.panelFactorOf((if from0: src else: dst), meta, part, ws)
+    plan.runPart((if from0: src else: RowBlock[T]()), dst, meta, part, factor, ws)
 
 proc apply*[T: SampleType](plan: PipelinePlan[T], b: RowBlock[T],
     meta: ChunkMeta, ws: var Workspace) =

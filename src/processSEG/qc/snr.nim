@@ -13,7 +13,7 @@
 ## var ws = initWorkspace()
 ## ws.reserve(coherenceSnrWorkspace(samples.shape[1]))
 ## var perSample = newSeq[float64](samples.shape[1])
-## coherenceSnrInto(samples, meta, windowMs = 100, ws, perSample)
+## coherenceSnrInto(samples, meta, windowMs = 100, perSample, ws)
 ## ```
 ##
 ## **The SNR** is the signal power over the noise power, each a mean power
@@ -328,7 +328,7 @@ func coherenceDb(residual, coherent, traces, columns, floorDb: float64): float64
     else: floorDb
 
 proc coherenceSnrInto*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
-    windowMs: float64, ws: var Workspace, dst: var openArray[float64],
+    windowMs: float64, dst: var openArray[float64], ws: var Workspace,
     floorDb = DefaultSnrFloorDb) =
   ## The coherence SNR of the gather `b` (flattened: NMO or LMO corrected)
   ## at each column, into `dst[col]`, in dB: the signal power over the
@@ -402,7 +402,7 @@ proc coherenceSnrInto*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
   {.pop.}
 
 proc coherenceSnrInto*[T: SampleType](samples: Tensor[T], meta: ChunkMeta,
-    windowMs: float64, ws: var Workspace, dst: var openArray[float64],
+    windowMs: float64, dst: var openArray[float64], ws: var Workspace,
     floorDb = DefaultSnrFloorDb) =
   ## `coherenceSnrInto` on a row-major `[rows, samples]` tensor.
-  coherenceSnrInto(rowBlock(samples), meta, windowMs, ws, dst, floorDb)
+  coherenceSnrInto(rowBlock(samples), meta, windowMs, dst, ws, floorDb)

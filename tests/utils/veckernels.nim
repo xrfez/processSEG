@@ -24,7 +24,7 @@ proc vec_traceStats_f64(x: openArray[float64]): TraceStats {.exportc: "vec_trace
 
 proc vec_agc_f32(x: var openArray[float32], plan: AgcPlan,
     ws: var Workspace) {.exportc: "vec_agc_f32", noinline.} =
-  agc(x, plan, ws)
+  agc(plan, x, ws)
 
 proc agcOnce() =
   let plan = initAgcPlan(20, 2, 100)
@@ -36,7 +36,7 @@ proc agcOnce() =
 
 proc vec_curve_f32(x: var openArray[float32], plan: GainCurvePlan[float32],
     startMs: float64) {.exportc: "vec_curve_f32", noinline.} =
-  x.applyGainCurve(plan, startMs)
+  plan.applyGainCurve(x, startMs)
 
 proc curveOnce() =
   let plan = initGainCurvePlan(float32, powerGain(2), 2, 100)
@@ -69,7 +69,7 @@ proc fftOnce(T: typedesc) =
 
 proc vec_filter_f32(b: RowBlock[float32], meta: ChunkMeta, plan: FilterPlan[
     float32], ws: var Workspace) {.exportc: "vec_filter_f32", noinline.} =
-  b.applyFilter(meta, plan, ws)
+  plan.applyFilter(b, meta, ws)
 
 proc filterOnce() =
   let plan = initFilterPlan(float32, lowCut(10, 40), 2, 50)
@@ -81,7 +81,7 @@ proc filterOnce() =
 
 proc vec_iir_f32(b: RowBlock[float32], meta: ChunkMeta, plan: IirPlan[float32],
     ws: var Workspace) {.exportc: "vec_iir_f32", noinline.} =
-  b.applyFilter(meta, plan, ws)
+  plan.applyFilter(b, meta, ws)
 
 proc iirOnce() =
   let plan = initIirPlan(float32, butterBandPass(10, 100), 2, 50)

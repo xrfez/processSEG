@@ -26,7 +26,7 @@ proc filtered[T, P](x: seq[T], plan: P): seq[T] =
   result = x
   var ws = initWorkspace()
   ws.reserve(plan.workspaceSize)
-  result.applyFilter(plan, ws)
+  plan.applyFilter(result, ws)
 
 proc clean(n = 2001): seq[float64] =
   result = zeroSignal[float64](n)
@@ -168,7 +168,7 @@ proc rowsMatchSingle(T: typedesc, phase: IirPhase, tol: float64) =
   var ws = initWorkspace()
   ws.reserve(plan.workspaceSize)
   let before = g.data.clone()
-  g.data.applyFilter(meta, plan, ws)
+  plan.applyFilter(g.data, meta, ws)
   for r in 0..<rows:
     let n = meta.liveSamples(r, 2001)
     if not meta.isLive(r):
@@ -176,13 +176,13 @@ proc rowsMatchSingle(T: typedesc, phase: IirPhase, tol: float64) =
       continue
     var want = newSeq[T](n)
     for j in 0..<n: want[j] = before[r, j]
-    want.applyFilter(plan, ws)
+    plan.applyFilter(want, ws)
     var e = 0.0
     for j in 0..<n: e = max(e, abs(float64(g.data[r, j]) - float64(want[j])))
     doAssert e <= tol, $T & " " & $phase & " row " & $r & " (" & $n & "): " & $e
     for j in n..<2001: doAssert g.data[r, j] == before[r, j]
   let a = allocsIn:
-    g.data.applyFilter(meta, plan, ws)
+    plan.applyFilter(g.data, meta, ws)
   doAssert a == 0, $a & " allocations"
 
 block rows_of_varying_live_length:
@@ -199,16 +199,16 @@ block nan_and_shapes:
   let plan = initIirPlan(float32, butterLowCut(4), dt, 400)
   var ws = initWorkspace()
   ws.reserve(plan.workspaceSize)
-  g.data.applyFilter(meta, plan, ws)
+  plan.applyFilter(g.data, meta, ws)
   doAssert g.data[1, 0].isNaN
   for j in 0..<400: doAssert not g.data[0, j].isNaN and not g.data[2, j].isNaN
   let small = initIirPlan(float32, butterLowCut(4), dt, 300)
   ws.reserve(small.workspaceSize)
-  doAssertRaises ValueError: g.data.applyFilter(meta, small, ws)
+  doAssertRaises ValueError: small.applyFilter(g.data, meta, ws)
   var long = newSeq[float32](301)
-  doAssertRaises AssertionDefect: long.applyFilter(small, ws)
+  doAssertRaises AssertionDefect: small.applyFilter(long, ws)
   var p0: IirPlan[float32]
-  doAssertRaises AssertionDefect: long.applyFilter(p0, ws)
+  doAssertRaises AssertionDefect: p0.applyFilter(long, ws)
 
 block trace_ends_match_a_long_context:
   # As for the FFT filter: a zero-phase low-cut or band-pass gives at the
@@ -253,7 +253,7 @@ block no_subnormal_state:
   let plan = initIirPlan(float32, butterHighCut(100, 24), 0.25, 40_000, ipMinimum, trNone)
   var ws = initWorkspace()
   ws.reserve(plan.workspaceSize)
-  g.data.applyFilter(meta, plan, ws)
+  plan.applyFilter(g.data, meta, ws)
   for r in 0..<30: doAssert g.data[r, 39_999] == 0
 
 block zoom_window_with_margin:

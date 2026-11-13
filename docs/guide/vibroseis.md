@@ -153,7 +153,7 @@ for r in 0 ..< 3:
       raw[r, first + j] = raw[r, first + j] + float32(amp) * pilot.samples[j]
 let meta = initChunkMeta(rowsOf(keys, counts), dtMs = dt)
 
-let plan = initCorrelationPlan(float32, pilot, recordSamples = n, dtMs = dt)
+let plan = initCorrelationPlan(float32, pilot, dtMs = dt, recordSamples = n)
 doAssert plan.outSamples == n - pilot.len + 1             # 1001: a 2 s listen time
 var ws = initWorkspace()
 ws.reserve(plan.workspaceSize)
@@ -163,7 +163,7 @@ doAssert abs(correlated[0, 150] - 1.0) < 1e-3              # 300 ms, amplitude 1
 doAssert abs(correlated[2, 450] + 0.5) < 1e-3              # 900 ms, amplitude −0.5
 
 # The same with sweep deconvolution, on every core.
-let decon = initCorrelationPlan(float32, pilot, n, dt, mode = cmDeconvolve, epsPercent = 0.5)
+let decon = initCorrelationPlan(float32, pilot, dt, n, mode = cmDeconvolve, epsPercent = 0.5)
 var pool = newProcessPool(workers = 2)
 var sharp = zeros[float32](3, decon.outSamples)
 pool.correlateInto(decon, raw, sharp, meta)
@@ -264,7 +264,7 @@ var report = initSliceReport(plan)
 var ws = initWorkspace()
 ws.reserve(sliceWorkspace(float32, plan))
 var rec = zeros[float32](plan.len, plan.samples)
-plan.extractInto(data, meta, rec, report, ws)
+plan.extractInto(data, rec, meta, report, ws)
 doAssert rec[0, 0] == 750 and rec[0, 499] == 1249 and report.gapSamples(0) == 0
 let k = plan.sliceKeys(0)
 doAssert k.time == 1001.5 and k.t0Ms == 0 and k.record == 1

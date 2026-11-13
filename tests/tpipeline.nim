@@ -65,25 +65,25 @@ proc oneByOne[T](flow: Pipeline, x: var Tensor[T], meta: ChunkMeta) =
     of opFilter:
       let p = initFilterPlan(T, op.filter.spec, dt, n, op.filter.trend)
       ws.reserve(p.workspaceSize)
-      x.applyFilter(meta, p, ws)
+      p.applyFilter(x, meta, ws)
     of opIir:
       let p = initIirPlan(T, op.iir.spec, dt, n, op.iir.phase, op.iir.trend)
       ws.reserve(p.workspaceSize)
-      x.applyFilter(meta, p, ws)
+      p.applyFilter(x, meta, ws)
     of opAgc:
       let a = op.agc
       let p = initAgcPlan(a.windowMs, dt, n, a.mode, a.target, a.epsilon)
       ws.reserve(p.workspaceSize)
-      x.agc(meta, p, ws)
+      p.agc(x, meta, ws)
     of opNormalize:
       let o = op.norm
       let p = initNormalizePlan(o.stat, n, o.scope, o.target, o.percentile)
       ws.reserve(p.workspaceSize)
-      x.normalize(meta, p, ws)
+      p.normalize(x, meta, ws)
     of opGainCurve:
       let g = op.gainCurve
       let p = initGainCurvePlan(T, g.curve, dt, n, g.tMinMs, g.tMaxMs)
-      x.applyGainCurve(meta, p)
+      p.applyGainCurve(x, meta)
 
 proc maxDiff[T](a, b: Tensor[T]): float64 =
   for r in 0..<a.shape[0]:
@@ -379,11 +379,11 @@ block overlapping_blocks_and_part_preconditions:
   when not defined(addressSanitizer):
     var small = initWorkspace()
     doAssertRaises AssertionDefect:
-      p2.runPart(0, RowBlock[float32](), rowBlock(g.data), meta, NaN, small)
+      p2.runPart(RowBlock[float32](), rowBlock(g.data), meta, 0, NaN, small)
     doAssertRaises AssertionDefect:
-      discard p2.panelFactorOf(0, rowBlock(g.data), meta, ws)
+      discard p2.panelFactorOf(rowBlock(g.data), meta, 0, ws)
     doAssertRaises AssertionDefect:
-      p2.runPart(2, RowBlock[float32](), rowBlock(g.data), meta, NaN, ws)
+      p2.runPart(RowBlock[float32](), rowBlock(g.data), meta, 2, NaN, ws)
   # The parts API by hand gives what apply gives.
   var want = g.data.clone()
   p2.apply(want, meta, ws)
@@ -392,7 +392,7 @@ block overlapping_blocks_and_part_preconditions:
   p2.checkApply(RowBlock[float32](), blk, meta)
   for part in 0 ..< p2.partCount:
     var f = NaN
-    if p2.partNeedsPanel(part): f = p2.panelFactorOf(part, blk, meta, ws)
+    if p2.partNeedsPanel(part): f = p2.panelFactorOf(blk, meta, part, ws)
     for rows in [0 .. 4, 5 .. 9]: # as two threads would
-      p2.runPart(part, RowBlock[float32](), blk.sub(rows), meta.sub(rows), f, ws)
+      p2.runPart(RowBlock[float32](), blk.sub(rows), meta.sub(rows), part, f, ws)
   doAssert maxDiff(got, want) == 0

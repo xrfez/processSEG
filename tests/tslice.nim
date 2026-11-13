@@ -59,7 +59,7 @@ proc cut[T](s: Segments[T], meta: ChunkMeta, plan: SlicePlan,
   report = initSliceReport(plan)
   var ws = initWorkspace()
   ws.reserve(sliceWorkspace(T, plan))
-  extractInto(plan, s.data, meta, result, report, ws)
+  extractInto(plan, s.data, result, meta, report, ws)
 
 proc shotAt(k: float64, id = 1.0): SliceShot = initSliceShot(timeOf(k), id)
 
@@ -193,7 +193,7 @@ proc suite[T]() =
       for j in 0 ..< 97: narrow[i, j] = s.data[i, j]
     var ws = initWorkspace()
     var out2 = zeros[T](1, 20)
-    extractInto(plan, narrow, meta, out2, report, ws)
+    extractInto(plan, narrow, out2, meta, report, ws)
     doAssert report.overlapCheck(0).status == osNotRead and out2 == dst
 
   block overlap_not_read:
@@ -305,7 +305,7 @@ proc suite[T]() =
     var dst = zeros[T](plan.len, plan.samples)
     var report = initSliceReport(plan)
     var ws = initWorkspace()
-    extractInto(plan, data, sub, dst, report, ws)
+    extractInto(plan, data, dst, sub, report, ws)
     checkDirect(dst, 0, 150, "compact")
     checkDirect(dst, 1, 320, "compact")
 
@@ -318,7 +318,7 @@ proc suite[T]() =
     var dst = zeros[T](plan.len, plan.samples)
     var report = initSliceReport(plan)
     var ws = initWorkspace()
-    extractInto(plan, s.data, meta, dst, report, ws)
+    extractInto(plan, s.data, dst, meta, report, ws)
     doAssert report.gapSamples(0) == 10
     for g in report.gaps(0): doAssert g.first == 10 and g.count == 10
 
@@ -342,9 +342,9 @@ proc suite[T]() =
       ws.reserve(sliceWorkspace(T, plan))
       let b = rowBlock(s.data)
       let d = rowBlock(dst)
-      extractInto(plan, b, meta, d, report, ws)
-      doAssert allocsIn(extractInto(plan, b, meta, d, report, ws)) == 0, $align
-      doAssert allocsIn(extractInto(plan, s.data, meta, dst, report, ws)) == 0, $align
+      extractInto(plan, b, d, meta, report, ws)
+      doAssert allocsIn(extractInto(plan, b, d, meta, report, ws)) == 0, $align
+      doAssert allocsIn(extractInto(plan, s.data, dst, meta, report, ws)) == 0, $align
       doAssert report.gapSamples(2) == 60
 
   block bad_arguments:
@@ -367,17 +367,17 @@ proc suite[T]() =
     var ws = initWorkspace()
     var wrong = zeros[T](1, 11)
     doAssertRaises ValueError:
-      extractInto(plan, s.data, meta, wrong, report, ws)
+      extractInto(plan, s.data, wrong, meta, report, ws)
     var dst = zeros[T](1, 10)
     var narrow = zeros[T](2, 5)
     doAssertRaises ValueError:
-      extractInto(plan, narrow, meta, dst, report, ws)
+      extractInto(plan, narrow, dst, meta, report, ws)
     let other = initChunkMeta(rowsOf(s.keys, s.counts), dtMs = 4)
     doAssertRaises ValueError:
-      extractInto(plan, s.data, other, dst, report, ws)
+      extractInto(plan, s.data, dst, other, report, ws)
     var stale = initSliceReport(planSlices(meta, [shotAt(0), shotAt(5)], window(10)))
     doAssertRaises ValueError:
-      extractInto(plan, s.data, meta, dst, stale, ws)
+      extractInto(plan, s.data, dst, meta, stale, ws)
 
   block a_row_of_another_interval_is_reported:
     # Mixed sample rates are a property of the data (a line recorded at
@@ -448,7 +448,7 @@ block traces_needed_of_a_view_inside_the_file:
   var report = initSliceReport(plan)
   var ws = initWorkspace()
   var want = zeros[float32](plan.len, plan.samples)
-  extractInto(plan, all, meta, want, report, ws)
+  extractInto(plan, all, want, meta, report, ws)
   for r in 0 ..< plan.len:
     for j in 0 ..< plan.samples:
       doAssert want[r, j] == float32(r * 100_000 + 2 * segLen - 30 + j)
@@ -457,7 +457,7 @@ block traces_needed_of_a_view_inside_the_file:
   var some = zeros[float32](need.len, segLen)
   doAssert f.readTracesInto(need, some) == 0
   var got = zeros[float32](plan.len, plan.samples)
-  extractInto(plan, some, chunkMeta(f, need), got, report, ws)
+  extractInto(plan, some, got, chunkMeta(f, need), report, ws)
   doAssert got == want, "the compact read"
   f.close()
   removeFile(path)

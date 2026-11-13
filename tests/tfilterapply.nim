@@ -29,7 +29,7 @@ proc filtered[T](x: seq[T], plan: FilterPlan[T]): seq[T] =
   result = x
   var ws = initWorkspace()
   ws.reserve(plan.workspaceSize)
-  result.applyFilter(plan, ws)
+  plan.applyFilter(result, ws)
 
 block plan_shape:
   let s = lowCut(0.5, 1)
@@ -179,7 +179,7 @@ proc rowsMatchSingle(T: typedesc, tol: float64) =
   var ws = initWorkspace()
   ws.reserve(plan.workspaceSize)
   let before = g.data.clone()
-  g.data.applyFilter(meta, plan, ws)
+  plan.applyFilter(g.data, meta, ws)
   for r in 0..<rows:
     let n = meta.liveSamples(r, ns)
     if not meta.isLive(r):
@@ -187,7 +187,7 @@ proc rowsMatchSingle(T: typedesc, tol: float64) =
       continue
     var want = newSeq[T](n)
     for j in 0..<n: want[j] = before[r, j]
-    want.applyFilter(plan, ws)
+    plan.applyFilter(want, ws)
     var e = 0.0
     for j in 0..<n: e = max(e, abs(float64(g.data[r, j]) - float64(want[j])))
     doAssert e <= tol, $T & " row " & $r & " (" & $n & " live): " & $e
@@ -196,7 +196,7 @@ proc rowsMatchSingle(T: typedesc, tol: float64) =
   # One sample: its trend is itself, so a low-cut leaves 0.
   doAssert g.data[9, 0] == 0
   let n = allocsIn:
-    g.data.applyFilter(meta, plan, ws)
+    plan.applyFilter(g.data, meta, ws)
   doAssert n == 0, $n & " allocations"
 
 block rows_of_varying_live_length:
@@ -230,15 +230,15 @@ proc rowsIgnoreTheirBatch(T: typedesc, spec: FilterSpec) =
   var ws = initWorkspace()
   ws.reserve(plan.workspaceSize)
   var whole = g.data.clone()
-  whole.applyFilter(meta, plan, ws)
+  plan.applyFilter(whole, meta, ws)
   var alone = g.data.clone()
   let ab = rowBlock(alone)
   for r in 0..<rows:
-    ab.sub(r .. r).applyFilter(meta.sub(r .. r), plan, ws)
+    plan.applyFilter(ab.sub(r .. r), meta.sub(r .. r), ws)
   var split = g.data.clone()
   let sb = rowBlock(split)
   for part in [0 .. 10, 11 .. rows - 1]:
-    sb.sub(part).applyFilter(meta.sub(part), plan, ws)
+    plan.applyFilter(sb.sub(part), meta.sub(part), ws)
   for r in 0..<rows:
     for j in 0..<ns:
       doAssert sameBits(whole[r, j], alone[r, j]), $T & " " & $spec.kind &
@@ -332,7 +332,7 @@ block zoom_window_with_margin:
     var win = x[lo .. b + m]
     var ws = initWorkspace()
     ws.reserve(plan.workspaceSize)
-    win.applyFilter(plan, ws)
+    plan.applyFilter(win, ws)
     var e = 0.0
     for j in a..b: e = max(e, abs(win[j - lo] - whole[j]))
     let rel = e / maxAbs(whole.toOpenArray(a, b))
@@ -348,7 +348,7 @@ block nan_stays_in_its_row:
   let plan = initFilterPlan(float32, lowCut(1, 2), dt, 500)
   var ws = initWorkspace()
   ws.reserve(plan.workspaceSize)
-  g.data.applyFilter(meta, plan, ws)
+  plan.applyFilter(g.data, meta, ws)
   doAssert g.data[1, 0].isNaN
   for j in 0..<500:
     doAssert g.data[0, j] == g.data[0, j] and g.data[2, j] == g.data[2, j]
@@ -359,14 +359,14 @@ block shape_errors:
   let plan = initFilterPlan(float32, lowCut(1, 2), dt, 500)
   var ws = initWorkspace()
   ws.reserve(plan.workspaceSize)
-  doAssertRaises ValueError: g.data.applyFilter(meta, plan, ws)
+  doAssertRaises ValueError: plan.applyFilter(g.data, meta, ws)
   var long = newSeq[float32](501)
-  doAssertRaises AssertionDefect: long.applyFilter(plan, ws)
+  doAssertRaises AssertionDefect: plan.applyFilter(long, ws)
   var empty: seq[float32]
-  empty.applyFilter(plan, ws)
+  plan.applyFilter(empty, ws)
   var p0: FilterPlan[float32]
   var one = @[1'f32]
-  doAssertRaises AssertionDefect: one.applyFilter(p0, ws)
+  doAssertRaises AssertionDefect: p0.applyFilter(one, ws)
 
 block interval_must_match_the_plan:
   # A plan at 2 ms on rows at 4 ms would put every corner off by 2×: the
@@ -377,11 +377,11 @@ block interval_must_match_the_plan:
   var ws = initWorkspace()
   let fp = initFilterPlan(float32, bandPass(Corners(f1: 4, f2: 8, f3: 60, f4: 80)), 2, 100)
   ws.reserve(fp.workspaceSize)
-  doAssertRaises ValueError: g.data.applyFilter(meta, fp, ws)
+  doAssertRaises ValueError: fp.applyFilter(g.data, meta, ws)
   let ip = initIirPlan(float32, butterBandPass(5, 60), 2, 100)
   ws.reserve(ip.workspaceSize)
-  doAssertRaises ValueError: g.data.applyFilter(meta, ip, ws)
-  let sp = initSpectrumPlan(float32, windowLen = 64, dtMs = 2)
+  doAssertRaises ValueError: ip.applyFilter(g.data, meta, ws)
+  let sp = initSpectrumPlan(float32, dtMs = 2, windowLen = 64)
   ws.reserve(sp.workspaceSize)
   var amp = newSeq[float64](sp.bins)
   doAssertRaises ValueError:

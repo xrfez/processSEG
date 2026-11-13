@@ -16,31 +16,31 @@ proc gather(rows, cols: int, dtMs = 2.0): SynthGather[float32] =
   cmpGather[float32](cmpX = 0, offsets = newSeq[float64](rows), cols, dtMs)
 
 block plan_validation:
-  let sp = initSpectrumPlan(float32, windowLen = 501, dtMs = 2)
+  let sp = initSpectrumPlan(float32, dtMs = 2, windowLen = 501)
   doAssert sp.windowLen == 501 and sp.nfft == 512 and sp.bins == 257
   doAssert near(sp.binHz(256), 250, 1e-9), "Nyquist at 2 ms"
   doAssert near(sp.binHz(1), 1000 / (512 * 2), 1e-12)
-  doAssert initSpectrumPlan(float64, 100, 4, nfft = 1000).nfft == 1000
-  doAssert initSpectrumPlan(float32, 512, 2).nfft == 512, "a power of two stays"
-  doAssert initSpectrumPlan(float32, 1000, 2).nfft == 1024, "not 1000"
+  doAssert initSpectrumPlan(float64, 4, 100, nfft = 1000).nfft == 1000
+  doAssert initSpectrumPlan(float32, 2, 512).nfft == 512, "a power of two stays"
+  doAssert initSpectrumPlan(float32, 2, 1000).nfft == 1024, "not 1000"
   # A 60 s record at 1 ms (60001 samples) pads to 65536.
-  doAssert initSpectrumPlan(float32, 60001, 1).nfft == 65536
+  doAssert initSpectrumPlan(float32, 1, 60001).nfft == 65536
   for bad in [0, -3]:
-    doAssertRaises ValueError: discard initSpectrumPlan(float32, bad, 2)
+    doAssertRaises ValueError: discard initSpectrumPlan(float32, 2, bad)
   for bad in [0.0, -1, NaN, Inf]:
-    doAssertRaises ValueError: discard initSpectrumPlan(float32, 10, bad)
+    doAssertRaises ValueError: discard initSpectrumPlan(float32, bad, 10)
   for bad in [-0.1, 0.6, NaN]:
     doAssertRaises ValueError:
-      discard initSpectrumPlan(float32, 10, 2, taperFraction = bad)
-  doAssertRaises ValueError: discard initSpectrumPlan(float32, 100, 2, nfft = 64)
-  doAssertRaises ValueError: discard initSpectrumPlan(float32, 100, 2, nfft = 101)
+      discard initSpectrumPlan(float32, 2, 10, taperFraction = bad)
+  doAssertRaises ValueError: discard initSpectrumPlan(float32, 2, 100, nfft = 64)
+  doAssertRaises ValueError: discard initSpectrumPlan(float32, 2, 100, nfft = 101)
 
 block peak_within_one_bin:
   # Frequencies on and between bins, several tapers and paddings.
   var ws = initWorkspace()
   for (win, nfft, taper) in [(501, 0, 0.1), (400, 1024, 0.5), (1000, 0, 0.0),
       (257, 0, 0.25)]:
-    let sp = initSpectrumPlan(float64, win, dtMs = 2, taperFraction = taper,
+    let sp = initSpectrumPlan(float64, dtMs = 2, windowLen = win, taperFraction = taper,
       nfft = nfft)
     ws.reserve(sp.workspaceSize)
     for f in [7.3, 25.0, 61.7, 180.2]:
@@ -60,7 +60,7 @@ block amplitude_scale_on_a_bin:
   # The boxcar is unpadded (1000), so the window holds whole cycles.
   for (taper, nfft, bin) in [(0.0, 1000, 40), (0.1, 0, 40), (0.5, 0, 40),
       (0.5, 4096, 160)]:
-    let sp = initSpectrumPlan(float64, 1000, dtMs = 1, taperFraction = taper,
+    let sp = initSpectrumPlan(float64, dtMs = 1, windowLen = 1000, taperFraction = taper,
       nfft = nfft)
     ws.reserve(sp.workspaceSize)
     let f = sp.binHz(bin)
@@ -78,7 +78,7 @@ block dc_and_demean:
   var x = newSeq[float64](200)
   x.addDc(4)
   for demean in [true, false]:
-    let sp = initSpectrumPlan(float64, 200, 2, taperFraction = 0,
+    let sp = initSpectrumPlan(float64, 2, 200, taperFraction = 0,
         demean = demean)
     ws.reserve(sp.workspaceSize)
     var amp, phase = newSeq[float64](sp.bins)
@@ -114,7 +114,7 @@ block average_over_live_rows:
   g.setLive(5, 100)
   let failed = @[4]
   let meta = initChunkMeta(g.rows, dtMs = 2, failed = failed)
-  let sp = initSpectrumPlan(float32, 400, dtMs = 2, taperFraction = 0.5,
+  let sp = initSpectrumPlan(float32, dtMs = 2, windowLen = 400, taperFraction = 0.5,
     nfft = 400)
   var ws = initWorkspace()
   ws.reserve(sp.workspaceSize)
@@ -155,7 +155,7 @@ block many_rows_and_partial_windows:
     for j in 0..<300: g.data[r, j] = row[j]
     if r mod 3 == 0: g.setLive(r, 250)
   let meta = initChunkMeta(g.rows, dtMs = 4)
-  let sp = initSpectrumPlan(float32, 128, dtMs = 4)
+  let sp = initSpectrumPlan(float32, dtMs = 4, windowLen = 128)
   var ws = initWorkspace()
   ws.reserve(sp.workspaceSize)
   var amp = newSeq[float64](sp.bins)
@@ -174,7 +174,7 @@ block nan_rows_are_left_out:
     row.addSinusoid(2, 25.0, amp = 2)
     for j in 0..<400: g.data[r, j] = row[j]
   let meta = initChunkMeta(g.rows, dtMs = 2)
-  let sp = initSpectrumPlan(float32, 200, dtMs = 2, nfft = 200)
+  let sp = initSpectrumPlan(float32, dtMs = 2, windowLen = 200, nfft = 200)
   var ws = initWorkspace()
   ws.reserve(sp.workspaceSize)
   var amp, db = newSeq[float64](sp.bins)
@@ -198,7 +198,7 @@ block nan_rows_are_left_out:
 block short_windows_scale_like_full_ones:
   # Rows that end inside the window get their own taper end and Σw, so a
   # sinusoid on a bin still reads its amplitude.
-  let sp = initSpectrumPlan(float64, 400, dtMs = 1, taperFraction = 0.2,
+  let sp = initSpectrumPlan(float64, dtMs = 1, windowLen = 400, taperFraction = 0.2,
     nfft = 400)
   var ws = initWorkspace()
   ws.reserve(sp.workspaceSize)
@@ -227,7 +227,7 @@ block sixty_second_record_at_1_ms:
   # each sinusoid is within one bin, a sinusoid on a bin reads its amplitude,
   # and the average over a few rows agrees, with no allocation once reserved.
   const win = 60001
-  let sp = initSpectrumPlan(float32, win, dtMs = 1)
+  let sp = initSpectrumPlan(float32, dtMs = 1, windowLen = win)
   doAssert sp.nfft == 65536 and sp.bins == 32769
   var ws = initWorkspace()
   ws.reserve(sp.workspaceSize)

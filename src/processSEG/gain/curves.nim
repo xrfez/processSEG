@@ -4,7 +4,7 @@
 ## ```nim
 ## let curve = knotGain([GainKnot(tMs: 0, dB: 0), GainKnot(tMs: 3000, dB: 18)])
 ## let plan = initGainCurvePlan(float32, curve, dtMs = 2, samples = 2001)
-## samples.applyGainCurve(meta, plan)          # in place, live rows, each at its t0
+## plan.applyGainCurve(samples, meta)          # in place, live rows, each at its t0
 ## ```
 ##
 ## **Curves.** The gain at time `t` (ms, the trace's own time axis):
@@ -300,7 +300,7 @@ proc applyAt[T](plan: GainCurvePlan[T], x: ptr UncheckedArray[T], n: int,
 proc checkPlan[T](plan: GainCurvePlan[T]) {.inline.} =
   doAssert plan.table.len > 0, "a GainCurvePlan must come from initGainCurvePlan"
 
-proc applyGainCurve*[T: SampleType](x: var openArray[T], plan: GainCurvePlan[T],
+proc applyGainCurve*[T: SampleType](plan: GainCurvePlan[T], x: var openArray[T],
     startMs: float64) {.raises: [].} =
   ## The curve on one trace, `x` (its live samples, at most `plan.samples`;
   ## an `AssertionDefect` otherwise), whose sample 0 is at `startMs`, in
@@ -310,8 +310,8 @@ proc applyGainCurve*[T: SampleType](x: var openArray[T], plan: GainCurvePlan[T],
   if x.len == 0: return
   plan.applyAt(cast[ptr UncheckedArray[T]](addr x[0]), x.len, startMs)
 
-proc applyGainCurve*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
-    plan: GainCurvePlan[T]) =
+proc applyGainCurve*[T: SampleType](plan: GainCurvePlan[T], b: RowBlock[T],
+    meta: ChunkMeta) =
   ## The curve on the live rows of `b` in place, each to its live length and
   ## at its own times (`meta.sampleTimeMs(row, 0)` onwards). Raises
   ## `ValueError`, before any sample changes, when `b` does not match `meta`
@@ -328,8 +328,8 @@ proc applyGainCurve*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
       plan.applyAt(b.rowPtr(r), meta.liveSamples(r, b.cols), meta.sampleTimeMs(
           r, 0))
 
-proc applyGainCurve*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
-    plan: GainCurvePlan[T], ws: var Workspace) =
+proc applyGainCurve*[T: SampleType](plan: GainCurvePlan[T], b: RowBlock[T],
+    meta: ChunkMeta, ws: var Workspace) =
   ## As the form without a workspace, for blocks that may lie off the
   ## plan's table (a zoom window under a plan made for its width, traces
   ## with a recording delay): the factors off the table are computed once
@@ -365,15 +365,15 @@ proc applyGainCurve*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
         mulOffTable(cast[Buf[T]](addr x[sp.j1]), cast[Buf[T]](addr fac[sp.j1]), n - sp.j1)
       plan.mulOnTable(x, sp)
 
-proc applyGainCurve*[T: SampleType](samples: var Tensor[T], meta: ChunkMeta,
-    plan: GainCurvePlan[T]) =
+proc applyGainCurve*[T: SampleType](plan: GainCurvePlan[T], samples: var Tensor[T],
+    meta: ChunkMeta) =
   ## `applyGainCurve` on a `[rows, cols]` tensor (C-contiguous; raises
   ## `ValueError` otherwise).
   meta.checkShape(samples)
-  rowBlock(samples).applyGainCurve(meta, plan)
+  plan.applyGainCurve(rowBlock(samples), meta)
 
-proc applyGainCurve*[T: SampleType](samples: var Tensor[T], meta: ChunkMeta,
-    plan: GainCurvePlan[T], ws: var Workspace) =
+proc applyGainCurve*[T: SampleType](plan: GainCurvePlan[T], samples: var Tensor[T],
+    meta: ChunkMeta, ws: var Workspace) =
   ## The workspace form on a `[rows, cols]` tensor.
   meta.checkShape(samples)
-  rowBlock(samples).applyGainCurve(meta, plan, ws)
+  plan.applyGainCurve(rowBlock(samples), meta, ws)

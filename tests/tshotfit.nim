@@ -54,7 +54,7 @@ proc pickAll(g: SynthGather[float32]): seq[FirstBreakPick] =
   var ws = initWorkspace()
   ws.reserve(plan.workspaceSize)
   result = newSeq[FirstBreakPick](g.len)
-  plan.pickInto(g.data, meta, ws, result)
+  plan.pickInto(g.data, meta, result, ws)
 
 proc suspects(f: ShotFit): seq[int] =
   for r, s in f.suspect:

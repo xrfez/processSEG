@@ -70,7 +70,7 @@ proc coherence() =
   for windowMs in [100.0, 1000.0, 12000.0]:
     let r = bench("coherenceSnrInto 24 × 6000, window " & $int(windowMs) & " ms",
         rows * cols * 4):
-      coherenceSnrInto(x, meta, windowMs, ws, dst)
+      coherenceSnrInto(x, meta, windowMs, dst, ws)
     r.report
     echo "    ", r.ms, " per gather"
 
@@ -85,7 +85,7 @@ proc correlation() =
   var rng = initRand(3)
   for r in 0 ..< rows:
     for j in 0 ..< cols: raw[r, j] = float32(rng.rand(2.0) - 1.0)
-  let plan = initCorrelationPlan(float32, pilot, cols, dt)
+  let plan = initCorrelationPlan(float32, pilot, dt, cols)
   var ws = initWorkspace()
   ws.reserve(plan.workspaceSize)
   var dst = zeros[float32](rows, plan.outSamples)

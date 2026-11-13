@@ -215,11 +215,11 @@ let halves = [0 ..< 32, 32 ..< 64]
 for part in 0 ..< plan.partCount:       # 2: the normalization starts part 1
   var factor = NaN
   if plan.partNeedsPanel(part):         # over every row, on one thread
-    factor = plan.panelFactorOf(part, (if part == 0: src else: dst), meta,
+    factor = plan.panelFactorOf((if part == 0: src else: dst), meta, part,
       perThread[0])
   for h, rows in halves:                # each half on its own thread
     let s = if part == 0: src.sub(rows) else: RowBlock[float32]() # copy in part 0 only
-    plan.runPart(part, s, dst.sub(rows), meta.sub(rows), factor, perThread[h])
+    plan.runPart(s, dst.sub(rows), meta.sub(rows), part, factor, perThread[h])
 
 var ws = initWorkspace()
 ws.reserve(plan)

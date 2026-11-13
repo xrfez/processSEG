@@ -141,7 +141,7 @@ let plan = initFilterPlan(float32, bandPass(Corners(f1: 10, f2: 15, f3: 60, f4: 
   dtMs, samples = ns)                   # ValueError for a bad spec, here
 var ws = initWorkspace()
 ws.reserve(plan.workspaceSize)          # grows once; a no-op when it fits
-samples.applyFilter(meta, plan, ws)     # allocates nothing
+plan.applyFilter(samples, meta, ws)     # allocates nothing
 let stats = block:
   var s = newSeq[TraceStats](meta.len)
   traceStatsInto(samples, meta, s)

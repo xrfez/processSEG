@@ -176,7 +176,7 @@ block stats_spectrum:
   var stats = newSeq[TraceStats](e.meta.len)
   var ws = initWorkspace()
   ws.reserve(panelStatsWorkspace)
-  let sp = initSpectrumPlan(float32, windowLen = 512, dtMs = e.meta.dtMs)
+  let sp = initSpectrumPlan(float32, dtMs = e.meta.dtMs, windowLen = 512)
   ws.reserve(sp.workspaceSize)
   var amp, ampRaw, db = newSeq[float64](sp.bins)
   var ps: PanelStats

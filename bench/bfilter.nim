@@ -43,7 +43,7 @@ proc worker[P](job: Job[P]) {.thread.} =
   var ws = initWorkspace()
   ws.reserve(job.plan[].workspaceSize)
   for _ in 0..<job.rounds:
-    job.data[].applyFilter(job.meta[], job.plan[], ws)
+    job.plan[].applyFilter(job.data[], job.meta[], ws)
 
 proc threaded[P](name: string, plan: P) =
   var parts: array[workers, SynthGather[float32]]
@@ -72,7 +72,7 @@ proc single[P](name: string, plan: P) =
   var ws = initWorkspace()
   ws.reserve(plan.workspaceSize)
   let r = bench(name & " 1 thread", bytesPerIter = 2 * traces * ns * 4):
-    g.data.applyFilter(meta, plan, ws)
+    plan.applyFilter(g.data, meta, ws)
   r.report
   echo "    ", formatFloat(r.medianNs / 1e6, ffDecimal, 2), " ms per panel, ",
     formatFloat(r.medianNs / traces / 1000, ffDecimal, 2), " µs per trace"

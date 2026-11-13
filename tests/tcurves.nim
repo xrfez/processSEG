@@ -62,7 +62,7 @@ block knots_on_the_grid:
   # t0 = 0: the samples at the knot times carry exactly the knot gains.
   let plan = initGainCurvePlan(float64, knotGain(knots), dtMs = 2, samples = 1501)
   var x = ones(1501)
-  x.applyGainCurve(plan, startMs = 0)
+  plan.applyGainCurve(x, startMs = 0)
   doAssert x[50] == dbToFactor(0) and x[550] == dbToFactor(20) and x[1050] == dbToFactor(14)
   doAssert near(x[300], dbToFactor(10), 1e-15), "half way: 10 dB"
   doAssert x[0] == 1 and x[10] == 1, "flat before the first knot"
@@ -73,7 +73,7 @@ block t0_shifts:
   let plan = initGainCurvePlan(float64, c, dtMs = 2, samples = 1001)
   for startMs in [100.0, 2.0, 1001.0, 0.7, -20.0, -3.3, 1500.0, 1999.0, 5000.0, -1e7]:
     var x = ones(1001)
-    x.applyGainCurve(plan, startMs)
+    plan.applyGainCurve(x, startMs)
     for j in 0..<1001:
       let want = c.factorAt(startMs + float64(j) * 2)
       # Off the grid: (ΔdB·ln10/20)²/8 with 0.04 dB per sample: 2.7e-6.
@@ -85,7 +85,7 @@ block t0_shifts:
   let p = powerGain(2)
   let pp = initGainCurvePlan(float64, p, dtMs = 2, samples = 2001)
   var x = ones(2001)
-  x.applyGainCurve(pp, startMs = 51.3)
+  pp.applyGainCurve(x, startMs = 51.3)
   for j in 0..<2001:
     let t = 51.3 + float64(j) * 2
     let dDb = p.gainDbAt(ceil(t / 2) * 2) - p.gainDbAt(floor(t / 2) * 2)
@@ -95,7 +95,7 @@ block t0_shifts:
   let inv = powerGain(-1, refMs = 100)
   let ip = initGainCurvePlan(float64, inv, dtMs = 2, samples = 1001)
   var y = ones(1001)
-  y.applyGainCurve(ip, startMs = 21)
+  ip.applyGainCurve(y, startMs = 21)
   for j in 0..<1001:
     let t0 = floor((21 + float64(j) * 2) / 2) * 2
     let bound = 2.0 * (2 / t0) ^ 2 / 8 # |p(p − 1)|·(dt/t)²/8 at the interval start
@@ -106,7 +106,7 @@ block t0_shifts:
     GainKnot(tMs: 2000, dB: 0)])
   let kp = initGainCurvePlan(float64, k, dtMs = 2, samples = 1001)
   var z = ones(1001)
-  z.applyGainCurve(kp, startMs = 1)
+  kp.applyGainCurve(z, startMs = 1)
   let s1 = ln(10.0) / 20 * 20 / 1101
   let s2 = ln(10.0) / 20 * -20 / 899
   var atKink = 0.0
@@ -117,7 +117,7 @@ block t0_shifts:
     else: doAssert err <= (max(abs(s1), abs(s2)) * 2) ^ 2 / 8 * 1.01, $j
   doAssert atKink > 1e-4 and atKink <= abs(s1 - s2) * 2 / 4 * 1.01, $atKink
   var nanT = ones(10)
-  nanT.applyGainCurve(pp, startMs = NaN)
+  pp.applyGainCurve(nanT, startMs = NaN)
   doAssert nanT == ones(10), "a NaN start time leaves the trace alone"
 
 block block_form_follows_each_rows_time:
@@ -136,7 +136,7 @@ block block_form_follows_each_rows_time:
   let meta = initChunkMeta(w.rows, dtMs = 2, firstSample = 50)
   let c = exponentialGain(10)
   let plan = initGainCurvePlan(float32, c, dtMs = 2, samples = 300)
-  w.data.applyGainCurve(meta, plan)
+  plan.applyGainCurve(w.data, meta)
   for r in [0, 1, 2]:
     for j in 0..<300:
       let want = c.factorAt(meta.sampleTimeMs(r, j))
@@ -147,7 +147,7 @@ block block_form_follows_each_rows_time:
   for j in 0..<100: doAssert near(float64(w.data[5, j]), c.factorAt(100 + 2 * float64(j)), 2e-6)
   for j in 100..<300: doAssert w.data[5, j] == 0, "padding untouched"
   var wide = zeros[float32](6, 301)
-  doAssertRaises ValueError: wide.applyGainCurve(meta, plan)
+  doAssertRaises ValueError: plan.applyGainCurve(wide, meta)
 
 proc workspaceFormMatches(T: typedesc) =
   block:
@@ -170,9 +170,9 @@ proc workspaceFormMatches(T: typedesc) =
       ws.reserve(plan.workspaceSize)
       var a = w.data.clone()
       var b = w.data.clone()
-      a.applyGainCurve(meta, plan)
+      plan.applyGainCurve(a, meta)
       let n = allocsIn:
-        b.applyGainCurve(meta, plan, ws)
+        plan.applyGainCurve(b, meta, ws)
       doAssert n == 0, $n & " allocations"
       for r in 0..<12:
         for j in 0..<250:
@@ -197,7 +197,7 @@ block workspace_form_off_the_table:
     tMaxMs = 100)
   var ws = initWorkspace()
   ws.reserve(plan.workspaceSize)
-  z.data.applyGainCurve(meta, plan, ws)
+  plan.applyGainCurve(z.data, meta, ws)
   for j in 0..<300: doAssert z.data[0, j] == 0, "a zero stays zero at column " & $j
   doAssert z.data[1, 299] == Inf
 
@@ -208,7 +208,7 @@ block unbuilt_curves_and_dt:
   var g = cmpGather[float32](0, [0.0, 0], 50, dtMs = 4)
   let meta = initChunkMeta(g.rows, dtMs = 4)
   let plan = initGainCurvePlan(float32, powerGain(2), dtMs = 2, samples = 50)
-  doAssertRaises ValueError: g.data.applyGainCurve(meta, plan)
+  doAssertRaises ValueError: plan.applyGainCurve(g.data, meta)
 
 block no_allocation:
   var g = cmpGather[float32](0, [0.0, 0, 0, 0], 500, dtMs = 2)
@@ -217,7 +217,7 @@ block no_allocation:
   let meta = initChunkMeta(g.rows, dtMs = 2)
   let plan = initGainCurvePlan(float32, knotGain(knots), dtMs = 2, samples = 500)
   let n = allocsIn:
-    for _ in 0..<3: g.data.applyGainCurve(meta, plan)
+    for _ in 0..<3: plan.applyGainCurve(g.data, meta)
   doAssert n == 0, $n & " allocations"
 
 block overflowing_gain_is_refused:
@@ -229,10 +229,10 @@ block overflowing_gain_is_refused:
     discard initGainCurvePlan(float32, exponentialGain(800), 2, 1001)
   let p64 = initGainCurvePlan(float64, steep, 2, 501)
   var x = newSeq[float64](501)
-  x.applyGainCurve(p64, 0)
+  p64.applyGainCurve(x, 0)
   for v in x: doAssert v == 0
   # Off the table (a start far past it), zeros stay zero too.
   let p32 = initGainCurvePlan(float32, exponentialGain(6), 2, 100)
   var y = newSeq[float32](100)
-  y.applyGainCurve(p32, 1e9)
+  p32.applyGainCurve(y, 1e9)
   for v in y: doAssert v == 0

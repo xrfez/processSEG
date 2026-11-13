@@ -228,7 +228,7 @@ proc partJob[T](ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
     let fromSrc = c.part == 0 and c.src.len > 0
     c.queue.eachRun(span):
       let src = (if fromSrc: c.src.sub(span) else: RowBlock[T]())
-      c.plan[].runPart(c.part, src, c.dst.sub(span), c.meta.sub(span), c.factor, ws)
+      c.plan[].runPart(src, c.dst.sub(span), c.meta.sub(span), c.part, c.factor, ws)
   except ValueError as e:
     raiseAssert "checked by apply: " & e.msg
 
@@ -241,7 +241,7 @@ proc panelJob[T](ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
   except ValueError as e:
     raiseAssert e.msg
   let b = (if c.part == 0 and c.src.len > 0: c.src else: c.dst)
-  c.factor = c.plan[].panelFactorOf(c.part, b, c.meta, ws)
+  c.factor = c.plan[].panelFactorOf(b, c.meta, c.part, ws)
 
 proc applyBlocks[T](p: ProcessPool, plan: PipelinePlan[T], src,
     dst: RowBlock[T], meta: ChunkMeta) =
@@ -393,8 +393,8 @@ proc pickJob[T](ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
   try:
     ws.reserve(c.plan[].workspaceSize)
     c.queue.eachRun(span):
-      c.plan[].pickInto(c.src.sub(span), c.meta.sub(span), ws,
-        c.dst.toOpenArray(span.a, span.b))
+      c.plan[].pickInto(c.src.sub(span), c.meta.sub(span),
+        c.dst.toOpenArray(span.a, span.b), ws)
   except ValueError as e:
     raiseAssert "checked by pickInto: " & e.msg
 

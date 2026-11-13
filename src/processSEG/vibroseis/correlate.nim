@@ -4,7 +4,7 @@
 ##
 ## ```nim
 ## let pilot = generatePilot(linearSweep(8, 80, 8000, 2, initSweepTaper(250, 250)), float32)
-## let plan = initCorrelationPlan(float32, pilot, recordSamples = 10001, dtMs = 2)
+## let plan = initCorrelationPlan(float32, pilot, dtMs = 2, recordSamples = 10001)
 ## var ws = initWorkspace()
 ## ws.reserve(plan.workspaceSize)
 ## var correlated = zeros[float32](raw.shape[0], plan.outSamples)   # 6001: 12 s listen
@@ -77,8 +77,8 @@ type
 proc badPlan(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
 
-proc initCorrelationPlan*[T, P: SampleType](_: typedesc[T], pilot: Pilot[P],
-    recordSamples: int, dtMs: float64, outSamples = 0, mode = cmCorrelate,
+proc initCorrelationPlan*[T, P: SampleType](_: typedesc[T], pilot: Pilot[P], dtMs: float64,
+    recordSamples: int, outSamples = 0, mode = cmCorrelate,
     epsPercent = 1.0, normalize = true): CorrelationPlan[T] =
   ## A plan correlating records of up to `recordSamples` samples at `dtMs`
   ## with `pilot`, into `outSamples` columns (0: the listen time,

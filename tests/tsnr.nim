@@ -232,7 +232,7 @@ proc coherenceAccuracy[T]() =
   for k, db in levelsDb:
     var g = cohGather[T](s, sqrt(pow(10.0, db / 10)), 1000 * k)
     let meta = initChunkMeta(g.rows, cohDt)
-    coherenceSnrInto(g.data, meta, float64(cohWin - 1) * cohDt, ws, est)
+    coherenceSnrInto(g.data, meta, float64(cohWin - 1) * cohDt, est, ws)
     var worst = 0.0
     for j in 0 ..< cohCols:
       let want = windowPowerDb(s, sqrt(pow(10.0, db / 10)), j, cohWin div 2)
@@ -250,11 +250,11 @@ block coherence_noise_alone:
     var g = cohGather[float32](newSeq[float64](2000), 0, 77, traces)
     ws.reserve(coherenceSnrWorkspace(g.cols))
     var est = newSeq[float64](g.cols)
-    coherenceSnrInto(g.data, initChunkMeta(g.rows, cohDt), win, ws, est)
+    coherenceSnrInto(g.data, initChunkMeta(g.rows, cohDt), win, est, ws)
     for j, v in est:
       doAssert v <= -10 and v >= DefaultSnrFloorDb, $traces & " col " & $j & ": " & $v
     var raw = newSeq[float64](g.cols)
-    coherenceSnrInto(g.data, initChunkMeta(g.rows, cohDt), win, ws, raw, floorDb = -Inf)
+    coherenceSnrInto(g.data, initChunkMeta(g.rows, cohDt), win, raw, ws, floorDb = -Inf)
     var floored = 0
     for v in raw:
       if v == -Inf: inc floored
@@ -279,9 +279,9 @@ block coherence_versus_time_mutes_and_dead_rows:
   var ws = initWorkspace()
   ws.reserve(coherenceSnrWorkspace(cohCols))
   var est = newSeq[float64](cohCols)
-  coherenceSnrInto(g.data, initChunkMeta(g.rows, cohDt, failed = failed), 400, ws, est)
+  coherenceSnrInto(g.data, initChunkMeta(g.rows, cohDt, failed = failed), 400, est, ws)
   var want = newSeq[float64](cohCols)
-  coherenceSnrInto(clean.data, initChunkMeta(clean.rows, cohDt), 400, ws, want)
+  coherenceSnrInto(clean.data, initChunkMeta(clean.rows, cohDt), 400, want, ws)
   for j in 0 ..< cohCols: doAssert est[j] == want[j], $j
   for j in 0 ..< cohCols div 2 - 200: doAssert est[j] <= -10, $j & ": " & $est[j]
   for j in cohCols div 2 + 200 ..< cohCols:
@@ -296,12 +296,12 @@ block coherence_on_an_lmo_flattened_shot:
   var ws = initWorkspace()
   ws.reserve(coherenceSnrWorkspace(cols))
   var est = newSeq[float64](cols)
-  coherenceSnrInto(flat.data, meta, 20, ws, est)
+  coherenceSnrInto(flat.data, meta, 20, est, ws)
   let at = int((t0 + 100) / dt)
   doAssert est[at] > 3, $est[at]
   for j in at + 40 ..< cols - 100: doAssert est[j] <= -10, $j & ": " & $est[j]
   var raw = newSeq[float64](cols)
-  coherenceSnrInto(g.data, meta, 20, ws, raw)
+  coherenceSnrInto(g.data, meta, 20, raw, ws)
   doAssert raw[at] < est[at] - 5 # not flattened: no coherence there
 
 block float32_matches_float64_and_no_allocation:
@@ -313,10 +313,10 @@ block float32_matches_float64_and_no_allocation:
   ws.reserve(coherenceSnrWorkspace(800))
   var a = newSeq[float64](800)
   var b = newSeq[float64](800)
-  coherenceSnrInto(g32.data, meta, 50, ws, a)
-  coherenceSnrInto(g64.data, meta, 50, ws, b)
+  coherenceSnrInto(g32.data, meta, 50, a, ws)
+  coherenceSnrInto(g64.data, meta, 50, b, ws)
   for j in 0 ..< 800: doAssert abs(a[j] - b[j]) < 1e-3, $j
-  doAssert allocsIn(coherenceSnrInto(g32.data, meta, 50, ws, a)) == 0
+  doAssert allocsIn(coherenceSnrInto(g32.data, meta, 50, a, ws)) == 0
   var w = newSeq[float64](24)
   let p = WindowSnrParams(signalStartMs: 0, signalEndMs: 300, noiseStartMs: 400,
     noiseEndMs: 700)
@@ -328,19 +328,19 @@ block coherence_nan_cases:
   ws.reserve(coherenceSnrWorkspace(50))
   var est = newSeq[float64](50)
   var one = cohGather[float32](signalTrace(50, 1), 1, 5, traces = 1)
-  coherenceSnrInto(one.data, initChunkMeta(one.rows, cohDt), 10, ws, est)
+  coherenceSnrInto(one.data, initChunkMeta(one.rows, cohDt), 10, est, ws)
   for v in est: doAssert v.isNaN # one trace: no noise estimate
   var same = initSynthGather[float32](liveKeys(4, cohDt), 50, cohDt)
   for r in 0 ..< 4:
     for j in 0 ..< 50: same.data[r, j] = float32(1 + j mod 3)
-  coherenceSnrInto(same.data, initChunkMeta(same.rows, cohDt), 10, ws, est)
+  coherenceSnrInto(same.data, initChunkMeta(same.rows, cohDt), 10, est, ws)
   for v in est: doAssert v == Inf # noise-free identical traces
   var zero = initSynthGather[float32](liveKeys(4, cohDt), 50, cohDt)
-  coherenceSnrInto(zero.data, initChunkMeta(zero.rows, cohDt), 10, ws, est)
+  coherenceSnrInto(zero.data, initChunkMeta(zero.rows, cohDt), 10, est, ws)
   for v in est: doAssert v.isNaN # nothing live to measure
   var bad = cohGather[float32](signalTrace(50, 1), 1, 5, traces = 4)
   bad.data[2, 20] = NaN
-  coherenceSnrInto(bad.data, initChunkMeta(bad.rows, cohDt), 10, ws, est)
+  coherenceSnrInto(bad.data, initChunkMeta(bad.rows, cohDt), 10, est, ws)
   doAssert est[20].isNaN and est[15].isNaN and not est[14].isNaN and not est[26].isNaN
 
 proc coherenceByDefinition(d: Tensor[float64], cols, h: int, floorDb: float64): seq[float64] =
@@ -413,7 +413,7 @@ block coherence_window_sums_against_the_definition:
     for h in [0, 1, 2, 5, 20, 78, 79, 156, 157, 400]:
       let windowMs = max(float64(2 * h) * cohDt, 0.5 * cohDt)
       for floorDb in [-40.0, -Inf]:
-        coherenceSnrInto(g.data, meta, windowMs, ws, est, floorDb = floorDb)
+        coherenceSnrInto(g.data, meta, windowMs, est, ws, floorDb = floorDb)
         let want = coherenceByDefinition(g.data, cols, min(h, cols), floorDb)
         for j in 0 ..< cols:
           doAssert (est[j].isNaN and want[j].isNaN) or est[j] == want[j] or
@@ -423,7 +423,7 @@ block coherence_window_sums_against_the_definition:
   # A workspace reserved for a narrower block is refused.
   var small = initWorkspace()
   small.reserve(coherenceSnrWorkspace(cols - 1))
-  doAssertRaises ValueError: coherenceSnrInto(g.data, meta, 20, small, est)
+  doAssertRaises ValueError: coherenceSnrInto(g.data, meta, 20, est, small)
 
 block errors:
   var g = shot(0.1)
@@ -432,12 +432,12 @@ block errors:
   ws.reserve(coherenceSnrWorkspace(cols))
   var est = newSeq[float64](cols)
   var short = newSeq[float64](cols - 1)
-  doAssertRaises ValueError: coherenceSnrInto(g.data, meta, 0, ws, est)
-  doAssertRaises ValueError: coherenceSnrInto(g.data, meta, Inf, ws, est)
-  doAssertRaises ValueError: coherenceSnrInto(g.data, meta, 20, ws, est, floorDb = NaN)
-  doAssertRaises ValueError: coherenceSnrInto(g.data, meta, 20, ws, short)
+  doAssertRaises ValueError: coherenceSnrInto(g.data, meta, 0, est, ws)
+  doAssertRaises ValueError: coherenceSnrInto(g.data, meta, Inf, est, ws)
+  doAssertRaises ValueError: coherenceSnrInto(g.data, meta, 20, est, ws, floorDb = NaN)
+  doAssertRaises ValueError: coherenceSnrInto(g.data, meta, 20, short, ws)
   doAssertRaises ValueError:
-    coherenceSnrInto(g.data, meta.sub(0 .. 9), 20, ws, est)
+    coherenceSnrInto(g.data, meta.sub(0 .. 9), 20, est, ws)
   var dst = newSeq[float64](g.len)
   doAssertRaises ValueError:
     windowSnrInto(g.data, meta, WindowSnrParams(signalStartMs: 10, signalEndMs: 0), dst)

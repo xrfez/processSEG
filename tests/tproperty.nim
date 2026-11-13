@@ -276,7 +276,7 @@ block filter_linearity:
       let fp = initFilterPlan(float64, fspec, dtMs, n, trend)
       ws.reserve(fp.workspaceSize)
       let e = linearityError[float64](r, r.rand(1 .. n),
-        proc (x: var seq[float64]) = x.applyFilter(fp, ws))
+        proc (x: var seq[float64]) = fp.applyFilter(x, ws))
       doAssert e < 1e-9, "FFT filter not linear: " & $e & " " & $fspec
     except ValueError: discard # a ramp too narrow for n: rejected
     let ispec = r.randomSpec(nyq, butter = true)
@@ -285,14 +285,14 @@ block filter_linearity:
       let ip = initIirPlan(float64, ispec, dtMs, n, phase, trend)
       ws.reserve(ip.workspaceSize)
       let e = linearityError[float64](r, r.rand(1 .. n),
-        proc (x: var seq[float64]) = x.applyFilter(ip, ws))
+        proc (x: var seq[float64]) = ip.applyFilter(x, ws))
       doAssert e < 1e-9, "IIR filter not linear: " & $e & " " & $ispec &
         " dt " & $dtMs & " n " & $n & " " & $trend & " " & $phase
       # float32: the same within single precision.
       let ip32 = initIirPlan(float32, ispec, dtMs, n, phase, trend)
       ws.reserve(ip32.workspaceSize)
       let e32 = linearityError[float32](r, r.rand(1 .. n),
-        proc (x: var seq[float32]) = x.applyFilter(ip32, ws))
+        proc (x: var seq[float32]) = ip32.applyFilter(x, ws))
       doAssert e32 < 1e-3, "float32 IIR filter not linear: " & $e32
       inc iirChecked
     except ValueError: discard # an odd slope for a zero-phase cascade
@@ -313,8 +313,8 @@ block gain_scale_invariance:
     ws.reserve(agc.workspaceSize)
     var ax = x
     var ay = y
-    ax.agc(agc, ws)
-    ay.agc(agc, ws)
+    agc.agc(ax, ws)
+    agc.agc(ay, ws)
     for j in 0..<n:
       doAssert ax[j].classify == fcNormal or ax[j] == 0
       doAssert abs(ax[j] - ay[j]) <= 1e-9 * max(1.0, abs(ax[j])), "AGC scale"
@@ -323,8 +323,8 @@ block gain_scale_invariance:
     ws.reserve(norm.workspaceSize)
     var nx = x
     var ny = y
-    nx.normalize(norm, ws)
-    ny.normalize(norm, ws)
+    norm.normalize(nx, ws)
+    norm.normalize(ny, ws)
     for j in 0..<n:
       # The percentile histogram bins |x| relative to the maximum, so it is
       # scale invariant up to rounding as well.

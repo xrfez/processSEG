@@ -23,7 +23,7 @@
 ## var report = initSliceReport(plan)
 ## var ws = initWorkspace()
 ## ws.reserve(sliceWorkspace(float32, plan))
-## extractInto(plan, data, meta, dst, report, ws)
+## extractInto(plan, data, dst, meta, report, ws)
 ## for trace in 0 ..< plan.len:
 ##   let k = plan.sliceKeys(trace)           # write with parseSEG
 ##   for gap in report.gaps(trace): discard   # zero-filled columns
@@ -836,8 +836,8 @@ func mismatches*(report: SliceReport): int {.raises: [].} =
   for c in report.checks:
     if c.status == osMismatch: inc result
 
-proc extractInto*[T: SampleType](plan: SlicePlan, data: RowBlock[T], meta: ChunkMeta,
-    dst: RowBlock[T], report: var SliceReport, ws: var Workspace) =
+proc extractInto*[T: SampleType](plan: SlicePlan, data, dst: RowBlock[T], meta: ChunkMeta,
+    report: var SliceReport, ws: var Workspace) =
   ## Cuts the traces of `plan` from the segments `data` into `dst`
   ## (`plan.len` rows of `plan.samples`), zero-filling and reporting gaps, and
   ## compares overlaps (see the module documentation). `data` and `meta` hold
@@ -942,12 +942,12 @@ proc extractInto*[T: SampleType](plan: SlicePlan, data: RowBlock[T], meta: Chunk
         if c.differing > 0: c.status = osMismatch
     report.checks[i] = c
 
-proc extractInto*[T: SampleType](plan: SlicePlan, data: Tensor[T], meta: ChunkMeta,
-    dst: var Tensor[T], report: var SliceReport, ws: var Workspace) =
+proc extractInto*[T: SampleType](plan: SlicePlan, data: Tensor[T], dst: var Tensor[T],
+    meta: ChunkMeta, report: var SliceReport, ws: var Workspace) =
   ## `extractInto` on `[rows, cols]` tensors. Raises `ValueError` unless both
   ## are C-contiguous and `data` has `meta.len` rows, or as the block form.
   meta.checkShape(data)
-  extractInto(plan, rowBlock(data), meta, rowBlock(dst), report, ws)
+  extractInto(plan, rowBlock(data), rowBlock(dst), meta, report, ws)
 
 proc checkDrift(t0, offset0, t1, offset1: float64) =
   for v in [t0, offset0, t1, offset1]:

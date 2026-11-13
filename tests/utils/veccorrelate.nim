@@ -14,7 +14,7 @@ proc correlateOnce*() =
   # mulKernel (the lanes path), and dot through resamplePilot.
   let pilot = generatePilot(linearSweep(8, 80, 100, 2), float32)
   let resampled = pilot.resamplePilot(1)
-  let plan = initCorrelationPlan(float32, pilot, 200, 2)
+  let plan = initCorrelationPlan(float32, pilot, 2, 200)
   var ws = initWorkspace()
   ws.reserve(plan.workspaceSize)
   var g = cmpGather[float32](cmpX = 0, offsets = [0.0, 100.0], 200, 2)

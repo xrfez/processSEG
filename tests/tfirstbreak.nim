@@ -34,7 +34,7 @@ proc picks(g: SynthGather[float32], params: FirstBreakParams): seq[FirstBreakPic
   var ws = initWorkspace()
   ws.reserve(plan.workspaceSize)
   result = newSeq[FirstBreakPick](g.len)
-  plan.pickInto(g.data, meta, ws, result)
+  plan.pickInto(g.data, meta, result, ws)
 
 proc errorsMs(g: SynthGather[float32], p: openArray[FirstBreakPick]): seq[float64] =
   for r in 0 ..< g.len: result.add abs(p[r].timeMs - onsetMs(g.keys[r].offset))
@@ -162,7 +162,7 @@ block no_picks:
   var wws = initWorkspace()
   wws.reserve(wplan.workspaceSize)
   var wp = newSeq[FirstBreakPick](w.len)
-  wplan.pickInto(w.data, wmeta, wws, wp)
+  wplan.pickInto(w.data, wmeta, wp, wws)
   doAssert wp[3].timeMs.isNaN and wp[3].col == pf[3].col - 10
   # A search window outside the trace.
   for q in picks(shot(0.02, 5), FirstBreakParams(searchStartMs: 5000)):
@@ -180,7 +180,7 @@ block window_block_and_single_trace:
   ws.reserve(plan.workspaceSize)
   var ps = newSeq[FirstBreakPick](w.len)
   let before = w.data.clone()
-  plan.pickInto(w.data, meta, ws, ps)
+  plan.pickInto(w.data, meta, ps, ws)
   doAssert w.data == before # the samples are not changed
   for r in 0 ..< g.len:
     doAssert abs(ps[r].timeMs - full[r].timeMs) <= dt
@@ -190,7 +190,7 @@ block window_block_and_single_trace:
   let one = plan.pick(row, ws, g.keys[5].offset, 0.0)
   doAssert one == full[5]
   # No allocation once the workspace is reserved.
-  doAssert allocsIn(plan.pickInto(w.data, meta, ws, ps)) == 0
+  doAssert allocsIn(plan.pickInto(w.data, meta, ps, ws)) == 0
 
 block errors:
   doAssertRaises(ValueError): discard initFirstBreakPlan(float32, FirstBreakParams(), 0, cols)
@@ -222,21 +222,21 @@ block errors:
   var ws = initWorkspace()
   ws.reserve(plan.workspaceSize)
   var ps = newSeq[FirstBreakPick](g.len)
-  doAssertRaises(ValueError): plan.pickInto(g.data, meta, ws, ps) # too many columns
+  doAssertRaises(ValueError): plan.pickInto(g.data, meta, ps, ws) # too many columns
   let plan4 = initFirstBreakPlan(float32, guided, 4, cols)
-  doAssertRaises(ValueError): plan4.pickInto(g.data, meta, ws, ps) # other interval
+  doAssertRaises(ValueError): plan4.pickInto(g.data, meta, ps, ws) # other interval
   # The interval is the plan's within rounding (a relative 1e-9, as the
   # filters and the correlation take it): 2 ms from a header's 2000 µs and
   # 2 ms computed are one interval.
   let plan2 = initFirstBreakPlan(float32, guided, dt, cols)
   ws.reserve(plan2.workspaceSize)
   var near = newSeq[FirstBreakPick](g.len)
-  plan2.pickInto(g.data, initChunkMeta(g.rows, dt * (1 + 1e-12)), ws, near)
+  plan2.pickInto(g.data, initChunkMeta(g.rows, dt * (1 + 1e-12)), near, ws)
   doAssert near[5].col >= 0
   doAssertRaises(ValueError):
-    plan2.pickInto(g.data, initChunkMeta(g.rows, dt * (1 + 1e-6)), ws, near)
+    plan2.pickInto(g.data, initChunkMeta(g.rows, dt * (1 + 1e-6)), near, ws)
   var short = newSeq[FirstBreakPick](1)
-  doAssertRaises(ValueError): plan2.pickInto(g.data, meta, ws, short)
+  doAssertRaises(ValueError): plan2.pickInto(g.data, meta, short, ws)
 
 block float64_traces:
   # float64 samples (the trace copy and the energy arrays share the float64
@@ -253,7 +253,7 @@ block float64_traces:
   var ws = initWorkspace()
   ws.reserve(plan.workspaceSize)
   var p64 = newSeq[FirstBreakPick](g.len)
-  plan.pickInto(d, meta, ws, p64)
+  plan.pickInto(d, meta, p64, ws)
   for r in 0 ..< g.len:
     doAssert p64[r].timeMs == p32[r].timeMs
     doAssert abs(p64[r].snrDb - p32[r].snrDb) < 1e-3
@@ -277,7 +277,7 @@ block batched_filter_matches_single_trace:
     var ws = initWorkspace()
     ws.reserve(plan.workspaceSize)
     var got = newSeq[FirstBreakPick](g.len)
-    plan.pickInto(g.data, meta, ws, got)
+    plan.pickInto(g.data, meta, got, ws)
     for r in 0 ..< g.len:
       if not meta.isLive(r):
         doAssert got[r].col == -1
@@ -300,8 +300,8 @@ block filtered_batch_allocates_nothing_and_infinite_t0:
   var ws = initWorkspace()
   ws.reserve(plan.workspaceSize)
   var picks = newSeq[FirstBreakPick](g.len)
-  plan.pickInto(g.data, meta, ws, picks) # warm
-  doAssert allocsIn(plan.pickInto(g.data, meta, ws, picks)) == 0
+  plan.pickInto(g.data, meta, picks, ws) # warm
+  doAssert allocsIn(plan.pickInto(g.data, meta, picks, ws)) == 0
   # An infinite t0 is no time axis (as NaN): no time window can apply, so a
   # guided pick is none, and an open window gives a column without a time.
   var x = newSeq[float32](cols)
@@ -347,7 +347,7 @@ block coppens_on_the_example_record:
     var ws = initWorkspace()
     ws.reserve(plan.workspaceSize)
     var ps = newSeq[FirstBreakPick](meta.len)
-    plan.pickInto(data, meta, ws, ps)
+    plan.pickInto(data, meta, ps, ws)
     let w = int(FirstBreakParams().windowMs / meta.dtMs)
     var early, picked = 0
     for q in ps:
@@ -439,7 +439,7 @@ block a_zoom_window_with_the_required_margin_picks_the_same:
       var ws = initWorkspace()
       ws.reserve(plan.workspaceSize)
       var full = newSeq[FirstBreakPick](g.len)
-      plan.pickInto(g.data, meta, ws, full)
+      plan.pickInto(g.data, meta, full, ws)
       # The search windows: 60 ms before the nearest break to 80 ms after
       # the farthest.
       let shown = int(floor((onsetMs(1000) - 60) / dt)) .. int(ceil((onsetMs(1275) + 80) / dt))
@@ -448,7 +448,7 @@ block a_zoom_window_with_the_required_margin_picks_the_same:
       let w = g.window(zoom.a, zoom.len)
       let wmeta = initChunkMeta(w.rows, dt, firstSample = w.firstSample)
       var got = newSeq[FirstBreakPick](w.len)
-      plan.pickInto(w.data, wmeta, ws, got)
+      plan.pickInto(w.data, wmeta, got, ws)
       for r in 0 ..< g.len:
         doAssert full[r].col >= 0
         var want = full[r]
@@ -478,7 +478,7 @@ block the_pool_picks_the_same:
       var ws = initWorkspace()
       ws.reserve(plan.workspaceSize)
       var want = newSeq[FirstBreakPick](g.len)
-      plan.pickInto(g.data, meta, ws, want)
+      plan.pickInto(g.data, meta, want, ws)
       for workers in [1, 3, 8]:
         var pool = newProcessPool(workers)
         var got = newSeq[FirstBreakPick](g.len)

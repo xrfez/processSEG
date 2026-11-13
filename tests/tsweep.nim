@@ -56,7 +56,7 @@ block short_time_spectrum_peak:
   let spec = dbPerOctaveSweep(8, 100, 10000, 2, 3)
   let x = spec.sweepSamples(float64)
   const win = 256
-  let sp = initSpectrumPlan(float64, win, 2, taperFraction = 0.5, nfft = 2048)
+  let sp = initSpectrumPlan(float64, 2, win, taperFraction = 0.5, nfft = 2048)
   var ws = initWorkspace()
   ws.reserve(sp.workspaceSize)
   var amp, ph = newSeq[float64](sp.bins)

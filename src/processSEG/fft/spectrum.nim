@@ -3,7 +3,7 @@
 ## window, in dB, for a viewer's spectrum panel.
 ##
 ## ```nim
-## let sp = initSpectrumPlan(float32, windowLen = 501, dtMs = 2.0)  # taper 10 % each end
+## let sp = initSpectrumPlan(float32, dtMs = 2.0, windowLen = 501)  # taper 10 % each end
 ## var ws = initWorkspace()
 ## ws.reserve(sp.workspaceSize)
 ## var amp, db = newSeq[float64](sp.bins)
@@ -76,7 +76,7 @@ type
 proc badSpectrum(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
 
-proc initSpectrumPlan*(T: typedesc[SampleType], windowLen: int, dtMs: float64,
+proc initSpectrumPlan*(T: typedesc[SampleType], dtMs: float64, windowLen: int,
     taperFraction = 0.1, nfft = 0, demean = true): SpectrumPlan[T] =
   ## A spectrum of windows of `windowLen` samples at `dtMs` ms, tapered over
   ## `taperFraction` (0 .. 0.5) of the window at each end and zero-padded to

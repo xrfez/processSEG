@@ -282,7 +282,7 @@ In a pipeline a filter is `filterOp(lowCut(0.5, 1))` (or `iirOp(butterLowCut(1))
 let plan = initFilterPlan(float32, lowCut(0.5, 1), dtMs = 2, samples = 2001)
 var ws = initWorkspace()
 ws.reserve(plan.workspaceSize)
-samples.applyFilter(meta, plan, ws)   # in place, live rows to their live length
+plan.applyFilter(samples, meta, ws)   # in place, live rows to their live length
 let m = plan.requiredMargin           # L samples: decode a zoom window with m each side
 ```
 
@@ -340,16 +340,16 @@ Viewers usually offer **fixed**, **normalized** and **AGC** display gain.
   `gainDbOp`). They also run on their own (`processSEG/gain/gain`):
 
   ```nim
-  let agc = initAgcPlan(windowMs = 500, dtMs = 2, samples = 2001)  # agcRms or agcMeanAbs
-  ws.reserve(agc.workspaceSize)
-  samples.agc(meta, agc, ws)              # in place; or (..., gains) to keep the gain
-  let m = agc.requiredMargin              # half the window, for zoom windows
+  let gain = initAgcPlan(windowMs = 500, dtMs = 2, samples = 2001)  # agcRms or agcMeanAbs
+  ws.reserve(gain.workspaceSize)
+  gain.agc(samples, meta, ws)             # in place; or (..., gains, ws) to keep the gain
+  let m = gain.requiredMargin             # half the window, for zoom windows
   ```
 
   A time-variant gain (`knotGain([GainKnot(tMs: 0, dB: 0), GainKnot(tMs: 3000, dB: 18)])`,
   `powerGain(2)` or `exponentialGain(dbPerS)`) is tabulated once per `dt` and record
   length (`initGainCurvePlan(float32, curve, dtMs, samples)`), then
-  `samples.applyGainCurve(meta, plan)` multiplies each live row by the table at its own
+  `plan.applyGainCurve(samples, meta)` multiplies each live row by the table at its own
   times (`t0Ms`, `firstSample`): 0.5 ms per panel. Widen the table (`tMinMs`, `tMaxMs`) for
   rows that start before 0 or windows past the record; times outside it are exact but
   slower.
@@ -366,7 +366,7 @@ Both paths give the same picture: the CPU gain ops exist too, for exports and te
 
 `SpectrumPlan` (`processSEG/fft/spectrum`) gives the averaged amplitude spectrum of the
 traces and time window a user selects. Make the plan once per window length and `dt`
-(`initSpectrumPlan(float32, windowLen, dtMs, taperFraction = 0.1)`), reserve
+(`initSpectrumPlan(float32, dtMs, windowLen, taperFraction = 0.1)`), reserve
 `sp.workspaceSize`, then per selection:
 
 ```nim
@@ -435,8 +435,8 @@ processSEG's QC modules score this automatically (experimental for land data):
 - `checkGeometryInto(meta, checks)` (`qc/geometry`): per-trace flags from the keys alone
   (header offset vs the source–receiver distance, zero, negative or missing offsets,
   missing coordinates, a midpoint off halfway); `flaggedRows(checks)` lists the bad ones.
-- `initFirstBreakPlan(T, params, dtMs, samples)` and `plan.pickInto(samples, meta, ws,
-  picks)` (`qc/firstbreak`): STA/LTA, modified energy ratio or modified Coppens, after an
+- `initFirstBreakPlan(T, params, dtMs, samples)` and `plan.pickInto(samples, meta,
+  picks, ws)` (`qc/firstbreak`): STA/LTA, modified energy ratio or modified Coppens, after an
   optional minimum-phase band-pass, in a fixed or LMO-guided window, with an SNR-based
   confidence per pick. The input samples are not changed: a plan with a band-pass filters
   `iirLanes` (24) rows at a time into copies in the workspace (`plan.workspaceSize` holds

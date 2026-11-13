@@ -8,7 +8,7 @@
 ## let mp = initIirPlan(float32, spec, dtMs = 2, samples = 2001, phase = ipMinimum)
 ## var ws = initWorkspace()
 ## ws.reserve(zp.workspaceSize)
-## samples.applyFilter(meta, zp, ws)
+## zp.applyFilter(samples, meta, ws)
 ## ```
 ##
 ## **Design.** Each edge of a `butterLowCut`, `butterHighCut` or
@@ -415,7 +415,7 @@ proc checkPlan[T](plan: IirPlan[T]) {.inline.} =
 
 # ---------------------------------------------------------------- apply --
 
-proc applyFilter*[T: SampleType](x: var openArray[T], plan: IirPlan[T],
+proc applyFilter*[T: SampleType](plan: IirPlan[T], x: var openArray[T],
     ws: var Workspace) {.raises: [].} =
   ## Filters one trace, `x` (its live samples, at most `plan.samples`; an
   ## `AssertionDefect` otherwise), in place. `ws` must hold
@@ -432,8 +432,8 @@ proc applyFilter*[T: SampleType](x: var openArray[T], plan: IirPlan[T],
   plan.runSingle(buf, m)
   plan.unpackFrom(buf, 1, a, b, xp, n)
 
-proc applyFilter*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
-    plan: IirPlan[T], ws: var Workspace) =
+proc applyFilter*[T: SampleType](plan: IirPlan[T], b: RowBlock[T], meta: ChunkMeta,
+    ws: var Workspace) =
   ## Filters the live rows of `b` in place, each to its live length,
   ## `iirLanes` rows at a time (module documentation). `ws` must hold
   ## `plan.workspaceSize`. Raises `ValueError`, before any sample changes,
@@ -479,9 +479,9 @@ proc applyFilter*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
       if lane == iirLanes: flush()
   flush()
 
-proc applyFilter*[T: SampleType](samples: var Tensor[T], meta: ChunkMeta,
-    plan: IirPlan[T], ws: var Workspace) =
+proc applyFilter*[T: SampleType](plan: IirPlan[T], samples: var Tensor[T],
+    meta: ChunkMeta, ws: var Workspace) =
   ## `applyFilter` on a `[rows, cols]` tensor (C-contiguous; raises
   ## `ValueError` otherwise).
   meta.checkShape(samples)
-  rowBlock(samples).applyFilter(meta, plan, ws)
+  plan.applyFilter(rowBlock(samples), meta, ws)

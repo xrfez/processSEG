@@ -10,7 +10,7 @@
 ## var ws = initWorkspace()
 ## ws.reserve(plan.workspaceSize)
 ## var picks = newSeq[FirstBreakPick](meta.len)
-## plan.pickInto(samples, meta, ws, picks)     # picks[row].timeMs, .confidence
+## plan.pickInto(samples, meta, picks, ws)     # picks[row].timeMs, .confidence
 ## ```
 ##
 ## **Pickers** (on the energy `e = x²` of the filtered trace, with windows
@@ -467,7 +467,7 @@ proc pick*[T: SampleType](plan: FirstBreakPlan[T], x: openArray[T],
   if plan.filtered:
     let c = ws.scratch(T, s.len, plan.copyBase)
     copyMem(c, y, s.len * sizeof(T))
-    applyFilter(c.toOpenArray(0, s.len - 1), plan.filter, ws)
+    applyFilter(plan.filter, c.toOpenArray(0, s.len - 1), ws)
     y = c
   plan.pickStretch(y, s, ws)
 
@@ -489,7 +489,7 @@ proc checkPick*[T: SampleType](plan: FirstBreakPlan[T], b: RowBlock[T], meta: Ch
       $meta.len & " rows")
 
 proc pickInto*[T: SampleType](plan: FirstBreakPlan[T], b: RowBlock[T], meta: ChunkMeta,
-    ws: var Workspace, dst: var openArray[FirstBreakPick]) =
+    dst: var openArray[FirstBreakPick], ws: var Workspace) =
   ## The pick of every live row of `b` into `dst[row]` (each row to its live
   ## length, on `meta`'s time axis; non-live rows get `noPick`). `ws` must
   ## hold `plan.workspaceSize`. Raises `ValueError` as `checkPick`.
@@ -523,7 +523,7 @@ proc pickInto*[T: SampleType](plan: FirstBreakPlan[T], b: RowBlock[T], meta: Chu
   template flush() =
     if used > 0:
       let cb = rowBlock(c.toOpenArray(0, used * b.cols - 1), used, b.cols)
-      applyFilter(cb, lanes.sub(0 ..< used), plan.filter, ws)
+      applyFilter(plan.filter, cb, lanes.sub(0 ..< used), ws)
       for l in 0 ..< used:
         dst[rowOf[l]] = plan.pickStretch(cb.rowPtr(l), stretches[l], ws)
       used = 0
@@ -541,6 +541,6 @@ proc pickInto*[T: SampleType](plan: FirstBreakPlan[T], b: RowBlock[T], meta: Chu
   flush()
 
 proc pickInto*[T: SampleType](plan: FirstBreakPlan[T], samples: Tensor[T],
-    meta: ChunkMeta, ws: var Workspace, dst: var openArray[FirstBreakPick]) =
+    meta: ChunkMeta, dst: var openArray[FirstBreakPick], ws: var Workspace) =
   ## `pickInto` on a row-major `[rows, samples]` tensor.
-  plan.pickInto(rowBlock(samples), meta, ws, dst)
+  plan.pickInto(rowBlock(samples), meta, dst, ws)

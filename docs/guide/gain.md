@@ -36,7 +36,7 @@ doAssert abs(dbToFactor(-6.0206) - 0.5) < 1e-4
 var ws = initWorkspace()
 let norm = initNormalizePlan(normMax, ns, perTrace, target = 1)
 ws.reserve(norm.workspaceSize)          # none unless normPercentile
-samples.normalize(meta, norm, ws)       # each trace's max |x| becomes 1
+norm.normalize(samples, meta, ws)       # each trace's max |x| becomes 1
 var peak = 0.0
 for j in 0 ..< ns: peak = max(peak, abs(float64(samples[4, j])))
 doAssert abs(peak - 1) < 1e-6
@@ -45,7 +45,7 @@ let agcPlan = initAgcPlan(windowMs = 400, dtMs, ns) # agcRms by default
 ws.reserve(agcPlan.workspaceSize)
 var gains = zeros[float32](keys.len, ns)
 var before = samples.clone()
-samples.agc(meta, agcPlan, ws, gains)   # keep each sample's gain
+agcPlan.agc(samples, meta, gains, ws)   # keep each sample's gain
 var late = 0.0                          # the decay is gone: RMS ~1 late and early
 for j in 1200 ..< 1300: late += float64(samples[0, j])^2 / 100
 doAssert abs(sqrt(late) - 1) < 0.1
@@ -83,7 +83,7 @@ let curve = knotGain([GainKnot(tMs: 0, dB: 0), GainKnot(tMs: 4000, dB: 24)])
 doAssert abs(curve.gainDbAt(2000) - 12) < 1e-9
 # The second trace runs to 5000 ms: widen the table to cover it.
 let plan = initGainCurvePlan(float32, curve, dtMs = 4, samples = 1001, tMaxMs = 5000)
-samples.applyGainCurve(meta, plan)
+plan.applyGainCurve(samples, meta)
 doAssert abs(samples[0, 500] - dbToFactor(12)) < 1e-4  # 2000 ms
 doAssert abs(samples[1, 0] - dbToFactor(6)) < 1e-4     # 1000 ms
 
@@ -130,7 +130,7 @@ doAssert sel.rows == 2 and sel.clip.isNaN # a selection; no histogram pass
 
 # The factor a per-panel normalization would apply, as a uniform:
 let norm = initNormalizePlan(normRms, samples = 1000, scope = perPanel)
-let factor = panelFactor(rowBlock(samples), meta, norm, ws)
+let factor = norm.panelFactor(rowBlock(samples), meta, ws)
 doAssert abs(factor - 1 / p.rms) < 1e-6 * factor
 doAssert gainUniform > 0
 ```
@@ -162,7 +162,7 @@ for r in 0 ..< 4:
   for j in 0 ..< 1000:
     samples[r, j] = float32(3 * sin(2 * PI * 31.25 * float64(j) * dtMs / 1000))
 
-let sp = initSpectrumPlan(float32, windowLen = 512, dtMs)
+let sp = initSpectrumPlan(float32, dtMs, windowLen = 512)
 var ws = initWorkspace()
 ws.reserve(sp.workspaceSize)
 var amp = newSeq[float64](sp.bins)

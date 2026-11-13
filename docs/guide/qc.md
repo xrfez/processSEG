@@ -92,7 +92,7 @@ let plan = initFirstBreakPlan(float32, params, dtMs, ns)
 var ws = initWorkspace()
 ws.reserve(plan.workspaceSize)
 var picks = newSeq[FirstBreakPick](meta.len) # once per chunk, reused
-plan.pickInto(samples, meta, ws, picks)
+plan.pickInto(samples, meta, picks, ws)
 for r in 0 ..< meta.len:
   if r == 20:
     doAssert picks[r].timeMs.isNaN and picks[r].confidence == 0 # not live: noPick()
@@ -194,7 +194,7 @@ let plan = initFirstBreakPlan(float32, FirstBreakParams(pickMethod: pmCoppens), 
 var ws = initWorkspace()
 ws.reserve(plan.workspaceSize)
 var picks = newSeq[FirstBreakPick](meta.len)
-plan.pickInto(samples, meta, ws, picks)
+plan.pickInto(samples, meta, picks, ws)
 
 var fit: ShotFit                        # its seqs are resized and reused per shot
 fitShot(samples, meta, picks, ShotFitParams(), fit)
@@ -265,7 +265,7 @@ flat.applyLmo(meta, velocity = 2500, biasMs = 60)
 var ws = initWorkspace()
 ws.reserve(coherenceSnrWorkspace(ns))
 var perSample = newSeq[float64](ns)
-coherenceSnrInto(flat, meta, windowMs = 20, ws, perSample)
+coherenceSnrInto(flat, meta, windowMs = 20, perSample, ws)
 doAssert perSample[50] > 5              # 100 ms: the flattened event
 doAssert perSample[300] <= -10          # 600 ms: noise only
 ```

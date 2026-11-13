@@ -49,19 +49,19 @@ proc main() =
     let plan = initAgcPlan(windowMs, dtMs = dt, samples = ns)
     ws.reserve(plan.workspaceSize)
     let r = bench("agc rms " & $int(windowMs) & " ms", 2 * bytes):
-      g.data.agc(meta, plan, ws)
+      plan.agc(g.data, meta, ws)
     r.report
     echo "    ", r.ms
   let n99 = initNormalizePlan(normPercentile, samples = ns, scope = perPanel)
   ws.reserve(n99.workspaceSize)
   let n = bench("normalize panel p99", 2 * bytes):
-    g.data.normalize(meta, n99, ws)
+    n99.normalize(g.data, meta, ws)
   n.report
   echo "    ", n.ms
   let curve = initGainCurvePlan(float32, knotGain([GainKnot(tMs: 0, dB: 0),
     GainKnot(tMs: 4000, dB: 24)]), dtMs = dt, samples = ns)
   let tv = bench("gain curve, t0 on the grid", 2 * bytes):
-    g.data.applyGainCurve(meta, curve)
+    curve.applyGainCurve(g.data, meta)
   tv.report
   echo "    ", tv.ms
   doAssert sink > 0 and stats[0].rms > 0

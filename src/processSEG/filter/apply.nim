@@ -6,7 +6,7 @@
 ## let plan = initFilterPlan(float32, lowCut(0.5, 1), dtMs = 2, samples = 2001)
 ## var ws = initWorkspace()
 ## ws.reserve(plan.workspaceSize)
-## samples.applyFilter(meta, plan, ws)      # in place, live rows, each to its live length
+## plan.applyFilter(samples, meta, ws)      # in place, live rows, each to its live length
 ## let m = plan.requiredMargin              # samples to decode on each side of a zoom window
 ## ```
 ##
@@ -319,7 +319,7 @@ proc unpackLanes[T](plan: FilterPlan[T], src: Buf[T], a, b: LaneTrend,
 proc checkPlan[T](plan: FilterPlan[T]) {.inline.} =
   doAssert plan.gain.len > 0, "a FilterPlan must come from initFilterPlan"
 
-proc applyFilter*[T: SampleType](x: var openArray[T], plan: FilterPlan[T],
+proc applyFilter*[T: SampleType](plan: FilterPlan[T], x: var openArray[T],
     ws: var Workspace) {.raises: [].} =
   ## Filters one trace, `x` (its live samples, at most `plan.samples`; an
   ## `AssertionDefect` otherwise), in place. `ws` must hold
@@ -346,8 +346,8 @@ proc applyFilter*[T: SampleType](x: var openArray[T], plan: FilterPlan[T],
 
 # -------------------------------------------------------------- block form --
 
-proc applyFilter*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
-    plan: FilterPlan[T], ws: var Workspace) =
+proc applyFilter*[T: SampleType](plan: FilterPlan[T], b: RowBlock[T], meta: ChunkMeta,
+    ws: var Workspace) =
   ## Filters the live rows of `b` in place, each to its live length (module
   ## documentation), `fftLanes` rows at a time. `ws` must hold
   ## `plan.workspaceSize`. Raises `ValueError`, before any sample changes,
@@ -406,9 +406,9 @@ proc applyFilter*[T: SampleType](b: RowBlock[T], meta: ChunkMeta,
       if lane == fftLanes: flush()
   flush()
 
-proc applyFilter*[T: SampleType](samples: var Tensor[T], meta: ChunkMeta,
-    plan: FilterPlan[T], ws: var Workspace) =
+proc applyFilter*[T: SampleType](plan: FilterPlan[T], samples: var Tensor[T],
+    meta: ChunkMeta, ws: var Workspace) =
   ## `applyFilter` on a `[rows, cols]` tensor (C-contiguous; raises
   ## `ValueError` otherwise).
   meta.checkShape(samples)
-  rowBlock(samples).applyFilter(meta, plan, ws)
+  plan.applyFilter(rowBlock(samples), meta, ws)
