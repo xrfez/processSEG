@@ -281,8 +281,8 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | Proc | What |
 |---|---|
 | `BinningKind` (`bnCdp`, `bnLine`, `bnGrid`, `bnInlineCrossline`), `Binning` | A bin definition. |
-| `cdpBinning(firstCdp, count, step = 1)`, `lineBinning(x0, y0, azimuthDeg, binSize, count, firstCdp = 1, maxOffLine = Inf)` | 2D: by header CDP (`ensemble`); by midpoints projected onto a line. |
-| `gridBinning(x0, y0, azimuthDeg, crosslineSpacing, inlineSpacing, inlines, crosslines, firstInline = 1, firstCrossline = 1, clockwise = true)`, `inlineCrosslineBinning(firstInline, inlines, firstCrossline, crosslines, inlineStep = 1, crosslineStep = 1)` | 3D: a rotated grid of midpoints; header inline and crossline numbers. |
+| `cdpBinning(firstCdp, count, step = 1)`, `lineBinning(x0, y0, azimuthDeg, binSize, count, firstCdp = 1, maxOffLine = Inf, cdpStep = 1)` | 2D: by header CDP (`ensemble`); by midpoints projected onto a line, bin `i` numbered CDP `firstCdp + i·cdpStep`. |
+| `gridBinning(x0, y0, azimuthDeg, crosslineSpacing, inlineSpacing, inlines, crosslines, firstInline = 1, firstCrossline = 1, clockwise = true, inlineStep = 1, crosslineStep = 1)`, `inlineCrosslineBinning(firstInline, inlines, firstCrossline, crosslines, inlineStep = 1, crosslineStep = 1)` | 3D: a rotated grid of midpoints, numbered in steps of `inlineStep` and `crosslineStep`; header inline and crossline numbers. `gridBinning` takes its spacings crossline first and its counts and first numbers inline first: pass them by name. |
 | `b.kind`, `b.len`, `b.inlines`, `b.crosslines`, `b.is3D` | Its size. |
 | `b.binOf(k: TraceKeys): int`, `binsInto(rows \| meta, b, bins)` | A trace's bin, −1 for none (NaN key, outside, off the line). |
 | `b.binAt(x, y): int` | The bin of a midpoint position (line and grid binnings; −1 for none, always −1 for header binnings); the maths `binOf` uses. |

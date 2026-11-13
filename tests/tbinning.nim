@@ -129,6 +129,44 @@ block header_inline_crossline:
   let loc = b.location(5)
   doAssert loc.inline == 1003 and loc.crossline == 15 and loc.x.isNaN
 
+block numbering_steps:
+  # Line and grid bins are numbered in steps: CDP firstCdp + i·cdpStep,
+  # inline firstInline + i·inlineStep, crossline firstCrossline +
+  # j·crosslineStep (1 by default, as before). The steps number the bins;
+  # where a midpoint falls does not depend on them.
+  let plain = lineBinning(500, 800, 30, binSize = 10, count = 50, firstCdp = 1001)
+  let line = lineBinning(500, 800, 30, binSize = 10, count = 50, firstCdp = 1001,
+    cdpStep = 2)
+  for i in [0, 1, 17, 49]:
+    doAssert plain.location(i).cdp == 1001 + float64(i)
+    doAssert line.location(i).cdp == 1001 + 2 * float64(i)
+    doAssert line.location(i).x == plain.location(i).x
+  let k = keysAt(500 + 170 * sin(degToRad(30.0)), 800 + 170 * cos(degToRad(30.0)))
+  doAssert line.binOf(k) == 17 and plain.binOf(k) == 17
+  let half = lineBinning(0, 0, 90, 12.5, 4, firstCdp = 10, maxOffLine = 5,
+    cdpStep = 0.5)
+  doAssert half.location(3).cdp == 11.5
+  let plainGrid = gridBinning(10_000, 20_000, 120, crosslineSpacing = 25,
+    inlineSpacing = 12.5, inlines = 6, crosslines = 9, firstInline = 1001,
+    firstCrossline = 2001)
+  let grid = gridBinning(10_000, 20_000, 120, crosslineSpacing = 25,
+    inlineSpacing = 12.5, inlines = 6, crosslines = 9, firstInline = 1001,
+    firstCrossline = 2001, inlineStep = 2, crosslineStep = 5)
+  for (i, j) in [(0, 0), (1, 0), (0, 1), (5, 8), (3, 4)]:
+    let loc = grid.location(i * 9 + j)
+    doAssert loc.inline == 1001 + 2 * float64(i) and loc.crossline == 2001 +
+        5 * float64(j)
+    let was = plainGrid.location(i * 9 + j)
+    doAssert was.inline == 1001 + float64(i) and was.crossline == 2001 + float64(j)
+    doAssert loc.x == was.x and loc.y == was.y
+    doAssert grid.binAt(loc.x, loc.y) == i * 9 + j
+  for bad in [0.0, -1, NaN, Inf]:
+    doAssertRaises ValueError: discard lineBinning(0, 0, 0, 10, 10, cdpStep = bad)
+    doAssertRaises ValueError: discard gridBinning(0, 0, 0, 25, 25, 2, 2,
+        inlineStep = bad)
+    doAssertRaises ValueError: discard gridBinning(0, 0, 0, 25, 25, 2, 2,
+        crosslineStep = bad)
+
 block bin_edges:
   # A bin holds [centre − half a bin, centre + half a bin): the lower edge of
   # bin 0 is in, the upper edge of the last bin is out, and no position gives
