@@ -60,8 +60,9 @@
 ## correlation coefficient. The lag is the neighbour's arrival minus the
 ## trace's, each counted from its own model time: negative for a trace
 ## that arrives late against its neighbour (its header puts it nearer the
-## source than it is), positive for one that arrives early. A trace is suspect also when it is the odd one out: its
-## lags to both neighbours exceed `lagToleranceMs` while the two
+## source than it is), positive for one that arrives early. A trace is
+## suspect also when it is the odd one out: its lags to both neighbours
+## exceed `lagToleranceMs` while the two
 ## neighbours, correlated with each other, agree within it with a
 ## correlation coefficient of at least `minCoherence`. (The neighbour
 ## of a bad trace agrees with its other neighbour; where the model is off,
