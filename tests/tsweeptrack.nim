@@ -1,11 +1,12 @@
-## Tracking against sweep time (task 15.3): on synthetic sweeps of several
+## Tracking against sweep time: on synthetic sweeps of several
 ## laws, with tapers, at 1 and 2 ms, each measure recovers what was put in:
 ## a phase shift, a delay, harmonics at known levels, the fundamental's
 ## amplitude (with a DC offset and with noise), the frequency law, the peak
 ## per period; NaN outside the sweep and above the harmonic limit; float32;
-## comparisons; refusals; no allocation. Task 15.9, on signals generated
-## apart from the library (`utils/chirps`): the window's minimum time, the
-## flat part of a reference, THD's harmonics and their count. On the example
+## comparisons; refusals; no allocation. On signals generated apart from
+## the library (`utils/chirps`): the window's minimum time, the flat part
+## of a reference, THD's harmonics and their count, a reference whose phase
+## steps back. On the example
 ## files (skipped when absent): a recorded pilot against itself and against
 ## its law.
 
@@ -574,7 +575,7 @@ block example_pilot:
       inc seen
     doAssert seen == 1001 and hi - lo < 1, $lo & " .. " & $hi
 
-# --------------------------------------------------------------- 15.9 --
+# ------------------------------------- polarity, window, judged part, THD --
 
 proc tracked(c: Chirp, dtMs: float64, n: int, x: seq[float64],
     params = TrackParams()): (SweepTrack, SweepReference) =
@@ -613,7 +614,7 @@ block window_minimum_time:
     let C = r.cyclesAt(m)
     doAssert C == expectedCycles(f), $t.timeMs[m] & ": " & $C
     # (Just past the start taper, over 4 periods, a false H2 of 1.3e-4 of A1,
-    # as in 15.8; over 6 and 8 periods at most 5e-7.)
+    # as over 4 periods everywhere; over 6 and 8 periods at most 5e-7.)
     doAssert abs(t.phaseDeg[m] + 75) < 0.002 and abs(t.amplitude[0][m] - 2) < 2e-4 and
       t.amplitude[1][m] < 2 * 2e-4, $t.timeMs[m]
     if C >= 6: doAssert t.amplitude[1][m] < 2 * 1e-5 and abs(t.phaseDeg[m] + 75) < 1e-5
@@ -689,14 +690,17 @@ block flat_part:
           var first = 0
           while not r.isMeasured(first): inc first
           doAssert e.flatStartMs <= float64(first) * 10, $e
-  # A sloped plateau (the amplitude rising by 30 % over the sweep) is still
-  # flat, between tapers of 300 ms; one rising faster than 2 % of its
-  # tapers' fastest rise has no flat start in its first half: there the
-  # judged part runs from the sweep's start (it fails visibly, rather than
-  # leaving most of the sweep out).
-  for (taperMs, found) in [(300.0, true), (1000.0, false)]:
+  # A sloped plateau is still flat: the amplitude rising or falling by 30 %
+  # of its mean over the sweep, or rising by 60 %, between tapers of 0.3, 1
+  # and 2 s.
+  # Where the slope passes 2 % of the tapers' fastest rise (a 1 s taper and
+  # 30 %), the tapers' ends are found with looser criteria, not left in
+  # the judged part (a falling plateau's 1 s end taper, judged, failed a
+  # healthy signal's phase and THD limits with 1 % noise).
+  for (taperMs, tilt) in [(300.0, 0.3), (1000.0, 0.3), (1000.0, -0.3), (300.0, 0.6),
+      (1000.0, 0.6), (2000.0, 0.3)]:
     let c = Chirp(law: clLinear, f0: 8, f1: 80, lengthMs: 6000, startMs: taperMs,
-      endMs: taperMs, tilt: 0.3)
+      endMs: taperMs, tilt: tilt)
     let n = 7001
     let tp = initSweepTrackPlan(float64, TrackParams(), 1, n)
     var ws = initWorkspace()
@@ -704,12 +708,26 @@ block flat_part:
     var r = initSweepReference(tp)
     tp.referenceInto(chirp(c, 1, n), r, ws)
     let e = r.extent
+    let a = c.startMs
     let b = c.lengthMs - c.endMs
-    # (The end within 1.4 periods with the 1 s taper: the slope offsets the
-    # start of its fall.)
-    doAssert abs(e.flatEndMs - b) <= (if found: 1.0 else: 2.0) * 1000 / c.freqAt(b), $e
-    if found: doAssert abs(e.flatStartMs - taperMs) <= 1000 / c.freqAt(taperMs), $e
-    else: doAssert e.flatStartMs == e.startMs, $e
+    # (Within 3 periods or 4 % of the taper: the slope moves the tapers'
+    # ends; measured 59 ms, 3 % past the start of a 2 s end taper.)
+    doAssert abs(e.flatStartMs - a) <= max(3 * 1000 / c.freqAt(a), 0.04 * taperMs) and
+      abs(e.flatEndMs - b) <= max(3 * 1000 / c.freqAt(b), 0.04 * taperMs),
+      $taperMs & " " & $tilt & ": " & $e
+  # An amplitude that rises all through the sweep's first half never
+  # settles there: the judged part runs from the sweep's start.
+  block:
+    let c = Chirp(law: clLinear, f0: 8, f1: 80, lengthMs: 6000, ramp: rmLinear,
+      startMs: 3000, endMs: 300)
+    let n = 7001
+    let tp = initSweepTrackPlan(float64, TrackParams(), 1, n)
+    var ws = initWorkspace()
+    ws.reserve(tp.workspaceSize)
+    var r = initSweepReference(tp)
+    tp.referenceInto(chirp(c, 1, n), r, ws)
+    let e = r.extent
+    doAssert e.flatStartMs == e.startMs or abs(e.flatStartMs - 3000) <= 1000 / c.freqAt(3000), $e
   # No sweep, no extent.
   let tp = initSweepTrackPlan(float64, TrackParams(), 1, 1000)
   var ws = initWorkspace()
@@ -783,6 +801,46 @@ block thd_harmonic_count:
     floorPct[i] /= float64(cnt)
   doAssert abs(floorPct[0] - 0.29) < 0.03 and
     abs(floorPct[1] / floorPct[0] / sqrt(15 / 4) - 1) < 0.1, $floorPct
+
+block phase_steps_back:
+  # A reference whose phase steps back (a 300 ms dropout to noise at -50 dB,
+  # two sweeps beating, 30 % noise): the windows found from ψ do not follow
+  # the points in order there, and are made to (a scan cannot go back; it
+  # ran past the end of the rows without that). The track ends, and away
+  # from the dropout it is the clean one's.
+  let n = 7001
+  var rng = initRand(3)
+  let clean = chirp(up, 1, n)
+  var dropout = clean
+  for j in 3000 ..< 3300: dropout[j] = 3e-3 * rng.gauss()
+  var beating = clean
+  let slow = Chirp(law: clLinear, f0: 4.8, f1: 48, lengthMs: 6000, startMs: 300, endMs: 300)
+  let other = chirp(slow, 1, n)
+  for j in 3000 ..< 4000:
+    beating[j] += 1.5 * sin(PI * float64(j - 3000) / 1000) ^ 2 * other[j]
+  let noisy = chirp(up, 1, n, noise = 0.3, seed = 5)
+  for minW in [0.0, 100.0]:
+    for (name, refx, lo, hi) in [("dropout", dropout, 2800.0, 3500.0),
+        ("beating", beating, 2800.0, 4200.0), ("noise", noisy, 0.0, 0.0)]:
+      var x = refx
+      for v in x.mitems: v *= 4e4 # the signal is the reference: phase 0
+      let tp = initSweepTrackPlan(float64, TrackParams(minWindowMs: minW), 1, n)
+      var ws = initWorkspace()
+      ws.reserve(tp.workspaceSize)
+      var r = initSweepReference(tp)
+      var own = initSweepTrack(tp)
+      tp.referenceInto(refx, r, ws)
+      tp.trackInto(x, r, own, ws)
+      var seen = 0
+      for m in 0 ..< own.len:
+        let tm = own.timeMs[m]
+        doAssert own.phaseDeg[m].isNaN or abs(own.phaseDeg[m]) <= 180
+        if name == "noise" or own.phaseDeg[m].isNaN or tm < 700 or tm > 5300 or
+            (tm > lo and tm < hi): continue
+        doAssert abs(own.phaseDeg[m]) < 1e-2 and abs(own.amplitude[0][m] / 4e4 /
+          up.weightAt(tm) - 1) < 1e-3, name & " " & $tm & ": " & $own.phaseDeg[m]
+        inc seen
+      doAssert name == "noise" or seen > 300, name & ": " & $seen
 
 block new_parameters_refused:
   for w in [-1.0, NaN, Inf, 2e6]:

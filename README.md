@@ -30,8 +30,9 @@ with no hidden allocation and no hidden threads.
 - **Vibrator QC:** a unit's reference, ground force, mass and baseplate signals against
   sweep time (phase, fundamental and peak force, frequency, each harmonic, THD), their
   correlation with the reference (envelope, spectrum, phase), comparisons, a time-frequency
-  picture, the ground force from mass and baseplate, and optional limits with a summary per
-  unit.
+  picture, the ground force from mass and baseplate, a polarity per signal (given or decided
+  from the phase), and optional limits with a summary per unit, judged over the sweep without
+  its tapers.
 - **Survey QC:** receiver patches of an X survey described as a template or a distance box,
   X records generated from either (roll, shift, static edges), automatic bin grids,
   pre-plot and actual fold maps (offset classes, azimuth sectors) and their difference,

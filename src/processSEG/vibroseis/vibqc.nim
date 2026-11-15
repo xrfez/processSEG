@@ -53,6 +53,9 @@
 ## second pass. The polarity used is reported: `UnitSignature.reversed`,
 ## `TrackSummary.reversed`. Automatic corrects wiring; a ground force at
 ## +100° by a fault is reversed to −80° too, and still fails its phase limit.
+## The decision is doubtful where the mean phase is near ±90° (after it,
+## `TrackSummary.meanPhaseDeg` near ±90°): it can go either way from one
+## sweep to the next there. Once a system's polarity is known, give it.
 ##
 ## **Units.** The rows are taken in the unit the caller says they are in
 ## (`VibUnit.units`, `auRecorded` by default; for calibrated rows the unit
@@ -169,6 +172,12 @@ type
   TrackSummary* = object
     ## One signal over its measured points in the judged part of the sweep.
     points*: int                               ## Points with a fundamental.
+    phasePoints*, thdPoints*: int
+      ## Of those, the points with a phase (a fundamental above 0) and with
+      ## a THD (every harmonic it sums measured, by default: not where one
+      ## is past the harmonic limit). A limit is judged over these alone: one
+      ## whose count is 0 was not judged, which `failed` cannot tell from a
+      ## pass.
     meanPhaseDeg*: float64
       ## The phase's mean, circular and weighted by the fundamental (what
       ## `poAutomatic` decides from); NaN without points.
@@ -196,7 +205,10 @@ type
     reversed*: set[VibSignal]
       ## The signals reversed before they were measured (given or automatic;
       ## `vsWeightedSum` when both M and B were).
-    weightedSum*: seq[T] ## The generated ground force's samples (empty without one).
+    weightedSum*: seq[T]
+      ## The generated ground force's samples (empty without one), from M and
+      ## B in their polarity, negated when they were reversed automatically:
+      ## in its polarity already.
     planSamples: int # the samples of the plan `reference` and `tracks` are sized for
 
 const
@@ -366,6 +378,8 @@ func summarize*(track: SweepTrack, limits = VibLimits()): TrackSummary {.raises:
   result.meanForce = (if result.points > 0: sumForce / float64(result.points) else: NaN)
   result.meanAbsPhaseDeg = (if nPhase > 0: sumPhase / float64(nPhase) else: NaN)
   result.meanThdPct = (if nThd > 0: sumThd / float64(nThd) else: NaN)
+  result.phasePoints = nPhase
+  result.thdPoints = nThd
   for k in pointLimits:
     if result.exceeded[k] > 0: result.failed.incl k
   if result.meanAbsPhaseDeg > limits.meanPhaseDeg: result.failed.incl lkMeanPhase

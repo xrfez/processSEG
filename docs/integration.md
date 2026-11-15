@@ -418,7 +418,7 @@ keeps the assignment with the file). processSEG fills each plot's buffers, value
 | Comparison against frequency | `cp.compareInto(a, b, ratioDb, phaseDeg, ws)` | `cp.binHz(k)` |
 | Limits (optional) | `UnitSignature.flags[s][point]` (the set of limits a point exceeds), `.summaries[s]` (pass or fail per unit); `limitFlagsInto`, `summarize` for any track | `track.timeMs` |
 | Judged part (every plot against time) | `UnitSignature.judged[point]`: false outside the part limits and summaries judge (the tapers by default): leave those points out or draw them dimmed; `judgedInto(track, limits, dst)` for a track alone | `track.timeMs` |
-| Polarity used | `UnitSignature.reversed` (the signals reversed, given or automatic), `.summaries[s].reversed`: reverse the viewer's row copies of those signals before the per-plot calls (`reversePolarity` on the row) | |
+| Polarity used | `UnitSignature.reversed` (the signals reversed, given or automatic), `.summaries[s].reversed`: reverse the viewer's row copies of those signals before the per-plot calls (`reversePolarity` on the row); `weightedSum` is in its polarity already | |
 
 - **Per record**, `tp.analyzeVibrators(samples, meta, units, limits, results, ws)` does
   every unit: its reference prepared once, each signal and the generated force tracked
@@ -449,7 +449,10 @@ keeps the assignment with the file). processSEG fills each plot's buffers, value
 - **Judged part:** limits and summaries run over the sweep without a part at its start and
   end: the tapers by default, found from the pilot's envelope (`SweepTrack.extent`), or
   `VibLimits.skipStartMs`, `skipEndMs` in ms from the sweep's ends, within `fromMs .. toMs`.
-  The measures there are returned and flagged per point (`UnitSignature.judged`).
+  The measures there are returned and flagged per point (`UnitSignature.judged`). A
+  summary counts the judged points with a phase and with a THD (`phasePoints`,
+  `thdPoints`): a limit judges those alone, so show a count of 0 (a dead channel's phase,
+  THD above 40 Hz at 2 ms) as "not judged", not as a pass.
 - **Conventions** (the guide states them): phase is the signal's minus the reference's,
   positive when the signal leads; THD over harmonics 2-5 relative to the fundamental, each
   of them (`thFixed`: NaN where the 5th passes 0.8 of Nyquist, above 80 Hz at 1 ms, 40 Hz

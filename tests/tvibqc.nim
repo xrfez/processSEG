@@ -1,11 +1,11 @@
-## Vibrator QC of a record (task 15.6): the ground force from mass and
+## Vibrator QC of a record: the ground force from mass and
 ## baseplate in newtons (masses in kg and lb); a synthetic wireline record
 ## of three units, two in the default order and one assigned out of order,
 ## with its channels in volts and the roles' sensitivities; the measures per
 ## role, their units, the generated force against the recorded one; limits
 ## flagging exactly the points a direct check finds; failed rows; refusals;
-## no allocation on a second call. Task 15.9, on records generated apart
-## from the library (`utils/chirps`): polarity per role (given and
+## no allocation on a second call. On records generated apart from the
+## library (`utils/chirps`): polarity per role (given and
 ## automatic, M and B as a pair), the judged part of the sweep, rows of any
 ## status calibrated to volts, M and B in different units.
 
@@ -320,7 +320,7 @@ block no_allocation_on_a_second_call:
     tp.analyzeVibrators(data, meta, units, VibLimits(phaseDeg: 3), results, ws)
   doAssert count == 0, $count & " allocations"
 
-# --------------------------------------------------------------- 15.9 --
+# ------------------------------------- polarity, window, judged part, THD --
 
 # A record generated apart from the library: the pilot cos φ (8-80 Hz, 6 s,
 # cos² tapers of 300 ms, 1 ms, a 1 s listen time), and per unit a ground
@@ -328,9 +328,20 @@ block no_allocation_on_a_second_call:
 let chirp15 = Chirp(law: clLinear, f0: 8, f1: 80, lengthMs: 6000, startMs: 300, endMs: 300)
 let n15 = 7001
 
+var keptKeys: seq[ref seq[TraceKeys]]
+var keptCounts: seq[ref seq[int]]
+
 proc record(rows: openArray[seq[float64]], status = tsAuxiliary): (Tensor[float64], ChunkMeta) =
-  var keys = newSeq[TraceKeys](rows.len)
-  var counts = newSeq[int](rows.len)
+  # `rowsOf` is a view of the keys and counts: they must outlive the meta
+  # (locals here were freed on return, and the meta read freed memory).
+  let kr = new seq[TraceKeys]
+  let cr = new seq[int]
+  kr[] = newSeq[TraceKeys](rows.len)
+  cr[] = newSeq[int](rows.len)
+  keptKeys.add kr
+  keptCounts.add cr
+  template keys: untyped = kr[]
+  template counts: untyped = cr[]
   var data = zeros[float64](rows.len, n15)
   for r in 0 ..< rows.len:
     keys[r] = initTraceKeys()
@@ -562,6 +573,28 @@ block judged_part:
     abs(s.meanThdPct - sumT / float64(nThd)) < 1e-12 and s.maxThdPct == maxT and
     s.maxPeak == maxPk and abs(s.meanPhaseDeg - radToDeg(arctan2(im, re))) < 1e-9
   doAssert abs(s.meanPhaseDeg - 2) < 0.05 and abs(s.meanThdPct - 2) < 0.01
+  doAssert s.phasePoints == pts and s.thdPoints == nThd and nThd == pts
+  # Where THD is not measured over part of the judged sweep (its 5th
+  # harmonic past the limit: above 50 Hz here), its limit judges the rest
+  # only: the summary says over how many points.
+  block:
+    let tpLow = initSweepTrackPlan(float64, TrackParams(maxHarmonicFraction: 0.5), 1, n15)
+    var wsLow = initWorkspace()
+    wsLow.reserve(vibratorWorkspace(tpLow))
+    var low: seq[UnitSignature[float64]]
+    tpLow.analyzeVibrators(data, meta, [unit], VibLimits(thdPct: 1), low, wsLow)
+    let sl = low[0].summaries[vsGroundForce]
+    var withThd = 0
+    for m in 0 ..< tpLow.points:
+      if low[0].judged[m] and not low[0].tracks[vsGroundForce].thdPct[m].isNaN: inc withThd
+    doAssert sl.thdPoints == withThd and withThd > 100 and withThd < sl.points - 100 and
+      sl.phasePoints == sl.points and lkThd in sl.failed, $sl
+    # A dead ground force: measured (amplitude 0), no phase, no THD.
+    let (dd, md) = record([tone(1, 0), newSeq[float64](n15)])
+    tp15.analyzeVibrators(dd, md, [unit], VibLimits(phaseDeg: 5, thdPct: 5), results, ws15)
+    let sd = results[0].summaries[vsGroundForce]
+    doAssert sd.points > 500 and sd.phasePoints == 0 and sd.thdPoints == 0 and
+      sd.failed == {}, $sd
   # Lengths in ms from the sweep's ends, and fromMs/toMs within them.
   let e = t.extent
   for (l, a, b) in [(VibLimits(skipStartMs: 500, skipEndMs: 1000), e.startMs + 500, e.endMs - 1000),

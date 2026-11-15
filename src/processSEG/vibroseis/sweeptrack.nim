@@ -42,14 +42,21 @@
 ## The start taper ends at the first sample, above half the peak, after
 ## which the average rises over 10 ms by no more than 2e-4 of itself or 2 %
 ## of its fastest rise before (so a plateau with a slope is flat); the end
-## taper starts at the last such sample, mirrored. Measured on cos², linear
-## and Blackman tapers of 0.3 and 1 s (8-80 Hz, 0.5-2 ms): within 0.75 of
-## a period of the reference of each taper's end, 1.5 with 1 % noise; an
-## untapered sweep is flat from 0.8 of a period after its start. Each taper
-## is looked for in its half of the sweep: where the envelope never settles
-## there (an amplitude changing by more than 2 % of the tapers' steepest
-## rise all along), that end of the sweep. `vibqc` judges limits and
-## summaries over this part by default.
+## taper starts at the last such sample, mirrored. Each taper is looked for
+## in its half of the sweep; where no sample there passes 2 % (a plateau
+## whose slope is steeper than that: 30 % over 6 s beside a 1 s taper),
+## 10 % and then 30 % of the fastest rise are tried, and where none does
+## (an amplitude rising all through that half), that end of the sweep.
+## Measured on cos², linear and Blackman tapers of 0.1 to 2 s (8-80 Hz,
+## 0.5-2 ms): within 0.9 of a period of the reference of each taper's end
+## (1.3 at the end of a 2 s taper); with 1 % noise on the reference,
+## within 1.2 periods of 0.3 s tapers, and up to 110 ms into a 1 s end
+## taper (where it is at 0.97); a plateau rising or falling by 30 % of
+## its mean over the sweep (rising by 60 %) within 3 periods or 3 % of the
+## taper; an untapered sweep is flat from 0.8 of a period after its start.
+## A plateau that starts below half its peak starts the flat part where it
+## reaches half. `vibqc` judges limits and summaries over this part by
+## default.
 ##
 ## **Tracking.** At point `m` (sample `c = m·step`), harmonic `k` (1: the
 ## fundamental) has the complex amplitude
@@ -182,7 +189,8 @@ type
     minWindowMs*: float64 = 100
       ## ... and at least this long: where `cycles` periods are shorter, the
       ## window is the smallest even number of periods that reaches it (0:
-      ## `cycles` everywhere; 0 .. 1e6).
+      ## `cycles` everywhere; 0 .. 1e6). (From `cycles = 3` that can be 4,
+      ## which lets in more of a subharmonic at f/2 than 3 or 5: 1/6.)
     stepMs*: float64 = 10 ## Points every `stepMs` (rounded to whole samples, at least one).
     minReferenceDb*: float64 = -40
       ## The sweep is where the reference's envelope is within this of its peak (< 0).
@@ -246,7 +254,7 @@ const
   sumCount = 10       # running sums per harmonic: 5 weights, real and imaginary
   flatLookMs = 10.0   # the flat part: the envelope, averaged over a period, rises (falls)
   flatRise = 2e-4     # by at most this fraction of itself over the next (previous) flatLookMs,
-  flatSlowdown = 0.02 # or of its fastest rise (fall) before
+  flatSlowdowns = [0.02, 0.1, 0.3] # or of its fastest rise (fall) before: the first that finds one
   maxMinWindowMs = 1e6
 
 proc badTrack(msg: string) {.noinline, noreturn.} =
@@ -450,31 +458,36 @@ proc flatPart(e: ptr UncheckedArray[float64], first, last, look: int,
   ## The flat part of the sweep `first .. last` from its envelope averaged
   ## over a period, `e[j − first]`: from the first sample above `floor`
   ## after which it rises over `look` samples by no more than `flatRise` of
-  ## itself or `flatSlowdown` of the fastest rise before (a plateau with a
-  ## slope is flat), to the last before which it fell by no more. A taper
-  ## is looked for in its half of the sweep: without one there (an envelope
-  ## that keeps rising), that end of the sweep.
+  ## itself or a fraction (`flatSlowdowns`, the first that finds one) of the
+  ## fastest rise before (a plateau with a slope is flat), to the last
+  ## before which it fell by no more. A taper is looked for in its half of
+  ## the sweep: without one there (an envelope that keeps rising), that end
+  ## of the sweep.
   template at(j: int): float64 = e[j - first]
   let mid = (first + last) div 2
   result = (first, last)
-  var fastest = 0.0
-  for j in first .. mid:
-    var top = at(j)
-    for k in j + 1 .. min(last, j + look): top = max(top, at(k))
-    let rise = top - at(j)
-    fastest = max(fastest, rise)
-    if at(j) >= floor and rise <= max(flatRise * at(j), flatSlowdown * fastest):
-      result[0] = j
-      break
-  fastest = 0.0
-  for j in countdown(last, mid):
-    var top = at(j)
-    for k in max(first, j - look) .. j - 1: top = max(top, at(k))
-    let fall = top - at(j)
-    fastest = max(fastest, fall)
-    if at(j) >= floor and fall <= max(flatRise * at(j), flatSlowdown * fastest):
-      result[1] = j
-      break
+  block start:
+    for slowdown in flatSlowdowns:
+      var fastest = 0.0
+      for j in first .. mid:
+        var top = at(j)
+        for k in j + 1 .. min(last, j + look): top = max(top, at(k))
+        let rise = top - at(j)
+        fastest = max(fastest, rise)
+        if at(j) >= floor and rise <= max(flatRise * at(j), slowdown * fastest):
+          result[0] = j
+          break start
+  block finish:
+    for slowdown in flatSlowdowns:
+      var fastest = 0.0
+      for j in countdown(last, mid):
+        var top = at(j)
+        for k in max(first, j - look) .. j - 1: top = max(top, at(k))
+        let fall = top - at(j)
+        fastest = max(fastest, fall)
+        if at(j) >= floor and fall <= max(flatRise * at(j), slowdown * fastest):
+          result[1] = j
+          break finish
 
 proc referenceInto*[T: SampleType](tp: SweepTrackPlan[T], x: openArray[T],
     dst: var SweepReference, ws: var Workspace) {.raises: [].} =

@@ -66,11 +66,17 @@ system"), and an accelerometer can be wired either way. Each role has a polarity
 The polarity used is reported: `UnitSignature.reversed` (the signals reversed, given or
 decided; `vsWeightedSum` with M and B) and `TrackSummary.reversed`. A ground force at +100°
 is "reversed" to −80° too: automatic corrects wiring, and a phase that far off still fails
-its limits, so check the summary. For a track alone, `reversePolarity(track)` turns its
-phases by 180° (the other measures of a signal times −1 are its own) and
-`automaticPolarity(track, limits)` decides. The per-plot calls (correlation, lag spectrum,
-comparison, spectrogram) take rows: reverse the viewer's copies of the rows in
-`UnitSignature.reversed` (`reversePolarity` on the row) before them.
+its limits, so check the summary. The decision is only as sure as the mean phase is far from
+±90°: after it, `TrackSummary.meanPhaseDeg` is within ±90°, and near ±90° (a unit whose
+phase drifts there, or reverses part way through the sweep) it can go either way from one
+sweep to the next. Show it as doubtful there; and once a system's polarity is known, give it
+(`poAsRecorded` or `poReversed`) rather than deciding it per record. For a track alone,
+`reversePolarity(track)` turns its phases by 180° (the other measures of a signal times −1
+are its own) and `automaticPolarity(track, limits)` decides. The per-plot calls
+(correlation, lag spectrum, comparison, spectrogram) take rows: reverse the viewer's copies
+of the rows in `UnitSignature.reversed` (`reversePolarity` on the row) before them.
+`UnitSignature.weightedSum` is no row: it is made from M and B in their polarity (and
+negated when they were reversed automatically), so it is used as it is.
 
 ```nim
 import std/math
@@ -354,14 +360,21 @@ taper's last 100 ms reach 2-4° of phase and 8 % more THD while the flat part st
 0.3°). By default those parts are the **tapers**, found from the reference's envelope
 (`SweepReference.extent`, `SweepTrack.extent`: where the envelope, averaged over a period,
 stops rising and starts falling; within a period of a cos², linear or Blackman taper's end
-in the tests, and an untapered sweep is judged whole). `skipStartMs` and `skipEndMs` give
+in the tests, within 3 periods beside a plateau that rises or falls by 30 % over the sweep,
+and an untapered sweep is judged whole). `skipStartMs` and `skipEndMs` give
 them in ms instead, from the sweep's first and last sample (0: none), and `fromMs`, `toMs`
 bound them further in record time. The measures outside are still returned: per point,
 `UnitSignature.judged[m]` (or `judgedInto(track, limits, dst)` for a track alone) says
 whether it is judged, so a plot can leave the others out or draw them dimmed. Where the
-envelope keeps rising or falling (an amplitude that changes by more than 2 % of the tapers'
-steepest rise, all along), no taper is found on that side and the judged part runs to that
-end of the sweep: give the lengths in ms.
+envelope keeps rising or falling all through a half of the sweep, no taper is found on that
+side and the judged part runs to that end of the sweep: check `SweepTrack.extent` against
+the sweep's design, and give the lengths in ms when they differ.
+
+A summary's `points` are the judged points with a fundamental; `phasePoints` and
+`thdPoints` are those with a phase and with a THD. A limit judges those alone: THD over
+harmonics 2-5 is not measured where the 5th passes the harmonic limit (above 40 Hz at 2 ms),
+and a dead channel has no phase, so a THD or phase limit there is neither passed nor failed.
+Show a count of 0, or one well under `points`, beside the pass or fail.
 
 ## Conventions, and what is still to confirm
 
@@ -369,17 +382,18 @@ Vibrator QC systems differ in some definitions; processSEG takes these, and stat
 
 - **Phase:** signal minus reference, positive when the signal leads.
 - **Distortion:** THD over harmonics 2 to 5 (`harmonics`) relative to the fundamental, each
-  of them (`thFixed`), as a controller's report gives it; `thdTotal` relative to the
-  fundamental and harmonics together; `thAllThatFit` for those below the harmonic limit, as
-  far as the band allows. At most 16 harmonics are tracked in this version (`harmonics` ≤
-  16: the lanes of the running sums). THD's noise floor grows with the harmonics it counts,
-  as their square root: 1 % white noise on a clean fundamental reads 0.29 % over harmonics
-  2-5 and 0.58 % over 2-16 (0.5 ms, 8-40 Hz); so a THD over all that fit is not comparable
-  along a sweep where the count falls. Noise and subharmonics are not counted as such, but
-  the window lets through what lies within its main lobe of a harmonic: noise in the
-  harmonics' bands, and a subharmonic at f/2 or 3f/2 at 1/6 of its level into the
-  fundamental and the 2nd harmonic over 4 periods (0.04 over 5, nothing over 6 or any even
-  count).
+  of them (`thFixed`, so that THD has one meaning along the sweep; whether a given
+  controller's report counts the same harmonics is to be checked against it); `thdTotal`
+  relative to the fundamental and harmonics together; `thAllThatFit` for those below the
+  harmonic limit, as far as the band allows. At most 16 harmonics are tracked in this
+  version (`harmonics` ≤ 16: the lanes of the running sums). THD's noise floor grows with
+  the harmonics it counts, as their square root: 1 % white noise on a clean fundamental
+  reads 0.29 % over harmonics 2-5 and 0.58 % over 2-16 (0.5 ms, 8-40 Hz); so a THD over all
+  that fit is not comparable along a sweep where the count falls. Noise and subharmonics are
+  not counted as such, but the window lets through what lies within its main lobe of a
+  harmonic: noise in the harmonics' bands, and a subharmonic at f/2 or 3f/2 at 1/6 of its
+  level into the fundamental and the 2nd harmonic over 4 periods (0.04 over 5, nothing over
+  an even count from 6).
 - **Reference:** a clean sweep (the pilot, as recorded or generated). Harmonics of its own
   bend its phase: a 5 % 2nd harmonic in the reference reads as a false 2nd harmonic of about
   3 % in every signal tracked against it. Compare two signals with `compareTracksInto`, not
