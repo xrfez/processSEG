@@ -597,6 +597,18 @@ without its content below the band.
 | `compareTracksInto(a, b, phaseDeg, ratioDb)` | Signal `a` against `b` per point: the fundamentals' phase difference (wrapped) and ratio in dB. |
 | `wrapDeg(deg)` | An angle wrapped to (−180, 180]. |
 
+## vibroseis/crosscorrelate: a signal against its reference
+
+| Proc | What |
+|---|---|
+| `CorrelationNorm` (`cnCoefficient`, `cnReference`, `cnNone`) | Divided by `√(Σs²·Σr²)` (1 for the reference's shape), by `Σr²` (the reference scaled by a peaks at a), or not. |
+| `CrossCorrelationPlan[T]`; `initCrossCorrelationPlan(T, maxLagMs, dtMs, samples, taperFraction = 0.1, nfft = 0)` | Correlation of rows of up to `samples` samples over the lags `−L .. L` (`L = maxLagMs / dtMs`), by FFT without wrap; the lag window's spectrum on `nfft` points (0: the next power of two of `2L + 1`), Tukey-tapered over `taperFraction` at each end. `ValueError` for a bad `dtMs`, `samples < 2`, a lag under one sample or past the samples, a bad taper or `nfft`. |
+| `cp.samples`, `cp.maxLag`, `cp.lags`, `cp.lagMs(i)`, `cp.dtMs`, `cp.nfft`, `cp.bins`, `cp.binHz(k)`, `cp.workspaceSize` | Its axes: `lags[i]` is lag `i − L` (`lagMs`), a delay τ peaks at +τ. |
+| `cp.crossCorrelateInto(x, reference, lags, [envelope,] ws, norm = cnCoefficient)` | `Σ x[j + m]·reference[j]` at the lags, and the envelope (the modulus of the whole correlation's analytic signal). NaN for a row without energy. |
+| `cp.lagSpectrumInto(lags, amp, phaseDeg, ws)` | The tapered lag window's amplitude and phase (degrees, from lag zero): the signal's phase relative to the reference against frequency (a delay τ: −360·f·τ). |
+| `cp.compareInto(a, b, ratioDb, phaseDeg, ws)` | `a` against `b` per bin: `10·log10(Ŝ_aa/Ŝ_bb)` dB and `arg Ŝ_ab` degrees, from the lag-windowed spectra. |
+
+
 ## continuous/slice: continuous recordings into records
 
 | Proc | What |

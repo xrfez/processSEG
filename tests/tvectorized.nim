@@ -71,7 +71,9 @@ const
     # with -fno-math-errno); the tracking's running sums, every harmonic in
     # one lane group (vibroseis/sweeptrack: its phasor powers are serial).
     ("rotateBins", "__vecsignature"), ("envelopeKernel", "ZfftZhilbert"),
-    ("addSample", "__vecsignature")]
+    ("addSample", "__vecsignature"),
+    # A signal's spectrum times the reference's conjugate (crosscorrelate).
+    ("crossKernel", "__vecsignature")]
 
 const mostlyPacked = ["sosKernel"]
   # Kernels whose loop must be packed as a whole: over all their instances,

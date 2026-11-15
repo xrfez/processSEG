@@ -37,7 +37,30 @@ proc trackOnce(T: typedesc, harmonics: int) =
   else: vec_track_f64(tp, x, r, t, ws)
   echo t.phaseDeg[20]
 
+proc vec_cross_f32(cp: CrossCorrelationPlan[float32], x, r: openArray[float32],
+    lags: var openArray[float32], ws: var Workspace) {.exportc: "vec_cross_f32", noinline.} =
+  cp.crossCorrelateInto(x, r, lags, ws)
+
+proc vec_cross_f64(cp: CrossCorrelationPlan[float64], x, r: openArray[float64],
+    lags: var openArray[float64], ws: var Workspace) {.exportc: "vec_cross_f64", noinline.} =
+  cp.crossCorrelateInto(x, r, lags, ws)
+
+proc crossOnce(T: typedesc) =
+  # crossKernel: x·conj(y), bin by bin.
+  let cp = initCrossCorrelationPlan(T, 20, 2, 200)
+  var ws = initWorkspace()
+  ws.reserve(cp.workspaceSize)
+  var x, r = newSeq[T](200)
+  x[10] = 1
+  r[12] = 1
+  var lags = newSeq[T](cp.lags)
+  when T is float32: vec_cross_f32(cp, x, r, lags, ws)
+  else: vec_cross_f64(cp, x, r, lags, ws)
+  echo lags[3]
+
 proc signatureOnce*() =
+  crossOnce(float32)
+  crossOnce(float64)
   # scan (sweeptrack), 8 and 16 lanes, both sample types.
   trackOnce(float32, 5)
   trackOnce(float32, 12)
