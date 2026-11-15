@@ -84,6 +84,8 @@ proc oneByOne[T](flow: Pipeline, x: var Tensor[T], meta: ChunkMeta) =
       let g = op.gainCurve
       let p = initGainCurvePlan(T, g.curve, dt, n, g.tMinMs, g.tMaxMs)
       p.applyGainCurve(x, meta)
+    of opCalibrate: discard initCalibrationPlan(op.calibration).calibrate(x, meta)
+    of opUncalibrate: discard initCalibrationPlan(op.calibration).uncalibrate(x, meta)
 
 proc maxDiff[T](a, b: Tensor[T]): float64 =
   for r in 0..<a.shape[0]:

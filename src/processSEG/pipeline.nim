@@ -41,7 +41,16 @@
 ## **Rows.** As everywhere: every op processes the live rows, each up to its
 ## live length (`ChunkMeta`); dead, auxiliary and failed rows and the
 ## padding past a trace's end are left as they are (the `src → dst` form
-## copies them unchanged).
+## copies them unchanged). The calibration ops are the exception: they also
+## convert dead rows, and auxiliary rows to volts (`core/calibrate`).
+##
+## **Calibration.** `calibrateOp(cal)` converts recorded values (counts) to
+## volts or physical units per row (`core/calibrate`); the file's own
+## factors come through the meta (`scales`). It must come before every op
+## that changes amplitudes (scale, gain, clip, AGC, normalization, gain
+## curve), so that they, and statistics on the output, see physical values:
+## `compile` refuses it after one, and a second calibration op.
+## `plan.amplitudeUnits` says how to label the output.
 ##
 ## **Order and cache.** `apply` runs the ops on tiles of rows (about 256 KB
 ## of samples, a multiple of 8 rows): every op runs on one tile while it is
@@ -74,7 +83,7 @@
 
 import std/[atomics, math]
 import parseSEG
-import core/[basic, mute, rows, types, workspace]
+import core/[basic, calibrate, mute, rows, types, workspace]
 import fft/plan
 import filter/[apply, design, iir]
 import gain/[curves, gain]
@@ -95,6 +104,15 @@ type
     opAgc        ## automatic gain control (`agcOp`)
     opNormalize  ## normalization per trace or panel (`normalizeOp`)
     opGainCurve  ## a time-variant gain (`gainCurveOp`)
+    opCalibrate  ## recorded values to volts or physical units (`calibrateOp`)
+    opUncalibrate ## the inverse, back to recorded values (`uncalibrateOp`)
+
+  PlanAmplitude* = enum
+    ## What a plan's output amplitudes are (`amplitudeUnits`), for input in
+    ## recorded values.
+    paRecorded = "recorded"     ## As recorded: no calibration op (or one undone).
+    paCalibrated = "calibrated" ## In the per-row units of the calibration (`resolveInto`).
+    paRelative = "relative"     ## Calibrated, then changed by a gain, AGC, normalization, scale or clip.
 
   ClipParams* = object
     ## The limits of an `opClip`.
@@ -153,6 +171,7 @@ type
     of opAgc: agcParams: AgcParams
     of opNormalize: normParams: NormalizeParams
     of opGainCurve: curveParams: GainCurveParams
+    of opCalibrate, opUncalibrate: calibrationParams: Calibration
 
   Pipeline* = object
     ## An ordered list of `Op`s; see the module documentation.
@@ -160,7 +179,8 @@ type
 
   StepKind = enum
     stDemean, stDetrend, stScale, stClip, stPolarity, stMuteTop, stMuteBottom,
-    stFilter, stIir, stAgc, stNormTrace, stNormPanel, stGainCurve
+    stFilter, stIir, stAgc, stNormTrace, stNormPanel, stGainCurve, stCalibrate,
+    stUncalibrate
 
   Step[T: SampleType] = object
     case kind: StepKind
@@ -175,6 +195,7 @@ type
     of stAgc: agc: AgcPlan
     of stNormTrace, stNormPanel: norm: NormalizePlan
     of stGainCurve: curve: GainCurvePlan[T]
+    of stCalibrate, stUncalibrate: calib: CalibrationPlan
 
   PipelinePlan*[T: SampleType] = object
     ## A compiled `Pipeline` for one `dtMs` and trace length; see the module
@@ -187,6 +208,7 @@ type
     margin: int
     ws: WorkspaceSize
     generation: uint64
+    units: PlanAmplitude
 
 var lastGeneration: Atomic[uint64] # numbers plans; see "Generations"
 
@@ -228,6 +250,8 @@ accessors(iir, iirParams, IirParams, {opIir}, "IIR filter")
 accessors(agc, agcParams, AgcParams, {opAgc}, "AGC")
 accessors(norm, normParams, NormalizeParams, {opNormalize}, "normalization")
 accessors(gainCurve, curveParams, GainCurveParams, {opGainCurve}, "gain curve")
+accessors(calibration, calibrationParams, Calibration, {opCalibrate, opUncalibrate},
+  "calibration")
 
 # ----------------------------------------------------------------- builders --
 
@@ -296,6 +320,18 @@ func gainCurveOp*(curve: GainCurve, tMinMs = 0.0, tMaxMs = NaN): Op =
   ## tMaxMs` (NaN: to the end of the record).
   Op(tag: opGainCurve, curveParams: GainCurveParams(curve: curve,
     tMinMs: tMinMs, tMaxMs: tMaxMs))
+
+func calibrateOp*(cal: Calibration): Op =
+  ## Converts recorded values to volts or physical units per row
+  ## (`core/calibrate`; `cal.target`), with the file's factors from the
+  ## meta's `scales` when it has them. Must come before every op that changes
+  ## amplitudes.
+  Op(tag: opCalibrate, calibrationParams: cal)
+
+func uncalibrateOp*(cal: Calibration): Op =
+  ## The inverse of `calibrateOp`: rows in `cal`'s units back to recorded
+  ## values (counts), for writing them in the input's format.
+  Op(tag: opUncalibrate, calibrationParams: cal)
 
 # ----------------------------------------------------------------- pipeline --
 
@@ -405,6 +441,10 @@ proc compileOp[T](op: Op, dtMs: float64, samples, recordSamples: int): Step[T] =
     let g = op.gainCurve # tabulated to the end of the record, not of a window
     Step[T](kind: stGainCurve, curve: initGainCurvePlan(T, g.curve, dtMs,
       recordSamples, g.tMinMs, g.tMaxMs))
+  of opCalibrate:
+    Step[T](kind: stCalibrate, calib: initCalibrationPlan(op.calibration))
+  of opUncalibrate:
+    Step[T](kind: stUncalibrate, calib: initCalibrationPlan(op.calibration))
 
 func margin[T](s: Step[T]): int =
   case s.kind
@@ -453,7 +493,21 @@ proc compile*(p: Pipeline, T: typedesc[SampleType], dtMs: float64,
   result.samples = samples
   result.recordSamples = record
   result.steps = newSeqOfCap[Step[T]](p.ops.len)
+  const changesAmplitudes = {opScale, opGainDb, opClip, opAgc, opNormalize, opGainCurve}
+  var changedAt = -1
+  var seen: array[opCalibrate .. opUncalibrate, int] = [-1, -1]
   for i, op in p.ops:
+    if op.kind in {opCalibrate, opUncalibrate}:
+      if changedAt >= 0:
+        badOp(i, op.kind, "a calibration must come before every op that changes " &
+          "amplitudes; op " & $changedAt & " (" & $p.ops[changedAt].kind & ") does")
+      if seen[op.kind] >= 0:
+        badOp(i, op.kind, "one per pipeline: op " & $seen[op.kind] & " is one too")
+      seen[op.kind] = i
+      result.units = (if op.kind == opCalibrate: paCalibrated else: paRecorded)
+    elif op.kind in changesAmplitudes:
+      if changedAt < 0: changedAt = i
+      if result.units == paCalibrated: result.units = paRelative
     try:
       result.steps.add compileOp[T](op, dtMs, samples, record)
     except ValueError as e:
@@ -513,6 +567,14 @@ func generation*[T](plan: PipelinePlan[T]): uint64 {.inline, raises: [].} =
 func dtMs*[T](plan: PipelinePlan[T]): float64 {.inline, raises: [].} =
   ## The sample interval the plan was compiled for.
   plan.dtMs
+
+func amplitudeUnits*[T](plan: PipelinePlan[T]): PlanAmplitude {.inline, raises: [].} =
+  ## What the plan's output amplitudes are for input in recorded values:
+  ## `paCalibrated` after a calibration op with nothing after it that changes
+  ## amplitudes (label each row with `resolveInto`'s unit), `paRelative` when
+  ## a gain, AGC, normalization, scale or clip follows it, `paRecorded`
+  ## without one (or when an `uncalibrateOp` undoes it).
+  plan.units
 
 func samples*[T](plan: PipelinePlan[T]): int {.inline, raises: [].} =
   ## The widest block the plan takes. Any narrower block works too (a zoom
@@ -622,6 +684,8 @@ proc runStep[T](s: Step[T], b: RowBlock[T], meta: ChunkMeta,
   of stNormTrace: normalize(s.norm, b, meta, ws)
   of stNormPanel: discard # its factor is applied by runPart
   of stGainCurve: applyGainCurve(s.curve, b, meta, ws)
+  of stCalibrate: discard calibrate(s.calib, b, meta)
+  of stUncalibrate: discard uncalibrate(s.calib, b, meta)
 
 proc runPart*[T](plan: PipelinePlan[T], src, dst: RowBlock[T], meta: ChunkMeta, part: int,
     factor: float64, ws: var Workspace) {.raises: [].} =
@@ -682,7 +746,7 @@ proc apply*[T: SampleType](plan: PipelinePlan[T], src, dst: RowBlock[T],
     meta: ChunkMeta, ws: var Workspace) =
   ## Runs `plan` on `src` into `dst` (the same shape; raises `ValueError`
   ## otherwise), leaving `src` as it is. Rows that are not live are copied
-  ## unchanged. The copy is fused into the first op, tile by tile. `src` and
+  ## unchanged (a calibration op converts dead and auxiliary rows too). The copy is fused into the first op, tile by tile. `src` and
   ## `dst` must not overlap, unless they are the same block (then it runs in
   ## place: raises `ValueError` for a partial overlap). Raises as the
   ## in-place form. The caller reserves `ws`: `apply` never grows it.
