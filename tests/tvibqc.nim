@@ -283,6 +283,30 @@ block refusals:
   doAssertRaises(ValueError): other.analyzeVibrators(data, meta, units, VibLimits(), results, ws)
   doAssert results.len == 0 # nothing changed
 
+block results_across_record_lengths:
+  # One `results` kept across records of other lengths whose plans have as
+  # many points (7001 and 7005 samples at a 10-sample step): resized, not an
+  # AssertionDefect (the reference was sized for the first plan).
+  var results: seq[UnitSignature[float64]]
+  tp.analyzeVibrators(data, meta, units, VibLimits(), results, ws)
+  let longer = n + 4
+  var keys2 = keys
+  var counts2 = newSeq[int](12)
+  for c in counts2.mitems: c = longer
+  var data2 = zeros[float64](12, longer)
+  for r in 0 ..< 12:
+    for j in 0 ..< n: data2[r, j] = data[r, j]
+  let meta2 = initChunkMeta(rowsOf(keys2, counts2), dtMs = dt)
+  let tp2 = initSweepTrackPlan(float64, TrackParams(), dt, longer)
+  doAssert tp2.points == tp.points
+  var ws2 = initWorkspace()
+  ws2.reserve(vibratorWorkspace(tp2))
+  tp2.analyzeVibrators(data2, meta2, units, VibLimits(), results, ws2)
+  doAssert results[0].reference.span.len > 0
+  doAssert abs(results[0].tracks[vsGroundForce].phaseDeg[300] - wantPhase) < 0.05
+  tp.analyzeVibrators(data, meta, units, VibLimits(), results, ws) # and back
+  doAssert abs(results[2].tracks[vsGroundForce].amplitude[0][300] - wantF) < 1e-4 * wantF
+
 block no_allocation_on_a_second_call:
   var results: seq[UnitSignature[float64]]
   tp.analyzeVibrators(data, meta, units, VibLimits(phaseDeg: 3), results, ws)

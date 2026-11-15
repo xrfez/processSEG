@@ -392,6 +392,94 @@ block refusals_and_shapes:
   doAssertRaises(ValueError): t2.distortionInto(6, x)
   var long = newSeq[float64](1002)
   doAssertRaises(AssertionDefect): tp.referenceInto(long, reference, ws)
+  # A track whose fields were resized is not sized for the plan either.
+  tp.referenceInto(x, reference, ws)
+  t2.peak.setLen(3)
+  doAssertRaises(AssertionDefect): tp.trackInto(x, reference, t2, ws)
+  t2 = initSweepTrack(tp)
+  t2.amplitude[2].setLen(0)
+  doAssertRaises(AssertionDefect): tp.trackInto(x, reference, t2, ws)
+  # A step past the trace (in samples beyond an int): one point, not a step of 1.
+  for stepMs in [5000.0, 1e19, 1e300]:
+    let one = initSweepTrackPlan(float64, TrackParams(stepMs: stepMs), 2, 1001)
+    doAssert one.points == 1 and one.stepSamples >= 1001, $stepMs & ": " & $one.points
+
+block nan_stays_in_its_windows:
+  # A NaN or an infinite sample makes NaN the points whose window holds it,
+  # and only those: the running sums skip it (before, every later point was
+  # NaN, 300 of them here).
+  let spec = linear1
+  let n = spec.sweepLen
+  var (tp, reference, clean) = setup[float64](spec, n)
+  var track = initSweepTrack(tp)
+  var ws = initWorkspace()
+  ws.reserve(tp.workspaceSize)
+  tp.referenceInto(spec.sweepSamples(float64), reference, ws)
+  let s = signal(spec, n, [(1, 1.0, 20.0), (2, 0.1, 0.0)])
+  tp.trackInto(s, reference, clean, ws)
+  for bad in [NaN, Inf, -Inf]:
+    var x = s
+    x[2000] = bad
+    tp.trackInto(x, reference, track, ws)
+    var blank, kept = 0
+    for m in 0 ..< track.len:
+      if clean.amplitude[0][m].isNaN:
+        doAssert track.amplitude[0][m].isNaN
+        continue
+      let t = track.timeMs[m]
+      let half = 2000 / spec.frequencyAt(t) # half a window (two periods), ms
+      if abs(t - 2000) < half - 2:
+        doAssert track.amplitude[0][m].isNaN and track.phaseDeg[m].isNaN and
+          track.thdPct[m].isNaN and track.peak[m].isNaN, $bad & " at " & $t
+        inc blank
+      elif abs(t - 2000) > half + 2:
+        for k in 0 ..< 5:
+          let a = track.amplitude[k][m]
+          let c = clean.amplitude[k][m]
+          doAssert (a.isNaN and c.isNaN) or abs(a - c) < 1e-9, $bad & " at " & $t & ": " & $a
+        doAssert abs(track.phaseDeg[m] - clean.phaseDeg[m]) < 1e-7 and
+          abs(track.peak[m] - clean.peak[m]) < 1e-9 and
+          (track.frequencyHz[m].isNaN or abs(track.frequencyHz[m] - clean.frequencyHz[m]) < 1e-6),
+          $bad & " at " & $t
+        inc kept
+    doAssert blank >= 10 and kept > 500, $blank & " blank, " & $kept & " kept" # 12 and 560
+
+block window_selectivity:
+  # What the window lets through besides its harmonic (module documentation):
+  # a subharmonic at f/2 reads 1/6 of its level in the fundamental over 4
+  # periods (the weight's cos(2x/C) term is at f/2), nothing over 6; and a
+  # reference with a 2nd harmonic of its own puts about half of it into
+  # every signal's 2nd harmonic.
+  let spec = linear1
+  let n = spec.sweepLen
+  let pilot = spec.sweepSamples(float64)
+  for (cycles, leak) in [(4, 1 / 6), (6, 0.0)]:
+    var (tp, reference, track) = setup[float64](spec, n, TrackParams(cycles: cycles))
+    var ws = initWorkspace()
+    ws.reserve(tp.workspaceSize)
+    tp.referenceInto(pilot, reference, ws)
+    tp.trackInto(signal(spec, n, [(1, 1.0, 0.0)]), reference, track, ws)
+    let a1 = track.amplitude[0]
+    var sub = signal(spec, n, [(1, 1.0, 0.0)])
+    let table = phaseTable(spec, spec.dtMs, n)
+    for j in 0 ..< n:
+      let t = float64(j) * spec.dtMs
+      sub[j] += 0.05 * taperAt(spec, t) * cos(0.5 * phiAt(spec, table, t, spec.dtMs))
+    tp.trackInto(sub, reference, track, ws)
+    var worst = 0.0
+    for m in 0 ..< track.len:
+      if flat(spec, track.timeMs[m], 800):
+        worst = max(worst, abs(track.amplitude[0][m] - a1[m]))
+    doAssert abs(worst - 0.05 * leak) < 1e-3, $cycles & ": " & $worst
+  var (tp, reference, track) = setup[float64](spec, n)
+  var ws = initWorkspace()
+  ws.reserve(tp.workspaceSize)
+  tp.referenceInto(signal(spec, n, [(1, 1.0, 0.0), (2, 0.05, 0.0)]), reference, ws)
+  tp.trackInto(pilot, reference, track, ws)
+  for m in 0 ..< track.len:
+    if flat(spec, track.timeMs[m], 600):
+      doAssert track.amplitude[1][m] > 0.02 and track.amplitude[1][m] < 0.035,
+        $track.amplitude[1][m]
 
 block no_allocation:
   let spec = linear2

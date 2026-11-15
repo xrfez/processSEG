@@ -70,15 +70,15 @@ proc writeRev2*(path = rev2Path()) =
   finally:
     sink.close()
 
-proc writeRev3*(path = rev3Path(), geophones = 2) =
+proc writeRev3*(path = rev3Path(), geophones = 2, lastUnit = 0x12'u8) =
   ## SEG-D Rev 3.0, format 8058, record 9, 100 samples at 1 ms:
   ## - channel set 0: auxiliary (0x20), descale multiplier 0 (unknown), 1 trace;
   ## - channel set 1: seismic, DSM 1.5e-4 mV/count, `geophones` traces, sensor type 2,
   ##   each with a Sensor Info block: STY 20 mV per mm/s (THE#1 physical unit
   ##   0x03), i.e. 20 V/(m/s); receivers line 10, points 101-102;
-  ## - channel set 2: seismic, DSM 2e-4 mV/count, physical unit Pa (0x12) in the
-  ##   channel set, 2 traces, sensor type 1: the first with STY 0.2 mV/Pa
-  ##   (2e-4 V/Pa), the second with STY 0 (unknown); points 103-104.
+  ## - channel set 2: seismic, DSM 2e-4 mV/count, physical unit Pa (0x12, or
+  ##   `lastUnit`) in the channel set, 2 traces, sensor type 1: the first with
+  ##   STY 0.2 mV/Pa (2e-4 V/Pa), the second with STY 0 (unknown); points 103-104.
   const fileNo = 9
   let fmt = sd8058
   var r = SegdRecord(layout: slRev3, format: some(fmt),
@@ -94,7 +94,7 @@ proc writeRev3*(path = rev3Path(), geophones = 2) =
   var descs: seq[SegdChannelSetDescriptorRev3]
   for (n, ctype, count, exts, dsm, unit) in [(1, 0x20'u8, 1, 1'u8, 0.0'f32, 0'u8),
       (2, 0x10'u8, geophones, 2'u8, 1.5e-4'f32, 0x03'u8),
-      (3, 0x10'u8, 2, 2'u8, 2e-4'f32, 0x12'u8)]:
+      (3, 0x10'u8, 2, 2'u8, 2e-4'f32, lastUnit)]:
     descs.add SegdChannelSetDescriptorRev3(scanTypeNumber: 1, channelSetNumber: uint16(n),
       channelType: ctype, endTime: int32(1000 * (ns - 1)), numSamples: ns,
       descaleMultiplier: dsm, channelsInSet: uint32(count), samplingInterval: 1000,

@@ -37,7 +37,9 @@ ground-force channel in V/N, V/kN or V/lbf to N. The ground force generated from
 is the weighted sum `Mr·a_M + Mb·a_B`, with the reaction mass and the baseplate mass entered
 with their unit (`mass(2450, muKilogram)`, `mass(5400, muPound)`): in newtons when both
 accelerations are in m/s². Its sign is the accelerometers': if it comes out at 180° to a
-recorded ground force, they are wired the other way (`reversePolarity` turns it).
+recorded ground force, they are wired the other way. Reverse both rows (`reversePolarity` on
+the M and B rows) before `analyzeVibrators`: reversing `weightedSum` after it leaves the
+generated force's track as it was.
 
 ## Everything at once
 
@@ -264,18 +266,29 @@ and generated.
 
 ## Conventions, and what is still to confirm
 
-Vibrator QC systems differ in some definitions; processSEG takes the common ones, and
-states them:
+Vibrator QC systems differ in some definitions; processSEG takes these, and states them:
 
 - **Phase:** signal minus reference, positive when the signal leads.
 - **Distortion:** THD over harmonics 2 to 5 (`harmonics`) relative to the fundamental;
   `thdTotal` relative to the fundamental and harmonics together. Noise and subharmonics are
-  not counted.
+  not counted as such, but the window lets through what lies within its main lobe of a
+  harmonic: noise in the harmonics' bands, and a subharmonic at f/2 or 3f/2 at 1/6 of its
+  level into the fundamental and the 2nd harmonic over 4 periods (0.04 over 5, nothing over
+  6).
+- **Reference:** a clean sweep (the pilot, as recorded or generated). Harmonics of its own
+  bend its phase: a 5 % 2nd harmonic in the reference reads as a false 2nd harmonic of about
+  3 % in every signal tracked against it. Compare two signals with `compareTracksInto`, not
+  by taking one as the other's reference.
 - **Peak force:** the largest |GF| per period of the fundamental, harmonics included; the
   summary also has the largest fundamental force.
 - **Window:** 4 periods of the fundamental (`cycles`), points every 10 ms (`stepMs`).
 - **Ground force from M and B:** `Mr·a_M + Mb·a_B`, the accelerometers' polarity.
 - **Accuracy** (the test suite, on synthetic sweeps): phase within 0.05°, harmonic levels
-  within 0.02 % of the fundamental, the fundamental within 1e-4, the peak within 2e-4, the
+  within 0.02 % of the fundamental (0.04 % at the slow start of a strongly nonlinear law),
+  the fundamental within 1e-4, the peak within 2e-4, the
   frequency within 0.05 Hz, away from the sweep's ends; in a taper's first periods, where the
-  amplitude changes within the window, the phase is off by up to 0.1°.
+  amplitude changes within the window, the phase is off by up to 0.1°. Near the harmonic
+  limit (2.5 samples a period) the fundamental's phase is within 0.4° and its amplitude
+  0.5 %. With noise the ends of a sweep are the least steady part, the end most (its windows
+  are short and its amplitude small): leave the tapers out of limits with `fromMs`, `toMs`.
+- **NaN and infinite samples** blank the points whose window holds them, and only those.

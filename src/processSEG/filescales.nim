@@ -25,7 +25,7 @@
 ##   `sample / STY`. This reading is an **assumption**, not yet checked
 ##   against a recorder's file that has the block. The unit is THE#1 byte
 ##   31, else the channel set's byte 62 (millibar, bar, mm/s, m/s, mm/s²,
-##   m/s², Pa, µPa; others are unknown). A unit without a sensitivity is
+##   m/s², N, Pa, µPa; others are unknown). A unit without a sensitivity is
 ##   kept in `FileScale.unit`, so a rule giving a sensitivity of another
 ##   quantity is flagged. The block is read through parseSEG's
 ##   `traceHeaders` listing, which allocates: about microseconds per trace,
@@ -78,6 +78,7 @@ func physicalUnitOf(code: int): (AmplitudeUnit, float64) =
   of 0x04: (auVelocity, 1.0) # m/s
   of 0x05: (auAcceleration, 1e-3) # mm/s²
   of 0x06: (auAcceleration, 1.0) # m/s²
+  of 0x07: (auForce, 1.0) # newton
   of 0x12: (auPressure, 1.0) # Pa
   of 0x13: (auPressure, 1e-6) # µPa
   else: (auRecorded, NaN)

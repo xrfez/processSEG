@@ -438,7 +438,7 @@ keeps the assignment with the file). processSEG fills each plot's buffers, value
   band-limited signal; the window is 4 periods of the fundamental, points every 10 ms.
 - **Where values are NaN:** outside the sweep (where the reference is more than 40 dB
   below its peak), within half a window of its ends, a harmonic above 0.8 of Nyquist, a
-  failed row. The viewer draws gaps there.
+  window holding a NaN or infinite sample, a failed row. The viewer draws gaps there.
 - **Cost** (bench/README "Vibrator QC", one thread, float32, an 8 s sweep at 1 ms with a
   2 s listen time): see the table there; all of it is a few milliseconds per signal, so the
   viewer can compute on demand, on a worker thread when a plot opens.

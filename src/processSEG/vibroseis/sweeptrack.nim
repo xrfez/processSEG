@@ -21,7 +21,9 @@
 ## phase ψ(t), unwrapped, and its instantaneous frequency `f = ψ'/2π` (a
 ## central difference over ±2 samples, exact for a linear sweep). Nothing is
 ## assumed of the sweep's law: linear, dB/octave, exponential or table
-## sweeps, and a recorded pilot with its own errors, are handled alike. The
+## sweeps, and a recorded pilot with its own phase errors (its instrument
+## filters: the phase is then the signal's against the pilot as recorded),
+## are handled alike; not a reference with harmonics of its own (below). The
 ## reference is first demeaned and its content below its band is removed
 ## (a zero-phase cos² ramp from a quarter to half of the frequency below
 ## which 1 % of its energy lies, so a small drift does not move it): a DC
@@ -56,6 +58,20 @@
 ## the harmonics in SIMD lanes: the cost is O(samples × harmonics), whatever
 ## the window.
 ##
+## **What the window lets through.** Only whole harmonics (and DC) are
+## rejected exactly. Content between them inside the window's main lobe
+## (`±3f/C`) leaks in: a subharmonic at `f/2` or `3f/2` (a decoupling
+## plate) reads 1/6 of its level in the fundamental and the 2nd harmonic
+## over 4 periods (the weight's `cos(2x/C)` term is at `f/2`), 0.04 over 5,
+## nothing over an even number from 6; so do noise (THD counts the noise in
+## the harmonics' bands) and harmonics folded from above Nyquist (recorded
+## data are anti-alias filtered). The reference must be a clean sweep: a
+## harmonic of its own at level `a` bends ψ once per period, and every
+## signal tracked against it reads false harmonics of about `a/2` (a 5 %
+## 2nd harmonic in the reference: 2.9 % in the 2nd harmonic of a clean
+## signal; a 5 % 3rd: 1.2° of phase and 1.2 % of fundamental), so a ground
+## force is no reference (`compareTracksInto` compares two signals).
+##
 ## **Measures** (`SweepTrack`, one value per point, NaN where not measured):
 ## - `phaseDeg`: `arg c_1`, the signal's fundamental minus the reference's, in
 ##   degrees in (−180, 180], positive when the signal leads; the reference
@@ -74,7 +90,9 @@
 ##   largest of those and its neighbours its vertex. The largest sample alone falls short of a peak by
 ##   up to `1 − cos(π·f·dt)` (3 % at 80 Hz and 1 ms, 12 % at 2 ms, more with
 ##   harmonics); this way the error stays under 0.1 % for content up to 0.65
-##   of Nyquist;
+##   of Nyquist (0.4 % up to 0.8). Samples clipped after the anti-alias
+##   filter are not band-limited: their peak overshoots the clip level (3 %
+##   at 80 Hz and 1 ms);
 ## - `referenceHz`: the reference's instantaneous frequency (the sweep law as
 ##   driven) and `frequencyHz`: the signal's fundamental's, `referenceHz +
 ##   (dθ/dt)/360` from the phase at the neighbouring points.
@@ -92,9 +110,10 @@
 ##
 ## **Allocation.** `initSweepTrackPlan`, `initSweepReference` and
 ## `initSweepTrack` allocate; `referenceInto` and `trackInto` do not, once
-## the workspace holds `workspaceSize`. They never raise: a NaN in the signal
-## makes its measures NaN, and lengths that do not fit the plan are an
-## `AssertionDefect`.
+## the workspace holds `workspaceSize`. They never raise: a NaN or infinite
+## sample in the signal makes NaN the points whose window holds it, and only
+## those; one in the reference leaves it without a sweep; lengths that do
+## not fit the plan are an `AssertionDefect`.
 
 import std/math
 import parseSEG
@@ -185,7 +204,9 @@ proc initSweepTrackPlan*(T: typedesc[SampleType], params: TrackParams, dtMs: flo
   result.params = params
   result.dtMs = dtMs
   result.samples = samples
-  result.step = max(1, int(round(params.stepMs / dtMs)))
+  # In float64 first: a step past the trace (or past an int) is one point.
+  let stepF = round(params.stepMs / dtMs)
+  result.step = (if stepF >= float64(samples): samples else: max(1, int(stepF)))
   result.points = (samples - 1) div result.step + 1
   result.lanes = if params.harmonics <= 8: 8 else: 16
   # The interpolator: phase q is q/8 of a sample after a sample, its tap k
@@ -245,7 +266,7 @@ func workspaceSize*[T](tp: SweepTrackPlan[T]): WorkspaceSize {.raises: [].} =
   ## The scratch `referenceInto` and `trackInto` need.
   let own = tp.spectrumAt + 2 * tp.fft.len + 2 * tp.fft.bins
   # referenceInto: three running sums; trackInto: one snapshot per point.
-  let sums = max(5 * (tp.samples + 1), tp.points * sumCount * tp.lanes)
+  let sums = max(5 * (tp.samples + 1), tp.points * (sumCount * tp.lanes + 1))
   when T is float32: WorkspaceSize(f32: own, f64: sums)
   else: WorkspaceSize(f64: own + sums)
 
@@ -296,6 +317,16 @@ func len*(t: SweepTrack): int {.inline, raises: [].} =
 func harmonics*(t: SweepTrack): int {.inline, raises: [].} =
   ## The highest harmonic order tracked.
   t.amplitude.len
+
+func sizedFor(t: SweepTrack, points, harmonics: int): bool {.raises: [].} =
+  ## Every per-point field of `t` has `points` values (its fields are the
+  ## caller's to read, and could have been resized).
+  result = t.timeMs.len == points and t.referenceHz.len == points and
+    t.frequencyHz.len == points and t.phaseDeg.len == points and
+    t.thdPct.len == points and t.peak.len == points and t.amplitude.len == harmonics
+  if result:
+    for a in t.amplitude:
+      if a.len != points: return false
 
 # ------------------------------------------------------------- reference --
 
@@ -546,8 +577,12 @@ proc finishPoint[T; L: static int](tp: SweepTrackPlan[T], r: SweepReference, m: 
 proc scan[T; L: static int](tp: SweepTrackPlan[T], x: openArray[T], r: SweepReference,
     track: var SweepTrack, ws: var Workspace) {.raises: [].} =
   ## One pass over the sweep's samples: the sums are snapshotted at each
-  ## measured point's window start, and the point finished at its end.
-  let snaps = ws.scratch(float64, tp.points * sumCount * L, tp.sumsAt)
+  ## measured point's window start, and the point finished at its end. A
+  ## NaN or infinite sample is left out of the sums and counted (the count
+  ## snapshotted too): the points whose window holds one stay NaN, the
+  ## others are measured.
+  const stride = sumCount * L + 1 # a snapshot: the sums, then the count
+  let snaps = ws.scratch(float64, tp.points * stride, tp.sumsAt)
   # The measured points, in order; their windows' starts and ends both
   # increase with the point.
   var mLo = 0 # the next point whose window starts
@@ -559,21 +594,25 @@ proc scan[T; L: static int](tp: SweepTrackPlan[T], x: openArray[T], r: SweepRefe
   if mLo >= tp.points: return
   let j0 = r.lo[mLo]
   var acc: Lanes[L]
+  var bad = 0 # the non-finite samples so far
   var j = j0
   let n = x.len
   while mHi < tp.points:
     while mLo < tp.points and r.lo[mLo] == j:
-      copyMem(addr snaps[mLo * sumCount * L], addr acc, sizeof(acc))
+      copyMem(addr snaps[mLo * stride], addr acc, sizeof(acc))
+      snaps[mLo * stride + stride - 1] = float64(bad)
       inc mLo
       skip(mLo)
     while mHi < tp.points and r.hi[mHi] == j:
-      let before = cast[ptr Lanes[L]](addr snaps[mHi * sumCount * L])
-      tp.finishPoint(r, mHi, acc, before[], track)
+      if float64(bad) == snaps[mHi * stride + stride - 1]: # else NaN, as trackInto set it
+        let before = cast[ptr Lanes[L]](addr snaps[mHi * stride])
+        tp.finishPoint(r, mHi, acc, before[], track)
       inc mHi
       skip(mHi)
     if mHi >= tp.points: break
     let t = (if j < n: r.freqHz[j] * float64(x[j]) else: 0.0)
-    acc.addSample(t, r.cosC[j], r.sinC[j], r.cosPsi[j], -r.sinPsi[j])
+    if t - t == 0: acc.addSample(t, r.cosC[j], r.sinC[j], r.cosPsi[j], -r.sinPsi[j])
+    else: inc bad
     inc j
 
 proc trackInto*[T: SampleType](tp: SweepTrackPlan[T], x: openArray[T],
@@ -587,8 +626,7 @@ proc trackInto*[T: SampleType](tp: SweepTrackPlan[T], x: openArray[T],
   doAssert x.len <= tp.samples, "a signal longer than the plan's samples"
   doAssert reference.samples == tp.samples and reference.points == tp.points,
     "the reference is not sized for this plan"
-  doAssert track.timeMs.len == tp.points and track.amplitude.len == tp.params.harmonics,
-    "the track is not sized for this plan"
+  doAssert track.sizedFor(tp.points, tp.params.harmonics), "the track is not sized for this plan"
   doAssert ws.fits(tp.workspaceSize), "reserve the plan's workspaceSize first"
   for m in 0 ..< tp.points:
     track.timeMs[m] = tp.pointMs(m)

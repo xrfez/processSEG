@@ -1,4 +1,4 @@
-## Vibrator QC (Phase 15) on a wireline record: one unit of four rows (Ref,
+## Vibrator QC on a wireline record: one unit of four rows (Ref,
 ## GF, M, B), an 8-80 Hz sweep of 8 s at 1 ms plus a 2 s listen time
 ## (10001 samples), float32, one thread. Each call as the viewer makes it
 ## when a plot opens: the reference prepared once, then one signal tracked,

@@ -227,6 +227,10 @@ block refusals_and_shapes:
   doAssertRaises(ValueError): discard initCrossCorrelationPlan(float64, 100, 2, 1)
   doAssertRaises(ValueError): discard initCrossCorrelationPlan(float64, 1, 2, 1000) # under a sample
   doAssertRaises(ValueError): discard initCrossCorrelationPlan(float64, 2000, 2, 1000)
+  # Lags past an int's range: a ValueError too (before: an OverflowDefect, or
+  # in -d:danger a plan of maxLag int.low).
+  for lag in [1e19, 1e300]:
+    doAssertRaises(ValueError): discard initCrossCorrelationPlan(float64, lag, 1, 1000)
   doAssertRaises(ValueError): discard initCrossCorrelationPlan(float64, 100, 2, 1000,
       taperFraction = 0.6)
   doAssertRaises(ValueError): discard initCrossCorrelationPlan(float64, 100, 2, 1000, nfft = 64)

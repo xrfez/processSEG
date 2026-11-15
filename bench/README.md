@@ -200,7 +200,7 @@ machine before quoting them.
   go through parseSEG's header listing, 2.7 µs a trace on a synthetic record with one Sensor
   Info block and 5 µs on the example files' 3957-trace shot (20 ms), under load.
 
-## Vibrator QC (Phase 15)
+## Vibrator QC
 
 `bench/bvibqc.nim`, built with the `nim bench` flags (`-d:danger --opt:speed
 --debuginfo:on --linedir:on -march=x86-64-v3`), one thread, float32: one unit of a wireline

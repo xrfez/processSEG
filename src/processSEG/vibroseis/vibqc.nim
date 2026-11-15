@@ -28,8 +28,10 @@
 ## vibrator controllers form it), with the reaction mass `Mr` and the
 ## baseplate mass `Mb` entered with their unit (`Mass`): accelerations in
 ## m/s² give newtons. The sign is the accelerometers': if the generated force
-## comes out at 180° to a recorded one, they are wired the other way
-## (`reversePolarity` turns it).
+## comes out at 180° to a recorded one, they are wired the other way:
+## reverse both rows (`reversePolarity` on the block's M and B rows) before
+## the call, since reversing `weightedSum` after it leaves its track as it
+## was.
 ##
 ## **Units.** The rows are taken in the unit the caller says they are in
 ## (`VibUnit.units`, `auRecorded` by default; for calibrated rows the unit
@@ -133,6 +135,7 @@ type
     summaries*: array[VibSignal, TrackSummary] ## Each signal's summary.
     flags*: array[VibSignal, seq[set[LimitKind]]] ## Per point, the limits exceeded (force signals).
     weightedSum*: seq[T] ## The generated ground force's samples (empty without one).
+    planSamples: int # the samples of the plan `reference` and `tracks` are sized for
 
 const
   defaultOrder* = [vsReference, vsGroundForce, vsMass, vsBaseplate]
@@ -323,12 +326,15 @@ proc analyzeVibrators*[T: SampleType](tp: SweepTrackPlan[T], b: RowBlock[T],
   let own = tp.workspaceSize.elems(T)
   for u, unit in units:
     var res = addr results[u]
-    if res.tracks[vsReference].len != tp.points or
+    # Sized for another plan (a record of another length can have as many
+    # points): sized again.
+    if res.planSamples != tp.samples or res.tracks[vsReference].len != tp.points or
         res.tracks[vsReference].harmonics != tp.params.harmonics:
       res.reference = initSweepReference(tp)
       for s in VibSignal:
         res.tracks[s] = initSweepTrack(tp)
         res.flags[s] = newSeq[set[LimitKind]](tp.points)
+      res.planSamples = tp.samples
     res.signals = {}
     for s in VibSignal:
       res.units[s] = auRecorded

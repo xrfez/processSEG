@@ -86,9 +86,10 @@ proc initCrossCorrelationPlan*(T: typedesc[SampleType], maxLagMs, dtMs: float64,
   if samples < 2: badPlan("a cross-correlation needs samples ≥ 2, got " & $samples)
   if not (maxLagMs >= dtMs and maxLagMs < Inf):
     badPlan("maxLagMs must be at least one sample (" & $dtMs & " ms), got " & $maxLagMs)
-  let L = int(round(maxLagMs / dtMs))
-  if L >= samples:
+  let lagF = round(maxLagMs / dtMs) # compared in float64: it may be past an int
+  if lagF >= float64(samples):
     badPlan("maxLagMs = " & $maxLagMs & " reaches past the " & $samples & " samples")
+  let L = int(lagF)
   if not (taperFraction >= 0 and taperFraction <= 0.5):
     badPlan("taperFraction must be in 0 .. 0.5, got " & $taperFraction)
   let lagN = if nfft == 0: nextPowerOfTwo(2 * L + 1) else: nfft

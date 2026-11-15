@@ -95,6 +95,19 @@ block segd_rev3:
   doAssert rc[1].sensitivityFrom == fsFile and rc[1].descaleFrom == fsFile
   f.close()
 
+block segd_rev3_newton:
+  # SEG-D Rev 3 physical unit 0x07 is the newton: a ground-force channel set
+  # so marked is force, its STY in mV/N (before: unknown, the STY dropped).
+  let path = getTempDir() / "processseg_cal_rev3_newton.sgd"
+  writeRev3(path, lastUnit = 0x07)
+  var f = openSeismic(path, keys = true)
+  let s = scalesOf(f)
+  doAssert s[3].unit == auForce and closeTo(s[3].sensitivity, 2e-4), $s[3] # 0.2 mV/N
+  doAssert s[4].unit == auForce and s[4].sensitivity.isNaN
+  doAssert s[1].unit == auVelocity # the geophones are unchanged
+  f.close()
+  removeFile(path)
+
 block segy:
   writeSegy()
   var f = openSeismic(segyPath(), keys = true)
