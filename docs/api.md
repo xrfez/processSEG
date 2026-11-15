@@ -84,19 +84,21 @@ These hold throughout; a row below only mentions what departs from them.
 
 ## core/types: `ChunkMeta`
 
-The metadata of a block of rows: parseSEG's `TraceRows` view plus `dtMs`, `firstSample`
-and the failed rows. It copies no header value.
+The metadata of a block of rows: parseSEG's `TraceRows` view plus `dtMs`, `firstSample`,
+the failed rows and, optionally, a caller's per-row `FileScale` column. It copies no header
+value.
 
 | Proc | What |
 |---|---|
-| `ChunkMeta`; `initChunkMeta(rows: TraceRows, dtMs, firstSample = 0, failed: openArray[int] = []): ChunkMeta` | Builds and validates a meta once. `ValueError` when the view has no keys (`hasKeys`), `dtMs` is not finite and positive, `firstSample < 0`, or `failed` is not ascending within `0 ..< rows.len`. `failed` is not copied: it must outlive the meta. |
+| `ChunkMeta`; `initChunkMeta(rows: TraceRows, dtMs, firstSample = 0, failed: openArray[int] = [], scales: openArray[FileScale] = []): ChunkMeta` | Builds and validates a meta once. `ValueError` when the view has no keys (`hasKeys`), `dtMs` is not finite and positive, `firstSample < 0`, `failed` is not ascending within `0 ..< rows.len`, or `scales` is neither empty nor one per row. `failed` and `scales` are not copied: they must outlive the meta. |
+| `m.hasFileScales`, `m.fileScale(row): lent FileScale` | Whether the meta points at a `FileScale` column (`fileScalesInto`), and a row's entry in place, for a calibration. |
 | `m.rows`, `m.len`, `m.dtMs`, `m.firstSample`, `m.failedCount`, `m.failedRow(i)` | The fields, read-only. |
 | `m.keys(row): lent TraceKeys` | Row `row`'s keys in place (parseSEG's `keysAt`). |
 | `m.isFailed(row)`, `m.isLive(row)` | A failed row (O(log n)); a live row (status `tsLive`/`tsUnknown`, not failed). |
 | `m.liveSamples(row, cols)` | The live length of the row in a block `cols` wide. |
 | `m.t0Ms(row)`, `m.sampleTimeMs(row, col)` | The time of the trace's sample 0, and of a column of the block (NaN when `t0Ms` is). |
 | `sameInterval(dtMs, planDtMs): bool` | A block's interval fits a plan's: equal within a relative 1e-9 (a header's 2000 µs / 1000 and a computed 1000 / 500 Hz can differ in the last bit). Every block form checks its meta's `dtMs` with it. |
-| `m.sub(rows: Slice[int]): ChunkMeta` | The meta of some rows (row 0 is `rows.a`), sharing the view and failed list: split work with `RowBlock.sub`. |
+| `m.sub(rows: Slice[int]): ChunkMeta` | The meta of some rows (row 0 is `rows.a`), sharing the view, failed list and file scales: split work with `RowBlock.sub`. |
 | `checkShape(m, samples: Tensor[T])`, `checkShape(m, b: RowBlock[T])` | `ValueError` unless one row per row of `m` (and, for a tensor, rank 2 and C-contiguous). |
 | `SampleType` | parseSEG's `float32 \| float64`, re-exported. |
 
@@ -158,6 +160,32 @@ above the sensor's natural frequency only.
 | `DescaleUnit` (`duVPerCount`, `duMilliVPerCount`, `duMicroVPerCount`, `duNanoVPerCount`); `Descale`; `descale(value, unit)` | A recorder's volts per count. `ValueError` unless finite and positive. |
 | `d.isSet`, `d.voltsPerCount`, `d.valueIn(unit)`, `$d` | Read back (NaN when not set). |
 | `FileScale` (`descale`, `sensitivity`, `unit`, `physical`); `initFileScale()`; `$f` | What a file's headers say about one trace's scale, in SI (NaN where they say nothing), as `fileScalesInto` reads them. |
+
+## core/calibrate: recorded values to volts or physical units
+
+Per row, `factor = descale / (10^(gain/20) · sensitivity)` (`ctVolts`: without the
+sensitivity). Each factor comes from the most specific matching rule (station > channel >
+channel set > component > sensor type > the catch-all rule) or from the file's `FileScale`
+column, in the order `fileFactors` sets; disagreements are flagged, never silent. Live rows
+without the factors their target needs become NaN; dead rows are converted when they can be
+and kept otherwise; auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not
+touched. Guide: [calibration](guide/calibration.md).
+
+| Proc | What |
+|---|---|
+| `CalibrationTarget` (`ctPhysical`, `ctVolts`), `FileFactors` (`ffFallback`, `ffFirst`, `ffIgnore`) | What to convert to; how the file's factors rank against the rules (default: specific rules, then the file, then the catch-all). |
+| `RuleMatch` (`sensorType`, `component`, `channelSet`, `channel`, `station`: unset by default), `$m` | Which rows a rule applies to: SEG-D sensor type, component, 0-based channel set, channel, receiver station (`some stationKey(line, point, index)`, index 0: any). |
+| `CalibrationRule` (`match`, `descale`, `sensitivity`, `gainDb`), `$r` | Any of the three factors for the matched rows; `gainDb` (NaN: none) is a recorder gain the descale does not hold, divided out. |
+| `Calibration` (`rules`, `target`, `fileFactors`, `scaleAuxiliary`); `initCalibration(rules = [], target = ctPhysical, fileFactors = ffFallback, scaleAuxiliary = true)`, `$c` | Plain data: the rules and how to apply them. |
+| `CalibrationPlan`; `initCalibrationPlan(cal)`, `plan.target` | Validated and indexed. `ValueError` (naming the rule) for a rule without a factor, a non-finite gain, a criterion out of range, two rules with the same criteria, or two catch-alls. |
+| `FactorSource` (`fsNone`, `fsRule`, `fsFile`), `CalibrationStatus` (`csConverted`, `csUnresolved`, `csKept`), `RowCalibration` (`factor`, `unit`, `status`, `descaleFrom`, `sensitivityFrom`, `descaleRule`, `sensitivityRule`, `gainRule`, `conflict`, `mismatch`) | How one row is calibrated: its factor (1 when kept, NaN when unresolved), unit, where each factor came from, and the flags. |
+| `CalibrationSummary` (`units`, `converted`, `unresolved`, `kept`, `noDescale`, `noSensitivity`, `conflicts`, `mismatches`), `$s` | Counts over the rows of a call. |
+| `plan.resolveInto(meta, rows: var openArray[RowCalibration]): CalibrationSummary` | Per row, without touching a sample: for a viewer's labels, warnings, or a GPU uniform. |
+| `plan.calibrate(b \| samples, meta)`, `plan.calibrateInto(src, dst, meta)` (blocks or tensors) | Apply in place, or `src → dst` (raw kept; kept rows and padding copied). Return the summary (discardable). |
+| `plan.uncalibrate(b \| samples, meta)`, `plan.uncalibrateInto(src, dst, meta)` | The inverse: the plan's units back to recorded values, for writing counts. |
+| `scaleRows(b \| samples, meta, factors)`, `scaleRowsInto(src, dst, meta, factors)` | The plain per-row kernel: every row that is not failed times its factor, up to its live length (NaN fills; `ValueError` for an infinite factor or a wrong count). |
+| `scaleInto(src, dst, factor)` | Row kernel: `dst[i] = src[i] · factor`. |
+| `RatioRange` (`rows`, `minDb`, `maxDb`); `ratioDbInto(a, b, meta, dst): RatioRange` | Per row, how much larger data comes out under plan `a` than under `b`, in dB (NaN where either does not convert, or to another unit): compare two candidate tables. |
 
 ## fft/plan: `FftPlan`
 

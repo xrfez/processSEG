@@ -16,6 +16,14 @@ wrap(vec_clip_f32, clip, float32, -1.0, 1.0)
 wrap(vec_reversePolarity_f32, reversePolarity, float32)
 wrap(vec_muteTop_f32, muteTop, float32, 300.5, 20.0)
 
+proc vec_scaleInto_f32(src: openArray[float32], dst: var openArray[float32]) {.
+    exportc: "vec_scaleInto_f32", noinline.} =
+  scaleInto(src, dst, 0.25) # calibration: a row times its factor, src → dst
+
+proc vec_scaleInto_f64(src: openArray[float64], dst: var openArray[float64]) {.
+    exportc: "vec_scaleInto_f64", noinline.} =
+  scaleInto(src, dst, 0.25)
+
 proc vec_traceStats_f32(x: openArray[float32]): TraceStats {.exportc: "vec_traceStats_f32", noinline.} =
   traceStats(x)
 
@@ -205,5 +213,11 @@ when isMainModule:
   vec_reversePolarity_f32(x)
   vec_muteTop_f32(x)
   vec_taperPads_f32(x, ramp)
+  var x2 = newSeq[float32](1000)
+  var y2 = newSeq[float64](1000)
+  vec_scaleInto_f32(x, x2)
+  vec_scaleInto_f64(y, y2)
+  x[1] = x2[1]
+  y[1] = y2[1]
   echo x[0], y[0], vec_traceStats_f32(x), vec_traceStats_f64(y)
 

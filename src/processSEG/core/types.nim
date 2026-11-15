@@ -6,6 +6,12 @@
 ## (`firstSample`) and the rows that could not be decoded. It copies no header
 ## value: per-row keys are read from the view when they are needed.
 ##
+## **File scales.** A meta may also point at a caller's per-row `FileScale`
+## column (`scales`): what the file's headers say about each row's descale
+## and sensitivity, read once per chunk by `fileScalesInto`, for a
+## calibration (`core/calibrate`). Like the failed rows, it is held by
+## pointer, not copied (decision D15, amending D12).
+##
 ## ```nim
 ## let rows = rowsOf(keys, numSamples)         # or PrefetchChunk.rows, f.rowsOf(...)
 ## let meta = initChunkMeta(rows, dtMs = 2.0)  # validates once; raises ValueError
@@ -44,7 +50,7 @@
 
 import std/math
 import parseSEG
-import rows
+import rows, units
 
 export SampleType
 
@@ -58,17 +64,20 @@ type
     failed: ptr UncheckedArray[int] ## Ascending rows; nil when there are none.
     failedLen: int
     failedBase: int ## Subtracted from `failed[i]` (a `sub` meta shares the list).
+    scales: ptr UncheckedArray[FileScale] ## One per row; nil when there are none.
 
 proc initChunkMeta*(rows: TraceRows, dtMs: float64, firstSample = 0,
-    failed: openArray[int] = []): ChunkMeta =
+    failed: openArray[int] = [], scales: openArray[FileScale] = []): ChunkMeta =
   ## The metadata of the rows `rows`, sampled every `dtMs` ms, whose column 0
   ## is sample `firstSample` of each trace, with the rows `failed` (0-based in
-  ## the block, ascending, such as `PrefetchChunk.failedRows`) not decoded.
+  ## the block, ascending, such as `PrefetchChunk.failedRows`) not decoded,
+  ## and, when given, `scales`: one `FileScale` per row (`fileScalesInto`).
   ##
-  ## `failed` is not copied: it must outlive the meta and keep its size (never
-  ## pass a temporary such as `@[3]`). Raises `ValueError` when the view has no
-  ## keys, `dtMs` is not finite and positive, `firstSample` is negative, or
-  ## `failed` is not ascending within `0 ..< rows.len`.
+  ## `failed` and `scales` are not copied: they must outlive the meta and keep
+  ## their size (never pass a temporary such as `@[3]`). Raises `ValueError`
+  ## when the view has no keys, `dtMs` is not finite and positive,
+  ## `firstSample` is negative, `failed` is not ascending within
+  ## `0 ..< rows.len`, or `scales` is neither empty nor one per row.
   runnableExamples:
     import parseSEG
     var keys = @[initTraceKeys(), initTraceKeys()]
@@ -91,10 +100,15 @@ proc initChunkMeta*(rows: TraceRows, dtMs: float64, firstSample = 0,
     if i > 0 and row <= failed[i - 1]:
       raise newException(ValueError, "failed rows must be ascending and unique: " &
         $failed[i - 1] & " is followed by " & $row)
+  if scales.len != 0 and scales.len != rows.len:
+    raise newException(ValueError, "need one FileScale per row (or none): " & $rows.len &
+      " rows, " & $scales.len & " scales")
   result = ChunkMeta(rows: rows, dtMs: dtMs, firstSample: firstSample,
     failedLen: failed.len)
   if failed.len > 0:
     result.failed = cast[ptr UncheckedArray[int]](addr failed[0])
+  if scales.len > 0:
+    result.scales = cast[ptr UncheckedArray[FileScale]](addr scales[0])
 
 func rows*(m: ChunkMeta): TraceRows {.inline, raises: [].} =
   ## The view of the rows.
@@ -137,6 +151,20 @@ func failedRow*(m: ChunkMeta, i: int): int {.inline, raises: [].} =
         $m.failedLen)
   m.failed[i] - m.failedBase
 
+func hasFileScales*(m: ChunkMeta): bool {.inline, raises: [].} =
+  ## The meta points at a `FileScale` column.
+  m.scales != nil
+
+func fileScale*(m: ChunkMeta, row: int): lent FileScale {.inline, raises: [].} =
+  ## Row `row`'s `FileScale`, in place. Needs `hasFileScales` (an
+  ## `AssertionDefect` otherwise, as an `IndexDefect` for a row outside
+  ## `0 ..< len`, with bound checks on).
+  when compileOption("boundChecks"):
+    if m.scales == nil: raise newException(AssertionDefect, "the meta has no file scales")
+    if row < 0 or row >= m.rows.len:
+      raise newException(IndexDefect, "row " & $row & " is outside 0 ..< " & $m.rows.len)
+  m.scales[row]
+
 func keys*(m: ChunkMeta, row: int): lent TraceKeys {.inline, raises: [].} =
   ## The keys of row `row`, in place (parseSEG's `keysAt`; the meta checked
   ## `hasKeys`). An `IndexDefect` for a row outside `0 ..< len`, with bound
@@ -176,15 +204,18 @@ func sampleTimeMs*(m: ChunkMeta, row, col: int): float64 {.inline, raises: [].} 
 func sub*(m: ChunkMeta, rows: Slice[int]): ChunkMeta {.raises: [ValueError].} =
   ## The meta of the rows `rows` of `m` (row 0 is `m`'s row `rows.a`), for
   ## a `RowBlock.sub` of the same rows: splitting work across threads or
-  ## tiles. It shares the view and the failed-row list (no copy, no
-  ## allocation) and keeps `dtMs` and `firstSample`. Raises `ValueError` for
+  ## tiles. It shares the view, the failed-row list and the file scales (no
+  ## copy, no allocation) and keeps `dtMs` and `firstSample`. Raises `ValueError` for
   ## rows outside `0 ..< len` (an empty slice may start at `len`).
   result = m
   result.rows = m.rows.sub(rows) # validates the span
   if result.rows.len == 0:
     result.failed = nil
     result.failedLen = 0
+    result.scales = nil
     return
+  if m.scales != nil:
+    result.scales = cast[ptr UncheckedArray[FileScale]](addr m.scales[rows.a])
   # The failed rows within `rows`: [lo, hi) of the list, by binary search.
   template firstAtLeast(v: int): int =
     var lo = 0
