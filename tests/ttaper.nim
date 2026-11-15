@@ -1,4 +1,4 @@
-## Sweep-end tapers (task 10.1): each shape against its closed form at the
+## Sweep-end tapers: each shape against its closed form at the
 ## end points, the midpoint and the derivative, lengths in ms, the overlap
 ## refusal, and float32/float64.
 

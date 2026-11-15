@@ -36,7 +36,7 @@ with the 2026-11-13 figure added.
 The working set (16–32 MB) sits largely in the 3950X's L3, so these are cache rather than
 DRAM bandwidths: the ceiling that a single-pass panel kernel on one thread can reach.
 
-### bfft: real FFT, 2000 traces, forward + inverse (task 2.1)
+### bfft: real FFT, 2000 traces, forward + inverse
 
 Target: forward + inverse over a 2000-trace float32 panel at n = 2048 in ≤ 20 ms on one
 thread. **Met: 4.61 ms** (11.4 ms when first met, 2026-11-10).
@@ -61,7 +61,7 @@ How it got there (each step measured):
 - cachegrind then put 64 % of instructions in the real-FFT pack/split loops (scalar: a
   runtime lane count and a seq field reloaded per iteration). Static lanes and `noalias`
   kernels there: 11.4 ms;
-- Phase 12 (12.1): the work arrays a fixed phase apart in the L1/L2 ways (`workStride`),
+- the work arrays a fixed phase apart in the L1/L2 ways (`workStride`),
   fixed-width lane loops and the workspace scratch on a cache line: 4.61 ms.
 
 An odd length runs a full-length complex FFT, so `nextFastLen` returns even lengths by
@@ -81,9 +81,9 @@ Same machine and flags, 200 traces, forward + inverse, 2026-11-13:
 
 A power of two now costs what the 2·3·5 length near it costs (it was 3× slower: 233 against
 74 µs, 2026-11-10), and the lanes are 3× faster than one trace at this size. At 131072
-points a transform costs 123 µs per trace (12.1; 2219 µs before).
+points a transform costs 123 µs per trace (2219 µs before the staggered work arrays).
 
-Before 12.1 (2026-11-10), forward only, ns per n·log₂n and trace, from a sweep (5 samples
+Earlier (2026-11-10), forward only, ns per n·log₂n and trace, from a sweep (5 samples
 each):
 
 | n | lanes | one trace |
@@ -98,16 +98,16 @@ each):
 - Then, from m ≈ 30k complex points the 8-lane work buffers (4·m·8·4 B ≥ 4 MB) left the
   cache and batching stopped paying, and lengths with many factors of 2 aliased in cache
   (Stockham strides of 2^k): 61440 and 131072 were the worst. The staggered work arrays
-  of 12.1 removed the aliasing, so a cache-blocked (four-step) FFT is not needed up to 2^17.
+  removed the aliasing, so a cache-blocked (four-step) FFT is not needed up to 2^17.
 - A 60 s record at 1 ms (65536) costs about 56 µs per trace forward in the lanes, so a
   1000-trace spectrum average takes about 60 ms on one thread.
 
-## Filters (task 3.4)
+## Filters
 
 `nim bench` (bench/bfilter.nim), same machine and flags as above. A panel is 2000 traces ×
 2001 samples of float32 at 2 ms, filtered in place (live rows, edge handling included).
 "4 workers" is 4 threads started once, 500 rows each, shared read-only plan, one
-`Workspace` each: the wall time per round. The pool's hand-off (5.2) is not included.
+`Workspace` each: the wall time per round. The pool's hand-off (see Process pool) is not included.
 
 2026-11-13:
 
@@ -117,12 +117,12 @@ each):
 | FFT low-cut cos² 0.5–1 Hz | 881 | 3840 | 17.7 ms (8.86 µs/trace) | 4.62 ms | 3.84× |
 | IIR zero-phase Butterworth 4–60 Hz, 24 dB/oct (4 poles) | 99 | — | 10.8 ms (5.38 µs/trace) | 2.79 ms | 3.85× |
 
-Earlier (task 3.4, after the 3.5 review's per-edge L): 23.6 / 42.2 / 25.0 ms on one
+Earlier (with the per-edge L): 23.6 / 42.2 / 25.0 ms on one
 thread, 6.2 / 11.5 / 6.5 ms on 4 workers, with nfft 2500 and 5760. Since then: the FFT
-itself (12.1), lane-wise pack/unpack and 8-accumulator trend sums (12.2), the FFT size
-`samples + 2L` when the response rejects 0 Hz (zero pads, 12.3) and the IIR on 24 lanes.
+itself (see bfft), lane-wise pack/unpack and 8-accumulator trend sums, the FFT size
+`samples + 2L` when the response rejects 0 Hz (zero pads) and the IIR on 24 lanes.
 
-Where the FFT band-pass went before 12.2 (cachegrind, instructions): the FFT passes about
+Where the FFT band-pass went at first (cachegrind, instructions): the FFT passes about
 45 %, the strided pack/unpack (with its float64 conversions) about 30 %, the trend sums
 about 15 % (scalar float64: a float sum keeps its IEEE order), the gain multiply about 6 %.
 
@@ -132,7 +132,7 @@ fits a 60 Hz frame (16.7 ms) with room for the draw; on one thread it takes 11�
 a frame, so a viewer without the pool should filter off the draw thread. Cost scales with traces ×
 nfft·log(nfft): halve the panel, halve the time.
 
-## Gain (Phase 4)
+## Gain
 
 `nim bench` (bench/bgain.nim), same machine and flags as above, one thread, a panel of
 2000 traces × 2001 samples of float32 (16 MB), 2026-11-13.
@@ -148,7 +148,7 @@ nfft·log(nfft): halve the panel, halve the time.
   stayed scalar in `-d:danger` (1.7 ms); tvectorized builds in `-d:release`, where it was
   packed, so check danger builds by hand too.
 - The percentile clip is a scatter into a 65536-bin histogram, about 3 cycles a sample;
-  four interleaved sub-histograms took it from 5.1 to 4.2 ms, and the 4.4 review's single
+  four interleaved sub-histograms took it from 5.1 to 4.2 ms, and a single
   row filter for both passes (Σx² again) to 4.5 ms. It is a value to recompute
   when the data or the selection changes, not per frame.
 
@@ -164,7 +164,7 @@ AGC and normalization (same run, 1 thread):
 
 - AGC is O(n). Each window sum is a block suffix plus a block prefix (no subtraction, for
   precision); the block sums are built two blocks at a time (four independent float64 add
-  chains, 12.3), a serial loop that is most of the time. The window matters only through
+  chains), a serial loop that is most of the time. The window matters only through
   the windows cut by the trace ends: a 2000 ms window is half of a 4 s trace.
 - How it got there: 11.9 / 17.2 / 28.2 ms at first (the cut windows at the trace ends ran
   a scalar path with integer `div`/`mod`); closed forms per range, 9.3 / 11.1 / 16.3;
@@ -179,7 +179,7 @@ AGC and normalization (same run, 1 thread):
 --debuginfo:on --linedir:on -march=x86-64-v3`), one thread, a panel of 2000 traces × 2001
 samples of float32, four rules (two sensor types, a component, one station and channel) and
 a file-scale column, 2026-11-15, AMD Ryzen 9 3950X, Nim 2.4.2, gcc 12.2.0. **Measured on a
-shared machine** (other sessions compiling): the "loaded" column at a load average of 20 to
+shared machine** (other builds running): the "loaded" column at a load average of 20 to
 40, the "lighter" one at 8, beside a `bmemory` run of the same minute (copy 0.75 ms, scale in
 place 0.77 ms: twice the quiet machine's 2026-11-13 figures above). Re-measure on a quiet
 machine before quoting them.
@@ -243,7 +243,7 @@ upper bounds; re-measure on a quiet machine before quoting them. The instruction
 - A viewer computes these when a plot opens, for the few rows of a wireline record: a few
   milliseconds each, off the draw thread.
 
-## Process pool (task 5.2)
+## Process pool
 
 `nim bench` (bench/bpool.nim), same machine and flags. The pool is created once, outside
 the timing. "ping" is an empty job on every worker (`pool.ping`); "empty plan" is
@@ -269,13 +269,13 @@ panel, src → dst (the copy fused into the first op):
 | pool, 4 workers | 5.1 ms | 3.66× |
 | pool, 8 workers | 2.9 ms | 6.46× |
 
-(Task 5.2: 32.2 ms on one thread, 8.6 ms on 4 workers, 4.3 ms on 8.) The tiled `apply`
+(When first measured: 32.2 ms on one thread, 8.6 ms on 4 workers, 4.3 ms on 8.) The tiled `apply`
 (every op on ~256 KB of rows while it is in cache) costs about what the ops cost one after
 another over the whole panel (11.9 ms band-pass + 5.1 ms AGC + demean). With the faster
 kernels the 8-worker run scales less (6.5×, was 7.4×): its 2.9 ms is closer to the
 per-job and memory costs.
 
-## Pre-stack, QC and stacking (task 9.2)
+## Pre-stack, QC and stacking
 
 `nim bench` (bench/bprestack.nim), same machine and flags as above, one thread, a split-spread
 shot of 2000 traces × 2001 samples of float32 at 2 ms (16 MB): a refraction and a reflection
@@ -284,7 +284,7 @@ over noise.
 2026-11-11, AMD Ryzen 9 3950X, Nim 2.4.0, gcc 12.2.0,
 `-d:danger --opt:speed --debuginfo:on --linedir:on -march=x86-64-v3`:
 
-| operation | before 9.2 | after | 2026-11-13 |
+| operation | before | after | 2026-11-13 |
 |---|---|---|---|
 | `applyStatics` linear / cubic | 6.6 / 14.9 ms | 6.1 / 15.5 ms | 1.90 / 2.74 ms |
 | `applyLmo` + `removeLmo` | 10.8 ms | 10.3 ms | 0.81 ms |
@@ -296,7 +296,7 @@ over noise.
 | `fitShot` on picks (two-segment, binned) | 38.1 / 38.2 ms | 20.7 / 20.8 ms | 19.9 / 20.1 ms |
 | `fitShot` with cross-correlation | 45.1 ms | 27.6 ms | 26.7 ms |
 
-Phase 12 (review xF) reworked these kernels: `shiftSamples`, which statics and LMO use,
+For the 2026-11-13 column these kernels were reworked: `shiftSamples`, which statics and LMO use,
 interpolates the interior in vectorized blocks; the NMO kernel; the stack's finite check as
 a bit test.
 

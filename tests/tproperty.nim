@@ -1,4 +1,4 @@
-## Property tests (task 9.1): random parameters and data, fixed seeds.
+## Property tests: random parameters and data, fixed seeds.
 ##
 ## - random pipelines on random gathers (sizes, dt, live lengths, dead,
 ##   auxiliary and failed rows, amplitudes from 1e-6 to 1e6, all-zero rows):
@@ -489,7 +489,7 @@ block velocity_parsers:
         inc bad
   doAssert ok > 0 and bad > 0
 
-# ------------------------------------------------- fuzzer findings (9.1) --
+# ------------------------------------------------------- fuzzer findings --
 
 block extreme_parameters:
   # libFuzzer + UBSan found float → int conversions of values no int holds

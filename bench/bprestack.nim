@@ -1,4 +1,4 @@
-## Pre-stack throughput (Phases 6–8, task 9.2), one thread, a panel of 2000
+## Pre-stack throughput, one thread, a panel of 2000
 ## traces × 2001 samples of float32 at 2 ms (16 MB): statics, LMO, NMO
 ## (linear and cubic), stacking into bins, first-break picking (three methods,
 ## with and without the band-pass) and the per-shot refraction fit. Then a

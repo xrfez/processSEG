@@ -1,4 +1,4 @@
-## The documentation's checks (task 9.3): the usage guides' examples run, and
+## The documentation's checks: the usage guides' examples run, and
 ## `docs/api.md` names every symbol the umbrella exports.
 ##
 ## **Examples.** Every fenced code block of `docs/guide/*.md` and of

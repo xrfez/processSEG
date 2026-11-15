@@ -186,7 +186,7 @@ proc ping*(p: ProcessPool) =
 type
   RowQueue = object
     ## The rows of a job, handed out in runs of `grain` rows to whichever
-    ## worker asks next (review xE P2: one fixed range per worker ran a
+    ## worker asks next (one fixed range per worker ran a
     ## block whose first half was dead at half speed).
     next: Atomic[int]
     rows, grain: int

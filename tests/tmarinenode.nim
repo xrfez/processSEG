@@ -1,4 +1,4 @@
-## The case calibration was built for (task 14.5): marine nodes whose
+## The case calibration was built for: marine nodes whose
 ## recorder writes counts, each node a hydrophone and three geophones, the
 ## sensitivities applied later from a table by component. End to end on a
 ## synthetic SEG-D record: what the file says, prefetch, the file's descale

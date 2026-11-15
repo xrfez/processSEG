@@ -1,4 +1,4 @@
-## A signal against its reference (task 15.4): the correlation over lags
+## A signal against its reference: the correlation over lags
 ## equals a direct one, a delay peaks at its lag (and so does the envelope),
 ## the lag window's phase is −360·f·τ and 0 for the reference itself, the
 ## comparison of a scaled, delayed copy reads its gain and its delay, the

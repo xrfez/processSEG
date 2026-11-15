@@ -1,4 +1,4 @@
-## The survey QC example on real data (task 11.6): the Morgantown 3D SPS
+## The survey QC example on real data: the Morgantown 3D SPS
 ## files and one of its shots, `00000151_12900_11300.sgd`, from the survey
 ## files to a QC report: the station join (its FFID points at another
 ## shot), the record's completeness against the XPS, its fold against the

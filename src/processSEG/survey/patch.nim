@@ -409,7 +409,7 @@ type
     lineMap*, pointMap*: NumberMap
       ## `ppNumbers`: the (fractional) receiver line and point at the source,
       ## from its line and point numbers.
-    # Distance field (11.9): limits around the source; Inf: none.
+    # Distance field: limits around the source; Inf: none.
     inlineHalfWidth* = Inf ## Box half-width along `boxAzimuthDeg`.
     crosslineHalfWidth* = Inf ## Box half-width across it (90° clockwise).
     boxAzimuthDeg* = NaN ## The box's inline direction; NaN: the receiver-line azimuth.

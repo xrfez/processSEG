@@ -1,4 +1,4 @@
-## X generation from a template (`survey/patch`, task 11.8): synthetic
+## X generation from a template (`survey/patch`): synthetic
 ## surveys whose X records are written by hand (`utils/survey`), in each
 ## edge mode, by coordinates and by numbers, rotated and irregularly
 ## numbered; R gaps and short lines; a write / read round trip; and the
@@ -259,7 +259,7 @@ block morgantown:
     var g = initSurveyGeometry()
     for ext in [".sps", ".rps", ".xps"]: g.addSps(base & ext)
     let p = describePatches(g)
-    # the 11.7 box as a template: lines inside ±boxCrossline, slots inside ±boxInline
+    # the `describePatches` box as a template: lines inside ±boxCrossline, slots inside ±boxInline
     let lines = 2 * int(round(p.boxCrossline / p.layout.lineSpacing))
     let channels = 2 * int(round(p.boxInline / p.layout.interval)) + 1
     var shots: seq[PatchShot]

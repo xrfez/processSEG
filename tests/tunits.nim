@@ -1,7 +1,7 @@
-## Amplitude units (task 14.1): sensitivities and descales entered with their
+## Amplitude units: sensitivities and descales entered with their
 ## units, converted to SI exactly; the damped sensitivity from the
 ## open-circuit one and the resistances; `valueIn` round trips; refusals.
-## Task 15.1: force sensitivities (a ground-force channel) and masses.
+## Also force sensitivities (a ground-force channel) and masses.
 
 import std/[assertions, math, strutils]
 import processSEG

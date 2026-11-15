@@ -1,7 +1,7 @@
-## Distance-field patches (`survey/patch`, task 11.9): boxes at the
+## Distance-field patches (`survey/patch`): boxes at the
 ## receiver-line or a given azimuth, radius, maximum offset, centre
 ## distances, shift at the edges and the intersection with a template,
-## against brute force over the SPS coordinates; and the Morgantown 11.7 box
+## against brute force over the SPS coordinates; and the Morgantown box (`describePatches`)
 ## against its XPS (skipped when absent).
 
 import std/[algorithm, assertions, math, os, random, sets, strutils]
@@ -257,4 +257,4 @@ block morgantown:
     echo "    listed not generated ", fmt(spreadOf(missing)), "; generated not listed ",
       fmt(spreadOf(extra))
     doAssert a.len == 5519
-    doAssert spreadOf(listed).median >= 0.99, "the 11.9 acceptance: ≥ 99 % at the median record"
+    doAssert spreadOf(listed).median >= 0.99, "≥ 99 % listed at the median record"

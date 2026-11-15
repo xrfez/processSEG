@@ -1,4 +1,4 @@
-## Calibration (task 14.2): the precedence ladder of the rules, independently
+## Calibration: the precedence ladder of the rules, independently
 ## per factor; the file's factors in each `fileFactors` order; conflicts and
 ## sensor-type mismatches; NaN for unresolved live rows; dead, auxiliary and
 ## failed rows; the gain; volts; the inverse; already-physical rows; refusals;

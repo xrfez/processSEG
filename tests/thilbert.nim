@@ -1,4 +1,4 @@
-## The Hilbert transform and envelope (task 15.2): H[cos] = sin and
+## The Hilbert transform and envelope: H[cos] = sin and
 ## H[sin] = −cos on and between bins (Bedrosian: a smooth envelope slower
 ## than the carrier passes through), the envelope of an amplitude-modulated
 ## sinusoid and of a tapered sweep, float32 and float64, short inputs, NaN,

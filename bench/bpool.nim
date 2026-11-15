@@ -1,4 +1,4 @@
-## ProcessPool (task 5.2): the per-job overhead (an empty job on every
+## ProcessPool: the per-job overhead (an empty job on every
 ## worker, and an empty plan through `apply`), and a viewer pipeline on a
 ## 2000 × 2001 float32 panel at 2 ms (demean, band-pass 4-8-60-80, AGC
 ## 500 ms, src → dst) on the single-thread `apply` and on pools of 1, 2, 4

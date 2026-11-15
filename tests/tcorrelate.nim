@@ -1,4 +1,4 @@
-## Vibroseis correlation (tasks 10.3b and 10.4): FFT against direct
+## Vibroseis correlation: FFT against direct
 ## correlation, reflectivity recovered, normalization, deconvolution, the
 ## pilot's sub-sample start time, the instrument filter's phase, rows,
 ## allocation and the pool.

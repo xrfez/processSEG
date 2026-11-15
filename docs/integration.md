@@ -3,7 +3,7 @@
 Status: written before the viewer exists, revised for parseSEG 0.7.0 and 0.8.0 and for each phase's
 API since. It fixes who owns what, the data that crosses each boundary, and what processSEG
 needs from parseSEG. Update it whenever an API it describes changes. The names below are the
-real API as of the 0.1.0 release candidate (Phase 9: the pipeline, the pool, moveout ticks,
+real API as of the 0.1.0 release candidate (the pipeline, the pool, moveout ticks,
 velocity models, statics, NMO, the brute stack and the QC modules); `tests/utils/viewersim.nim`
 acts out the viewer loop it describes, as a test. Task-oriented guides with tested examples
 are in [guide/](guide/README.md), and every exported name is in [api.md](api.md).
@@ -697,7 +697,7 @@ processSEG now requires:
 | F4 | `PrefetchChunk.firstSample`, the prefetcher's window origin | `chunkMeta(c)` needs it, and a chunk did not record it |
 | F3 | `openSeismicWriter(path, SegyOutputOptions(...))`, a SEG-Y file with no input to model, and `writeTrace(w, keys, samples, overrides)`, a trace whose headers come from `TraceKeys` (standard layout; `openSeismic` reads the same keys back) | A stack of SEG-D or SEG-2 input could not be written as SEG-Y: `writeTrace` needed a template trace of the output's standard |
 
-Checked again for the pipeline, the pool and the viewer loop (task 5.4): nothing else is
+Checked again for the pipeline, the pool and the viewer loop: nothing else is
 missing. The `transform` hook is not given the prefetcher's `firstSample`;
 `bruteStack` decodes whole traces (`firstSample = 0`), and a windowed batch driver would
 pass it through `user`, with the workspaces.

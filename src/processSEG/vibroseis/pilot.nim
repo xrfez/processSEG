@@ -17,7 +17,7 @@
 ## start time, which can be a fraction of a sample (correlation shifts by
 ## it exactly, in the frequency domain).
 ##
-## **Sample rate** (task 10.3b). Correlation refuses a pilot whose `dtMs`
+## **Sample rate**. Correlation refuses a pilot whose `dtMs`
 ## differs from the records': `resamplePilot` converts it explicitly, with a
 ## band-limited (Kaiser-windowed sinc) interpolation, and refuses a pilot
 ## whose samples hold energy above the interpolator's passband

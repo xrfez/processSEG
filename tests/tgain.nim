@@ -274,7 +274,7 @@ block agc_zoom_margin:
 
 block factors_that_do_not_fit_float32:
   # A factor finite in float64 but Inf in float32 would make zeros NaN: the
-  # trace is left as it is (review 4.4 #2).
+  # trace is left as it is.
   var ws = initWorkspace()
   let big = initNormalizePlan(normMax, samples = 4, target = 1e20)
   var x = @[1e-20'f32, 0, 0, 0]

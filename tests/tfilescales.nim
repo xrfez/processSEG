@@ -1,4 +1,4 @@
-## A file's own scale headers (task 14.4): `fileScalesInto` and `scaleReport`
+## A file's own scale headers: `fileScalesInto` and `scaleReport`
 ## on synthetic SEG-D Rev 2 and Rev 3, SEG-Y and SEG-2 files written with
 ## parseSEG; a prefetch chunk calibrated from its file's factors; SEG-Y
 ## written with `segyUnitOverrides` read back as physical; the cost of a
@@ -163,7 +163,7 @@ block write_physical_and_read_back:
   doAssert s[0].physical and s[0].unit == auVelocity and s[0].descale == 1
   doAssert s[1].physical and s[1].unit == auPressure
   doAssert not s[2].physical and s[2].descale == 1 and s[2].sensitivity.isNaN # volts
-  doAssert s[3].physical and s[3].unit == auForce and s[3].descale == 1 # newtons (15.1)
+  doAssert s[3].physical and s[3].unit == auForce and s[3].descale == 1 # newtons
   var x = f.readTraces(0 ..< f.len, float32)
   let meta = chunkMeta(f, 0 ..< f.len, scales = s)
   let plan = initCalibrationPlan(initCalibration([CalibrationRule(

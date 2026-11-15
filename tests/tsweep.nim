@@ -1,4 +1,4 @@
-## Sweep generation (task 10.2): the instantaneous frequency of every law
+## Sweep generation: the instantaneous frequency of every law
 ## (from the phase derivative and a short-time spectrum), the dB/octave and
 ## dB/Hz spectral slopes, the Klauder wavelet's width, phase accuracy, and
 ## validation.

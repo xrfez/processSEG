@@ -1,9 +1,9 @@
-## FFT throughput (task 2.1): forward + inverse real FFTs of a viewer panel,
+## FFT throughput: forward + inverse real FFTs of a viewer panel,
 ## 2000 traces, batched across traces (`forwardLanes`) and one trace at a time.
 ##
-## Target (PLAN.md 2.1): a forward + inverse pass over a 2000-trace float32
+## Target: a forward + inverse pass over a 2000-trace float32
 ## panel at n = 2048 in ≤ 20 ms on one thread (≤ 5 µs per trace and transform),
-## so that a band-pass of the panel (3.4) fits a viewer frame with 4 workers.
+## so that a band-pass of the panel (bfilter) fits a viewer frame with 4 workers.
 ## Long records: 200 traces at n = 65536 (a 60 s record at 1 ms, padded) and
 ## n = 60000 (2⁵·3·5⁴, unpadded), reported per trace.
 

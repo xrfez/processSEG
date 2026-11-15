@@ -1,4 +1,4 @@
-## The calibration in a pipeline (task 14.3): `calibrateOp` and
+## The calibration in a pipeline: `calibrateOp` and
 ## `uncalibrateOp`; gain, statistics, a per-panel normalization and AGC after
 ## it see physical values; the order rule; `amplitudeUnits`; editing the op;
 ## the pool with a file-scale column; no allocation per apply.

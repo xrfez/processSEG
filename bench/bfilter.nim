@@ -1,4 +1,4 @@
-## Filter throughput (task 3.4): a band-pass of a viewer panel, 2000 traces ×
+## Filter throughput: a band-pass of a viewer panel, 2000 traces ×
 ## 2001 samples of float32 at 2 ms, on one thread and on 4 worker threads.
 ##
 ## Cases: the FFT band-pass (cos² 4-8-60-80 Hz, the usual display filter),
@@ -8,7 +8,7 @@
 ## The 4-worker number uses 4 threads started once, each filtering its own
 ## 500 rows with its own `Workspace` and the shared, read-only plan; the time
 ## per panel is the wall time of a round of all 4 divided by the rounds. It
-## leaves out the hand-off of a persistent pool (task 5.2, measured there),
+## leaves out the hand-off of a persistent pool (measured in bpool),
 ## which is microseconds against milliseconds here.
 
 import std/[monotimes, strutils, times, algorithm]

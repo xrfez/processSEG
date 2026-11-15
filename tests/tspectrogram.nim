@@ -1,4 +1,4 @@
-## Time-variant spectra (task 15.5): frames equal a direct DFT of the
+## Time-variant spectra: frames equal a direct DFT of the
 ## windowed samples, a sinusoid on a bin reads its amplitude in every frame,
 ## a sweep's ridge follows its law and its 2nd harmonic shows 20 dB down,
 ## float32, refusals and no allocation.

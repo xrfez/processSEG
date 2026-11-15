@@ -1,5 +1,5 @@
 ## Small synthetic files whose headers carry scale information, written with
-## parseSEG, for the calibration tests (tasks 14.2 and 14.4). Each writer
+## parseSEG, for the calibration tests. Each writer
 ## documents what its headers say; the samples are a constant per trace
 ## (`rowValue`), so a calibrated value is checked against the factor alone.
 

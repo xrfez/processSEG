@@ -1,4 +1,4 @@
-## Pilots (tasks 10.3 and 10.3b): generated and recorded pilots, the SEG-Y
+## Pilots: generated and recorded pilots, the SEG-Y
 ## sweep fields round trip through parseSEG, resampling and instrument
 ## filters.
 

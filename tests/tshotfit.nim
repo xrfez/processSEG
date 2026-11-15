@@ -195,7 +195,7 @@ block positions_without_coordinates:
 
 block unsigned_offsets_without_coordinates:
   # Unsigned offsets would interleave the two sides: the channel order is
-  # used (review 8.4 #1), and the swap is still the only finding.
+  # used, and the swap is still the only finding.
   var s = makeShot(5000)
   let picks = pickAll(s.g)
   s.g.swapHeaders(20, 27)
@@ -214,7 +214,7 @@ block unsigned_offsets_without_coordinates:
   doAssert fit.position[5] == 5 and suspects(fit) == @[20, 27], $suspects(fit)
 
 block degenerate_fits:
-  # Every pick at one offset: no velocity can be fitted (review 8.4 #6).
+  # Every pick at one offset: no velocity can be fitted.
   var keys = newSeq[TraceKeys](4)
   for i, k in keys.mpairs:
     k = stationKeys(0, 100, 0, 0, dt)

@@ -1,4 +1,4 @@
-## Gain throughput (Phase 4) on a viewer panel, 2000 traces × 2001 samples of
+## Gain throughput on a viewer panel, 2000 traces × 2001 samples of
 ## float32 at 2 ms, one thread: per-trace and panel statistics (with and
 ## without the percentile histogram), AGC at three window lengths, a panel
 ## normalization and a time-variant gain curve.
