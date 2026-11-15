@@ -65,10 +65,10 @@ type
   VibSignal* = enum
     ## A vibrator unit's signals: the four roles a row can have, and the
     ## ground force generated from M and B.
-    vsReference = "Ref"          ## The pilot (as recorded, or a generated sweep).
-    vsGroundForce = "GF"         ## The ground force (recorded).
-    vsMass = "M"                 ## The reaction-mass acceleration.
-    vsBaseplate = "B"            ## The baseplate acceleration.
+    vsReference = "Ref" ## The pilot (as recorded, or a generated sweep).
+    vsGroundForce = "GF" ## The ground force (recorded).
+    vsMass = "M" ## The reaction-mass acceleration.
+    vsBaseplate = "B" ## The baseplate acceleration.
     vsWeightedSum = "GF (M, B)" ## `Mr·a_M + Mb·a_B`, generated.
 
   VibRole* = range[vsReference .. vsBaseplate]
@@ -77,7 +77,7 @@ type
   VibUnit* = object
     ## One vibrator unit's rows and constants; see the module documentation.
     rows*: array[VibRole, int] = [vsReference: -1, vsGroundForce: -1, vsMass: -1,
-      vsBaseplate: -1] ## Each role's row in the block; −1: none.
+      vsBaseplate: -1]   ## Each role's row in the block; −1: none.
     units*: array[VibRole, AmplitudeUnit]
       ## The unit each row is in as passed (`auRecorded` by default).
     sensitivity*: array[VibRole, Sensitivity]
@@ -88,39 +88,39 @@ type
 
   LimitKind* = enum
     ## A limit a signal exceeds.
-    lkPhase = "phase"         ## `|phase| > phaseDeg` at a point.
-    lkThd = "THD"             ## `THD > thdPct` at a point.
-    lkHarmonic = "harmonic"   ## A harmonic's `100·A_k/A_1 > harmonicPct` at a point.
-    lkForceLow = "force low"  ## The fundamental below `forceLow` at a point.
+    lkPhase = "phase"          ## `|phase| > phaseDeg` at a point.
+    lkThd = "THD"              ## `THD > thdPct` at a point.
+    lkHarmonic = "harmonic"    ## A harmonic's `100·A_k/A_1 > harmonicPct` at a point.
+    lkForceLow = "force low"   ## The fundamental below `forceLow` at a point.
     lkForceHigh = "force high" ## The fundamental above `forceHigh` at a point.
     lkPeakForce = "peak force" ## The peak above `peakForce` at a point.
     lkMeanPhase = "mean phase" ## The mean `|phase|` above `meanPhaseDeg`.
-    lkMeanThd = "mean THD"    ## The mean THD above `meanThdPct`.
+    lkMeanThd = "mean THD"     ## The mean THD above `meanThdPct`.
     lkMeanForce = "mean force" ## The mean fundamental below `meanForceLow`.
 
   VibLimits* = object
     ## Optional limits (module documentation); NaN: none.
-    phaseDeg*: float64 = NaN ## Largest `|phase|` at a point, degrees.
-    thdPct*: float64 = NaN ## Largest THD at a point, %.
-    harmonicPct*: float64 = NaN ## Largest level of any one harmonic at a point, % of the fundamental.
-    forceLow*: float64 = NaN ## Smallest fundamental at a point, in the signal's unit.
-    forceHigh*: float64 = NaN ## Largest fundamental at a point.
-    peakForce*: float64 = NaN ## Largest peak at a point (the hold-down weight).
+    phaseDeg*: float64 = NaN     ## Largest `|phase|` at a point, degrees.
+    thdPct*: float64 = NaN       ## Largest THD at a point, %.
+    harmonicPct*: float64 = NaN  ## Largest level of any one harmonic at a point, % of the fundamental.
+    forceLow*: float64 = NaN     ## Smallest fundamental at a point, in the signal's unit.
+    forceHigh*: float64 = NaN    ## Largest fundamental at a point.
+    peakForce*: float64 = NaN    ## Largest peak at a point (the hold-down weight).
     meanPhaseDeg*: float64 = NaN ## Largest mean `|phase|`.
-    meanThdPct*: float64 = NaN ## Largest mean THD.
+    meanThdPct*: float64 = NaN   ## Largest mean THD.
     meanForceLow*: float64 = NaN ## Smallest mean fundamental.
-    fromMs*: float64 = NaN ## Points before this are not checked (NaN: from the start).
-    toMs*: float64 = NaN ## Points after this are not checked (NaN: to the end).
+    fromMs*: float64 = NaN       ## Points before this are not checked (NaN: from the start).
+    toMs*: float64 = NaN         ## Points after this are not checked (NaN: to the end).
 
   TrackSummary* = object
     ## One signal over its measured points between `fromMs` and `toMs`.
-    points*: int ## Points with a fundamental.
+    points*: int                               ## Points with a fundamental.
     meanAbsPhaseDeg*, maxAbsPhaseDeg*: float64 ## Of `|phase|`; NaN without points.
-    meanThdPct*, maxThdPct*: float64 ## Of THD where measured.
-    meanForce*, minForce*, maxForce*: float64 ## Of the fundamental's amplitude.
-    maxPeak*: float64 ## The largest peak.
-    exceeded*: array[LimitKind, int] ## Points beyond each per-point limit (0 for the mean kinds).
-    failed*: set[LimitKind] ## The limits exceeded at a point or by a mean.
+    meanThdPct*, maxThdPct*: float64           ## Of THD where measured.
+    meanForce*, minForce*, maxForce*: float64  ## Of the fundamental's amplitude.
+    maxPeak*: float64                          ## The largest peak.
+    exceeded*: array[LimitKind, int]           ## Points beyond each per-point limit (0 for the mean kinds).
+    failed*: set[LimitKind]                    ## The limits exceeded at a point or by a mean.
 
   UnitSignature*[T: SampleType] = object
     ## The measures of one unit; see the module documentation. Filled by

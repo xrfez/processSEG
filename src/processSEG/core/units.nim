@@ -139,10 +139,10 @@ type
     enteredUnit: MassUnit
 
 const
-  inch = 0.0254       # m
-  standardG = 9.80665 # m/s²
-  bar = 1e5           # Pa
-  pound = 0.45359237  # kg
+  inch = 0.0254                  # m
+  standardG = 9.80665            # m/s²
+  bar = 1e5                      # Pa
+  pound = 0.45359237             # kg
   poundForce = pound * standardG # N: 4.4482216152605
 
 proc badValue(what: string, v: float64) {.noinline, noreturn.} =

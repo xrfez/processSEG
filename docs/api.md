@@ -592,7 +592,8 @@ A signal (ground force, mass or baseplate acceleration) against its reference (t
 at points every `stepMs` along the sweep: harmonic k's complex amplitude over `cycles`
 periods of the reference, with a cos⁴ weight in phase (orthogonal to every other harmonic
 for any sweep law). The reference's phase comes from its own analytic signal, demeaned and
-without its content below the band.
+without its content below the band. Guide: [vibrator QC](guide/vibrator-qc.md), with the
+plot each call fills.
 
 | Proc | What |
 |---|---|
@@ -619,6 +620,9 @@ without its content below the band.
 
 
 ## vibroseis/vibqc: vibrator QC of a record
+
+Guide: [vibrator QC](guide/vibrator-qc.md); the viewer's plot → call table:
+[integration.md](integration.md#vibrator-signature-analysis).
 
 | Proc | What |
 |---|---|

@@ -200,6 +200,38 @@ machine before quoting them.
   go through parseSEG's header listing, 2.7 µs a trace on a synthetic record with one Sensor
   Info block and 5 µs on the example files' 3957-trace shot (20 ms), under load.
 
+## Vibrator QC (Phase 15)
+
+`bench/bvibqc.nim`, built with the `nim bench` flags (`-d:danger --opt:speed
+--debuginfo:on --linedir:on -march=x86-64-v3`), one thread, float32: one unit of a wireline
+record (Ref, GF, M, B), an 8-80 Hz linear sweep of 8 s at 1 ms plus a 2 s listen time
+(10001 samples), 2026-11-15, AMD Ryzen 9 3950X, Nim 2.4.2, gcc 12.2.0. **Measured on a shared machine** (load average 10 to 12): upper bounds;
+re-measure on a quiet machine before quoting them.
+
+| call | median |
+|---|---|
+| `referenceInto` (the pilot: analytic signal, unwrapped phase, every point's windows) | 0.91 ms |
+| `trackInto`, harmonics 1-5 (8 lanes), 1001 points | 1.22 ms (122 ns a sample) |
+| `trackInto`, harmonics 1-12 (16 lanes) | 2.53 ms |
+| `analyzeVibrators`, one unit (the reference, its 4 rows and the GF from M and B) | 7.06 ms |
+| `crossCorrelateInto`, lags ±500 ms, with the envelope | 0.29 ms |
+| `lagSpectrumInto` (1001 lags, 1024 points) | 0.015 ms |
+| `compareInto` (two signals against frequency) | 0.37 ms |
+| `spectrogramInto`, 255-sample frames every 10 ms (1001 frames × 129 bins) | 1.32 ms |
+| `envelopeInto` (Hilbert transform, nfft 20250) | 0.13 ms |
+
+- The tracking's cost is its scan: per sample, the phasor's powers (serial) and five
+  running sums per harmonic, packed across the harmonics' lanes (`addSample`, 8 lanes for up
+  to 8 harmonics, 16 beyond; `tests/tvectorized.nim`); its points cost O(1) each, whatever
+  the window. `referenceInto` is two FFTs of `nextFastLen(2·samples)` and the per-sample
+  trigonometry, once per reference.
+- The correlation is two forward and one or two inverse FFTs of `nextFastLen(2·samples)`
+  (20000 here), the comparison two forward and three inverse ones plus three of the lag
+  window; the cross-spectrum multiply is packed (`crossKernel`).
+- The spectrogram is one batched FFT per eight frames (the lanes path of `fft/plan`).
+- A viewer computes these when a plot opens, for the few rows of a wireline record: a few
+  milliseconds each, off the draw thread.
+
 ## Process pool (task 5.2)
 
 `nim bench` (bench/bpool.nim), same machine and flags. The pool is created once, outside

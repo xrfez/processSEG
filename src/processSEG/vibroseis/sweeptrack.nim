@@ -110,9 +110,9 @@ type
 
   TrackParams* = object
     ## What `SweepTrackPlan` measures; see the module documentation.
-    harmonics*: int = 5 ## The highest harmonic order tracked, 1 (the fundamental only) .. 16.
-    cycles*: int = 4 ## The window: this many periods of the reference (≥ 3), cos⁴ weighted.
-    stepMs*: float64 = 10 ## Points every `stepMs` (rounded to whole samples, at least one).
+    harmonics*: int = 5                 ## The highest harmonic order tracked, 1 (the fundamental only) .. 16.
+    cycles*: int = 4                    ## The window: this many periods of the reference (≥ 3), cos⁴ weighted.
+    stepMs*: float64 = 10               ## Points every `stepMs` (rounded to whole samples, at least one).
     minReferenceDb*: float64 = -40
       ## The sweep is where the reference's envelope is within this of its peak (< 0).
     maxHarmonicFraction*: float64 = 0.8
@@ -152,9 +152,9 @@ type
 const
   maxHarmonics = 16
   peakPhases = 8 # sub-sample positions of the band-limited peak
-  peakHalf = 8 # taps each side of the interpolator
+  peakHalf = 8   # taps each side of the interpolator
   peakBeta = 8.0 # its Kaiser window
-  sumCount = 10 # running sums per harmonic: 5 weights, real and imaginary
+  sumCount = 10  # running sums per harmonic: 5 weights, real and imaginary
 
 proc badTrack(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)

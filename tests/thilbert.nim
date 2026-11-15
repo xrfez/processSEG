@@ -133,9 +133,9 @@ block refusals_and_defects:
   ws.reserve(hp.workspaceSize)
   var x = newSeq[float64](11)
   var h = newSeq[float64](11)
-  doAssertRaises(AssertionDefect): hp.hilbertInto(x, h, ws)   # longer than the plan
+  doAssertRaises(AssertionDefect): hp.hilbertInto(x, h, ws) # longer than the plan
   var y = newSeq[float64](10)
-  doAssertRaises(AssertionDefect): hp.envelopeInto(y, h, ws)  # output length
+  doAssertRaises(AssertionDefect): hp.envelopeInto(y, h, ws) # output length
   var small = initWorkspace()
   doAssertRaises(AssertionDefect): hp.hilbertInto(y, y, small)
 

@@ -35,6 +35,9 @@ or a small SEG-Y written with parseSEG, so they need no files.
 | Correlate vibroseis records, or deconvolve the sweep | [vibroseis.md](vibroseis.md#correlation-and-sweep-deconvolution) |
 | Stack repeated sweeps (vertical, diversity) | [vibroseis.md](vibroseis.md#stacking-repeated-sweeps) |
 | Cut continuous node recordings into records at shot times | [vibroseis.md](vibroseis.md#continuous-recordings) |
+| QC a vibrator's wireline signals (reference, ground force, mass, baseplate): every plot's values, limits, the ground force from mass and baseplate | [vibrator-qc.md](vibrator-qc.md) |
+| Track phase, force and harmonic distortion against sweep time | [vibrator-qc.md](vibrator-qc.md#against-sweep-time) |
+| Correlate a signal with its reference; compare two signals; a time-frequency picture | [vibrator-qc.md](vibrator-qc.md#correlation-with-the-reference) |
 | Read SPS, join traces by station; describe patches, generate X records | [survey-qc.md](survey-qc.md#patches-describing-and-generating-x-records) |
 | Bin a survey automatically; pre-plot and actual fold maps, their difference | [survey-qc.md](survey-qc.md#binning-and-fold-maps) |
 | Check field records against the XPS (missing, unlisted, mismatched records) | [survey-qc.md](survey-qc.md#record-completeness) |

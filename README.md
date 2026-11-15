@@ -27,6 +27,11 @@ with no hidden allocation and no hidden threads.
   shapes), generated or recorded pilots (resampling, instrument filters, SEG-Y sweep
   headers), correlation and sweep deconvolution, vertical and diversity stacking of
   repeated sweeps, and continuous node recordings cut into records at shot times.
+- **Vibrator QC:** a unit's reference, ground force, mass and baseplate signals against
+  sweep time (phase, fundamental and peak force, frequency, each harmonic, THD), their
+  correlation with the reference (envelope, spectrum, phase), comparisons, a time-frequency
+  picture, the ground force from mass and baseplate, and optional limits with a summary per
+  unit.
 - **Survey QC:** receiver patches of an X survey described as a template or a distance box,
   X records generated from either (roll, shift, static edges), automatic bin grids,
   pre-plot and actual fold maps (offset classes, azimuth sectors) and their difference,

@@ -218,8 +218,10 @@ flow[2].agc.windowMs = 300                # a slider moved: edit the op, recompi
 - **What allocates:** `compile`, `newProcessPool`, `reserve` when it grows, and the first
   `pool.apply` after a plan needing more scratch than any before (each worker grows its
   workspace); for calibration, `fileScalesInto` (a few columns of scratch) and
-  `scaleReport`. Every other `apply`, `pool.apply`, `chunkMeta(c)`, stats, spectrum,
-  moveout, `resolveInto` and `calibrate` call allocates nothing.
+  `scaleReport`; for vibrator QC, the plans, `initSweepReference`, `initSweepTrack` and the
+  first `analyzeVibrators` into a `results` seq. Every other `apply`, `pool.apply`,
+  `chunkMeta(c)`, stats, spectrum, moveout, `resolveInto`, `calibrate`, tracking,
+  correlation and spectrogram call allocates nothing.
 - **Threads.** processSEG offers three ways to run, from the simplest to the most control:
   1. **No threads.** `plan.apply(raw, processed, meta, ws)` on any thread. Kernels touch no
      globals, so several threads can each call `apply` with their own `Workspace`.
@@ -393,6 +395,53 @@ For the viewer:
   calibration op in `opts.flow` uses the table alone.
 - One sensitivity holds in the sensor's flat band, above its natural frequency; no response
   correction is made below it.
+
+## Vibrator signature analysis
+
+For start-up tests and QC of vibrator wirelines: per unit a reference (the pilot), ground
+force (GF), reaction-mass (M) and baseplate (B) acceleration, which the user selects from a
+record and assigns (by default the record's channels in the order Ref, GF, M, B; the viewer
+keeps the assignment with the file). processSEG fills each plot's buffers, values and axes
+([guide](guide/vibrator-qc.md), modules `vibroseis/sweeptrack`, `vibroseis/crosscorrelate`,
+`vibroseis/vibqc`, `fft/spectrogram`, `fft/hilbert`):
+
+| Plot | Call | Axis |
+|---|---|---|
+| Signal | the rows; `UnitSignature.weightedSum` (GF from M and B, `groundForceInto` for one pair) | `sampleTimeMs` |
+| Spectrum: amplitude, phase | `SpectrumPlan.amplitudeInto` (phase from the window's start); against the reference: the correlation's `lagSpectrumInto` | `binHz` |
+| Correlation: raw, envelope | `cp.crossCorrelateInto(x, reference, lags, envelope, ws)` | `cp.lagMs(i)` |
+| Correlation: spectrum, phase | `cp.lagSpectrumInto(lags, amp, phaseDeg, ws)` | `cp.binHz(k)` |
+| QC: phase, fundamental force, peak force, frequency | `track.phaseDeg`, `.amplitude[0]`, `.peak`, `.frequencyHz` beside `.referenceHz` | `track.timeMs` |
+| Distortion: each harmonic, THD | `track.distortionInto(k, dst)`, `track.thdPct` | `track.timeMs` |
+| Distortion: time-variant spectrum | `sg.spectrogramInto(x, amp, ws)`, `toDbInto` per frame; overlay `k·track.referenceHz` | `sg.frameCol(i)`, `sg.binHz(k)` |
+| Comparison against time | `compareTracksInto(a, b, phaseDeg, ratioDb)` | `track.timeMs` |
+| Comparison against frequency | `cp.compareInto(a, b, ratioDb, phaseDeg, ws)` | `cp.binHz(k)` |
+| Limits (optional) | `UnitSignature.flags[s][point]` (the set of limits a point exceeds), `.summaries[s]` (pass or fail per unit); `limitFlagsInto`, `summarize` for any track | `track.timeMs` |
+
+- **Per record**, `tp.analyzeVibrators(samples, meta, units, limits, results, ws)` does
+  every unit: its reference prepared once, each signal and the generated force tracked
+  against it, summaries with the limits on the two ground forces. `results` is sized on the
+  first call (it allocates the tracks) and refilled after without allocating; keep it with
+  the record. One plan per sample interval and record length:
+  `initSweepTrackPlan(float32, TrackParams(), dtMs, samples)`, `ws.reserve(vibratorWorkspace(tp))`.
+- **Per plot**, the plans of the table are built once per record length (they hold FFT
+  plans and tables) and called when the plot opens or its parameters change; a parameter
+  change (cycles, step, harmonics, lag window, frame length) is a new plan.
+- **Units:** the rows as the caller says they are (`VibUnit.units`; calibrated rows from
+  `resolveInto`), and per role an optional `Sensitivity` from volts (auxiliary channels get
+  volts from a calibration, never a sensitivity: D15). Masses are entered with their unit
+  (`mass(2450, muKilogram)`); the generated force is in N when M and B are in m/s².
+  `UnitSignature.units[s]` labels each signal's axis.
+- **Conventions** (the guide states them; the user has open questions on them): phase is
+  the signal's minus the reference's, positive when the signal leads; THD over harmonics 2-5
+  relative to the fundamental; peak force is the largest |GF| per period of the
+  band-limited signal; the window is 4 periods of the fundamental, points every 10 ms.
+- **Where values are NaN:** outside the sweep (where the reference is more than 40 dB
+  below its peak), within half a window of its ends, a harmonic above 0.8 of Nyquist, a
+  failed row. The viewer draws gaps there.
+- **Cost** (bench/README "Vibrator QC", one thread, float32, an 8 s sweep at 1 ms with a
+  2 s listen time): see the table there; all of it is a few milliseconds per signal, so the
+  viewer can compute on demand, on a worker thread when a plot opens.
 
 ## Display gain: CPU or GPU
 
@@ -657,6 +706,11 @@ pass it through `user`, with the workspaces.
 9. For a brute stack, run `bruteStack` on a background thread, with a `progress` hook
    that returns false to cancel. Other threads may keep reading the file meanwhile, but
    none may edit or close it ("Batch results", thread contract).
+10. For vibrator QC of a wireline record, assign each unit's rows to their roles (a
+   `VibUnit` per unit, `vibUnitsInOrder` for the usual Ref, GF, M, B layout), with the
+   sensitivities and masses, call `analyzeVibrators` once per record into a kept
+   `seq[UnitSignature]`, and fill the other plots from the table in "Vibrator signature
+   analysis" when they open.
 
 ## Open questions
 

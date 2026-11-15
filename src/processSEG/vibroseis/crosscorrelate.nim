@@ -179,7 +179,8 @@ proc scratchOf[T](cp: CrossCorrelationPlan[T], ws: var Workspace): Scratch[T] {.
   let lb = cp.lagFft.bins
   let base = ws.scratch(T, cp.ownScratch, cp.fftScratch)
   var at = 0
-  proc next(base: ptr UncheckedArray[T], at: var int, count: int): ptr UncheckedArray[T] {.nimcall.} =
+  proc next(base: ptr UncheckedArray[T], at: var int, count: int): ptr UncheckedArray[
+      T] {.nimcall.} =
     result = cast[ptr UncheckedArray[T]](addr base[at])
     at += count
   result.t = next(base, at, n)

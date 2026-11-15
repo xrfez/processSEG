@@ -3,10 +3,11 @@
 ## a phase shift, a delay, harmonics at known levels, the fundamental's
 ## amplitude (with a DC offset and with noise), the frequency law, the peak
 ## per period; NaN outside the sweep and above the harmonic limit; float32;
-## comparisons; refusals; no allocation.
+## comparisons; refusals; no allocation. On the example files (skipped when
+## absent): a recorded pilot against itself and against its law.
 
-import std/[assertions, math, random]
-import processSEG
+import std/[assertions, math, os, random]
+import parseSEG, processSEG
 import utils/allocs
 
 type Harmonic = tuple[order: int, amp, phaseDeg: float64]
@@ -413,3 +414,40 @@ block no_allocation:
         doAssert abs(track.amplitude[2][m] - 0.1) < 2e-4 or track.amplitude[2][m].isNaN
         inc seen
     doAssert seen > 200
+
+block example_pilot:
+  # exampleFiles/Sweep0.sgy: one recorded pilot, a linear 8-110 Hz sweep of
+  # 12 s at 1 ms (its headers do not describe it: `pilotFromTrace` gives no
+  # sweep). Against itself: phase 0, no distortion, its own law as the
+  # reference's frequency. A generated 8-110 Hz sweep against it: the same
+  # frequency, a phase that does not move along the sweep.
+  let path = currentSourcePath().parentDir / ".." / "exampleFiles" / "Sweep0.sgy"
+  if not fileExists(path):
+    echo "  skipped (no exampleFiles/Sweep0.sgy)"
+  else:
+    var f = openSeismic(path, keys = true)
+    let p = pilotFromTrace(f, 0, float64)
+    f.close()
+    doAssert p.dtMs == 1 and p.len == 12001
+    let law = linearSweep(8, 110, 12000, 1)
+    let tp = initSweepTrackPlan(float64, TrackParams(), 1, p.len)
+    var ws = initWorkspace()
+    ws.reserve(tp.workspaceSize)
+    var reference = initSweepReference(tp)
+    var self, gen = initSweepTrack(tp)
+    tp.referenceInto(p.samples, reference, ws)
+    tp.trackInto(p.samples, reference, self, ws)
+    tp.trackInto(law.sweepSamples(float64), reference, gen, ws)
+    var lo, hi = gen.phaseDeg[100]
+    var seen = 0
+    for m in 0 ..< self.len:
+      let t = self.timeMs[m]
+      if t < 1000 or t > 11000: continue
+      doAssert abs(self.phaseDeg[m]) < 1e-3 and self.thdPct[m] < 0.01, $t
+      doAssert abs(self.referenceHz[m] - law.frequencyAt(t)) < 0.05,
+        $t & ": " & $self.referenceHz[m] & " vs " & $law.frequencyAt(t)
+      doAssert abs(gen.frequencyHz[m] - self.referenceHz[m]) < 0.05
+      lo = min(lo, gen.phaseDeg[m])
+      hi = max(hi, gen.phaseDeg[m])
+      inc seen
+    doAssert seen == 1001 and hi - lo < 1, $lo & " .. " & $hi
