@@ -1,0 +1,165 @@
+## A time-frequency picture of a trace (`SpectrogramPlan`): the short-time
+## Fourier transform's amplitudes, frame by frame, for a time-variant
+## spectral analysis (a vibrator's sweep and its harmonics as lines, a
+## record's spectrum against time).
+##
+## ```nim
+## let sg = initSpectrogramPlan(float64, windowLen = 257, hop = 10, dtMs = 1,
+##   samples = 8001)                              # 257 ms frames every 10 ms
+## var ws = initWorkspace()
+## ws.reserve(sg.workspaceSize)
+## var amp = newSeq[float64](sg.frames * sg.bins)
+## sg.spectrogramInto(trace, amp, ws)             # amp[frame·bins + k]
+## # frame i at column sg.frameCol(i), bin k at sg.binHz(k); toDbInto for dB
+## ```
+##
+## **Frames.** Frame `i` is centred on column `i·hop` of the trace, for `i` in
+## `0 ..< frames` (`frames = (samples − 1) div hop + 1`), and covers the
+## `windowLen` samples from `i·hop − windowLen div 2`, weighted by a Hann
+## window (`sin²(π·(j + 1)/(windowLen + 1))`) and zero padded to `nfft` (by
+## default the next power of two of the window). Samples outside the trace
+## count as zero. The frames go through the batched FFT, `fftLanes` at a time.
+##
+## **Scale.** As `SpectrumPlan`'s: `|X[k]|·2/Σw` (`1/Σw` at 0 Hz and at
+## Nyquist), `Σw` the weights of the frame's samples that lie inside the
+## trace, so a sinusoid of amplitude `A` on a bin reads `A` in every frame,
+## also in the frames the trace's ends cut (to the leakage of its mirror
+## image, which a cut window lets through more). A frame with no sample
+## inside reads 0.
+##
+## **Resolution.** A frame of `W = windowLen·dtMs` ms has a main lobe `±2/W`
+## kHz wide (Hann), so it separates lines about `2/W` apart (256 ms at 1 ms:
+## 7.8 Hz), and smears `W` in time. A sweep's instantaneous frequency moves
+## within a frame; its harmonics are the lines `k·f(t)`
+## (`SweepTrack.referenceHz` gives `f` to overlay).
+##
+## **Allocation.** The constructor allocates; `spectrogramInto` does not,
+## once the workspace holds `workspaceSize`, and never raises: other lengths
+## are an `AssertionDefect`, a NaN makes the frames that hold it NaN.
+
+import std/math
+import parseSEG
+import ../core/workspace
+import plan
+
+type
+  SpectrogramPlan*[T: SampleType] = object
+    ## The short-time Fourier amplitudes of traces of up to `samples`
+    ## samples; see the module documentation.
+    fft: FftPlan[T]
+    window: seq[T]
+    dtMs: float64
+    samples, hop, frames: int
+
+proc badPlan(msg: string) {.noinline, noreturn.} =
+  raise newException(ValueError, msg)
+
+proc initSpectrogramPlan*(T: typedesc[SampleType], windowLen, hop: int, dtMs: float64,
+    samples: int, nfft = 0): SpectrogramPlan[T] =
+  ## Frames of `windowLen` samples every `hop` samples of traces of up to
+  ## `samples` samples at `dtMs`, zero padded to `nfft` (0: the next power of
+  ## two of the window). Raises `ValueError` for `windowLen < 2`, `hop < 1`,
+  ## `samples < 1`, a `dtMs` that is not finite and positive, or an `nfft`
+  ## below the window or not 2·3·5-smooth.
+  if windowLen < 2: badPlan("windowLen must be ≥ 2, got " & $windowLen)
+  if hop < 1: badPlan("hop must be ≥ 1, got " & $hop)
+  if samples < 1: badPlan("samples must be ≥ 1, got " & $samples)
+  if not (dtMs > 0 and dtMs < Inf): badPlan("dtMs must be finite and positive, got " & $dtMs)
+  let n = if nfft == 0: nextPowerOfTwo(windowLen) else: nfft
+  if n < windowLen: badPlan("nfft " & $n & " is shorter than the window (" & $windowLen & ")")
+  result.fft = initFftPlan(T, n) # raises for a length that is not smooth
+  result.dtMs = dtMs
+  result.samples = samples
+  result.hop = hop
+  result.frames = (samples - 1) div hop + 1
+  result.window = newSeq[T](windowLen)
+  for j in 0 ..< windowLen:
+    result.window[j] = T(sin(PI * float64(j + 1) / float64(windowLen + 1)) ^ 2)
+
+func frames*[T](sg: SpectrogramPlan[T]): int {.inline, raises: [].} =
+  ## The number of frames.
+  sg.frames
+
+func bins*[T](sg: SpectrogramPlan[T]): int {.inline, raises: [].} =
+  ## The bins of a frame, `nfft div 2 + 1`.
+  sg.fft.bins
+
+func windowLen*[T](sg: SpectrogramPlan[T]): int {.inline, raises: [].} =
+  ## The frame length in samples.
+  sg.window.len
+
+func hop*[T](sg: SpectrogramPlan[T]): int {.inline, raises: [].} =
+  ## The samples between two frames' centres.
+  sg.hop
+
+func nfft*[T](sg: SpectrogramPlan[T]): int {.inline, raises: [].} =
+  ## The FFT length.
+  sg.fft.len
+
+func samples*[T](sg: SpectrogramPlan[T]): int {.inline, raises: [].} =
+  ## The longest trace the plan takes.
+  sg.samples
+
+func dtMs*[T](sg: SpectrogramPlan[T]): float64 {.inline, raises: [].} =
+  ## The sample interval.
+  sg.dtMs
+
+func frameCol*[T](sg: SpectrogramPlan[T], frame: int): int {.inline, raises: [].} =
+  ## The trace column frame `frame` is centred on, `frame·hop`.
+  frame * sg.hop
+
+func binHz*[T](sg: SpectrogramPlan[T], k: int): float64 {.inline, raises: [].} =
+  ## The frequency of bin `k`, Hz.
+  float64(k) * 1000 / (float64(sg.fft.len) * sg.dtMs)
+
+func elems(s: WorkspaceSize, T: typedesc): int {.inline.} =
+  when T is float32: s.f32 else: s.f64
+
+func workspaceSize*[T](sg: SpectrogramPlan[T]): WorkspaceSize {.raises: [].} =
+  ## The scratch `spectrogramInto` needs.
+  let extra = fftLanes * (sg.fft.len + 2 * sg.fft.bins)
+  result = sg.fft.workspaceSize
+  when T is float32: result.f32 += extra
+  else: result.f64 += extra
+
+proc spectrogramInto*[T: SampleType](sg: SpectrogramPlan[T], x: openArray[T],
+    amp: var openArray[float64], ws: var Workspace) {.raises: [].} =
+  ## The amplitudes of every frame of `x` (at most `samples` values, zeros
+  ## after it) into `amp` (`frames·bins` values, frame after frame: bin `k`
+  ## of frame `i` is `amp[i·bins + k]`). `ws` holds `sg.workspaceSize`; other
+  ## lengths are an `AssertionDefect`.
+  doAssert sg.samples > 0, "a SpectrogramPlan must come from initSpectrogramPlan"
+  doAssert x.len <= sg.samples, "a trace longer than the plan's samples"
+  doAssert amp.len == sg.frames * sg.fft.bins, "amp needs frames·bins values"
+  doAssert ws.fits(sg.workspaceSize), "reserve the plan's workspaceSize first"
+  let n = sg.fft.len
+  let nb = sg.fft.bins
+  let W = sg.window.len
+  let at = sg.fft.workspaceSize.elems(T)
+  let buf = ws.scratch(T, fftLanes * (n + 2 * nb), at)
+  let re = cast[ptr UncheckedArray[T]](addr buf[n * fftLanes])
+  let im = cast[ptr UncheckedArray[T]](addr buf[n * fftLanes + nb * fftLanes])
+  var first = 0
+  while first < sg.frames:
+    let used = min(fftLanes, sg.frames - first)
+    var sw: array[fftLanes, float64]
+    zeroMem(buf, n * fftLanes * sizeof(T))
+    for l in 0 ..< used:
+      let start = (first + l) * sg.hop - W div 2
+      let a = max(0, -start)
+      let b = min(W, x.len - start)
+      for j in a ..< b:
+        buf[j * fftLanes + l] = x[start + j] * sg.window[j]
+        sw[l] += float64(sg.window[j])
+    sg.fft.forwardLanes(buf.toOpenArray(0, n * fftLanes - 1),
+      re.toOpenArray(0, nb * fftLanes - 1), im.toOpenArray(0, nb * fftLanes - 1), ws)
+    for l in 0 ..< used:
+      let row = (first + l) * nb
+      if not (sw[l] > 0):
+        for k in 0 ..< nb: amp[row + k] = 0
+        continue
+      for k in 0 ..< nb:
+        let side = (if k == 0 or 2 * k == n: 1.0 else: 2.0)
+        amp[row + k] = hypot(float64(re[k * fftLanes + l]), float64(im[k * fftLanes + l])) *
+          side / sw[l]
+    first += used

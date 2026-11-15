@@ -221,6 +221,15 @@ auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guid
 | `hp.hilbertInto(x, h, ws)` | `H[x]`, the imaginary part of the analytic signal (`H[cos] = sin`; 0 Hz and Nyquist to zero), `x.len` values. |
 | `hp.envelopeInto(x, env, ws)` | The envelope `\|x + i·H[x]\|`. |
 
+## fft/spectrogram: `SpectrogramPlan`
+
+| Proc | What |
+|---|---|
+| `SpectrogramPlan[T]`; `initSpectrogramPlan(T, windowLen, hop, dtMs, samples, nfft = 0)` | The short-time Fourier amplitudes of traces of up to `samples` samples: Hann frames of `windowLen` samples centred on columns `0, hop, 2·hop, ...`, zero padded to `nfft` (0: the next power of two of the window). `ValueError` for `windowLen < 2`, `hop < 1`, `samples < 1`, a bad `dtMs` or `nfft`. |
+| `sg.frames`, `sg.bins`, `sg.windowLen`, `sg.hop`, `sg.nfft`, `sg.samples`, `sg.dtMs`, `sg.frameCol(frame)`, `sg.binHz(k)`, `sg.workspaceSize` | Its axes: frame `i` centred on column `i·hop`, bin `k` at `k / (nfft·dt)`. |
+| `sg.spectrogramInto(x, amp, ws)` | Every frame's amplitudes into `amp` (`frames·bins`, frame after frame), scaled so that a sinusoid of amplitude A on a bin reads A (a frame cut by the trace's ends by its own Σw). |
+
+
 ## filter/design: `FilterSpec`
 
 | Proc | What |
