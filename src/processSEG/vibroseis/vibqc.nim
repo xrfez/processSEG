@@ -11,48 +11,82 @@
 ## ws.reserve(vibratorWorkspace(tp))
 ## var units = vibUnitsInOrder(count = 2,                  # Ref, GF, M, B per unit
 ##   reactionMass = mass(2450, muKilogram), baseplateMass = mass(1180, muKilogram))
+## for u in units.mitems:                                  # phase near 0 on any system
+##   u.polarity = [poAsRecorded, poAutomatic, poAutomatic, poAutomatic]
 ## var results: seq[UnitSignature[float32]]
 ## tp.analyzeVibrators(samples, meta, units, VibLimits(phaseDeg: 5), results, ws)
 ## # results[0].tracks[vsGroundForce].phaseDeg, .amplitude[0] (fundamental
 ## # force), .thdPct, .peak; results[0].weightedSum: GF from M and B;
-## # results[0].summaries[vsGroundForce].failed, .flags[vsGroundForce]
+## # results[0].summaries[vsGroundForce].failed, .flags[vsGroundForce];
+## # results[0].judged (per point), .reversed (the polarity used)
 ## ```
 ##
 ## **Roles.** `VibUnit.rows` gives each role's row in the block (−1: the unit
 ## has none); the reference is required. The library never takes a role from
-## a row's position: `vibUnitsInOrder` builds the usual layout (each unit's
-## channels in the order Ref, GF, M, B, or an order given) for the caller to
-## pass, and any other assignment is a `VibUnit` of the caller's.
+## a row's position, nor from its trace status (live, unknown, dead and
+## auxiliary rows are analysed alike): `vibUnitsInOrder` builds the usual
+## layout (each unit's channels in the order Ref, GF, M, B, or an order
+## given) for the caller to pass, and any other assignment is a `VibUnit` of
+## the caller's.
 ##
 ## **Ground force from M and B.** `GF = Mr·a_M + Mb·a_B` (the weighted sum, as
 ## vibrator controllers form it), with the reaction mass `Mr` and the
 ## baseplate mass `Mb` entered with their unit (`Mass`): accelerations in
-## m/s² give newtons. The sign is the accelerometers': if the generated force
-## comes out at 180° to a recorded one, they are wired the other way:
-## reverse both rows (`reversePolarity` on the block's M and B rows) before
-## the call, since reversing `weightedSum` after it leaves its track as it
-## was.
+## m/s² give newtons, from M and B each in its polarity (below). M and B must
+## be in one unit (after their sensitivities): one in m/s² and the other as
+## recorded is refused, not summed.
+##
+## **Polarity** (`VibUnit.polarity`, per role, applied before every measure).
+## `poAsRecorded` (the default) or `poReversed` (the row times −1) for any
+## role; `poAutomatic` reverses a signal whose mean phase to the reference
+## (circular, weighted by the fundamental) over the judged part of the sweep
+## is beyond ±90°, so that phase reads near 0 for a healthy unit on a system
+## whose ground force is at 180° to its pilot. The ground force is decided on
+## its own. **M and B are never decided apart**: the baseplate moves against
+## the mass, near 180° from it by physics, and flipping one of them turns the
+## weighted sum into a difference; both `poAutomatic` (and both rows and
+## masses: the generated force decides) reverse together when the ground
+## force generated from them is beyond ±90°. The reference is the phase
+## origin: as recorded or reversed, never automatic. An automatic reversal is
+## the track's phase turned by 180° (`reversePolarity`; nothing else of a
+## signal times −1 changes) and the generated samples negated, with no
+## second pass. The polarity used is reported: `UnitSignature.reversed`,
+## `TrackSummary.reversed`. Automatic corrects wiring; a ground force at
+## +100° by a fault is reversed to −80° too, and still fails its phase limit.
 ##
 ## **Units.** The rows are taken in the unit the caller says they are in
 ## (`VibUnit.units`, `auRecorded` by default; for calibrated rows the unit
 ## from `resolveInto`). A role's `Sensitivity`, when set, takes a row in volts
 ## on to its quantity: M and B in V/g or V/(m/s²) to m/s², a ground-force
-## channel in V/N, V/kN or V/lbf to N (a calibration gives auxiliary rows
-## volts only, so wireline channels get their physical units here). The
-## measures are in the resulting unit (`UnitSignature.units`); the generated
-## ground force is in N when both accelerations are in m/s², and
-## `auRecorded` otherwise.
+## channel in V/N, V/kN or V/lbf to N. A calibration (`core/calibrate`) treats rows by
+## their status: auxiliary rows to volts only, the others by the seismic
+## rules (a catch-all geophone rule would make a ground-force channel m/s,
+## and its sensitivity here is then refused). Wireline channels may be
+## marked either way, so calibrate a vibrator record with the same rules and
+## `target = ctVolts`: every row ends in volts whatever its status, and the
+## roles' sensitivities take it on. The measures are in the resulting unit
+## (`UnitSignature.units`); the generated ground force is in N when both
+## accelerations are in m/s², and `auRecorded` otherwise.
 ##
-## **Limits** (`VibLimits`, every field NaN, i.e. off, by default). At each
-## point between `fromMs` and `toMs` (NaN: no bound; set them to leave out
-## the sweep's tapers): `|phase| > phaseDeg`, `THD > thdPct`, any harmonic's
+## **The judged part.** Limits and summaries judge the sweep without a part
+## at its start and at its end, where the force ramps and the measures run
+## to extremes: by default its tapers (`skipStartMs`, `skipEndMs` NaN), from
+## the reference's envelope (`SweepExtent.flatStartMs .. flatEndMs`), or
+## lengths in ms from the sweep's first and last sample (0: none), within
+## `fromMs .. toMs` (record time, NaN: no bound). The points outside are
+## still measured and returned; `judgedInto` (`UnitSignature.judged`) flags
+## each point in or out, for a viewer to leave out or dim.
+##
+## **Limits** (`VibLimits`, every limit NaN, i.e. off, by default). At each
+## judged point: `|phase| > phaseDeg`, `THD > thdPct`, any harmonic's
 ## `100·A_k/A_1 > harmonicPct`, the fundamental below `forceLow` or above
 ## `forceHigh`, the peak above `peakForce`; over those points, the mean
 ## `|phase|` above `meanPhaseDeg`, the mean THD above `meanThdPct`, the mean
 ## fundamental below `meanForceLow`. `limitFlagsInto` gives each point the
 ## set of limits it exceeds, `summarize` the statistics and the limits
 ## failed. In `analyzeVibrators` the limits apply to the two ground forces,
-## recorded and generated; the other signals are summarized without them.
+## recorded and generated; the other signals are summarized over the same
+## judged part without them.
 ##
 ## **Data.** A failed row's measures are NaN (and so is the generated force
 ## when M or B failed); a dead row is analysed as it is. Bad arguments raise
@@ -76,6 +110,15 @@ type
   VibRole* = range[vsReference .. vsBaseplate]
     ## The roles a row can have.
 
+  Polarity* = enum
+    ## How a role's row is taken (module documentation, "Polarity").
+    poAsRecorded = "as recorded" ## As it is.
+    poReversed = "reversed"      ## Times −1.
+    poAutomatic = "automatic"
+      ## Reversed when its mean phase to the reference, over the judged part of
+      ## the sweep, is beyond ±90° (GF; M and B as a pair, from the ground
+      ## force generated from them; not the reference).
+
   VibUnit* = object
     ## One vibrator unit's rows and constants; see the module documentation.
     rows*: array[VibRole, int] = [vsReference: -1, vsGroundForce: -1, vsMass: -1,
@@ -85,6 +128,8 @@ type
     sensitivity*: array[VibRole, Sensitivity]
       ## Optional: takes a row in volts on to its quantity (M, B: acceleration;
       ## GF: force); not set (`Sensitivity()`) by default.
+    polarity*: array[VibRole, Polarity]
+      ## How each row is taken (`poAsRecorded` by default), before every measure.
     reactionMass*: Mass ## `Mr`, for the generated ground force.
     baseplateMass*: Mass ## `Mb`, for the generated ground force.
 
@@ -111,18 +156,31 @@ type
     meanPhaseDeg*: float64 = NaN ## Largest mean `|phase|`.
     meanThdPct*: float64 = NaN   ## Largest mean THD.
     meanForceLow*: float64 = NaN ## Smallest mean fundamental.
-    fromMs*: float64 = NaN       ## Points before this are not checked (NaN: from the start).
-    toMs*: float64 = NaN         ## Points after this are not checked (NaN: to the end).
+    skipStartMs*: float64 = NaN
+      ## The part of the sweep's start left out of the judgement, ms from its
+      ## first sample (NaN: its start taper, `SweepExtent.flatStartMs`; 0:
+      ## none).
+    skipEndMs*: float64 = NaN
+      ## The part of its end left out, ms back from its last sample (NaN: its
+      ## end taper).
+    fromMs*: float64 = NaN ## Points before this are not judged either (NaN: no bound).
+    toMs*: float64 = NaN ## Points after this are not judged either (NaN: no bound).
 
   TrackSummary* = object
-    ## One signal over its measured points between `fromMs` and `toMs`.
+    ## One signal over its measured points in the judged part of the sweep.
     points*: int                               ## Points with a fundamental.
+    meanPhaseDeg*: float64
+      ## The phase's mean, circular and weighted by the fundamental (what
+      ## `poAutomatic` decides from); NaN without points.
     meanAbsPhaseDeg*, maxAbsPhaseDeg*: float64 ## Of `|phase|`; NaN without points.
-    meanThdPct*, maxThdPct*: float64           ## Of THD where measured.
-    meanForce*, minForce*, maxForce*: float64  ## Of the fundamental's amplitude.
-    maxPeak*: float64                          ## The largest peak.
-    exceeded*: array[LimitKind, int]           ## Points beyond each per-point limit (0 for the mean kinds).
-    failed*: set[LimitKind]                    ## The limits exceeded at a point or by a mean.
+    meanThdPct*, maxThdPct*: float64 ## Of THD where measured.
+    meanForce*, minForce*, maxForce*: float64 ## Of the fundamental's amplitude.
+    maxPeak*: float64 ## The largest peak.
+    exceeded*: array[LimitKind, int] ## Points beyond each per-point limit (0 for the mean kinds).
+    failed*: set[LimitKind] ## The limits exceeded at a point or by a mean.
+    reversed*: bool
+      ## The signal was reversed before it was measured (its polarity, given
+      ## or automatic: `analyzeVibrators` sets it; `summarize` leaves it false).
 
   UnitSignature*[T: SampleType] = object
     ## The measures of one unit; see the module documentation. Filled by
@@ -134,6 +192,10 @@ type
     units*: array[VibSignal, AmplitudeUnit] ## Each signal's unit.
     summaries*: array[VibSignal, TrackSummary] ## Each signal's summary.
     flags*: array[VibSignal, seq[set[LimitKind]]] ## Per point, the limits exceeded (force signals).
+    judged*: seq[bool] ## Per point: inside the judged part of the sweep (`judgedInto`).
+    reversed*: set[VibSignal]
+      ## The signals reversed before they were measured (given or automatic;
+      ## `vsWeightedSum` when both M and B were).
     weightedSum*: seq[T] ## The generated ground force's samples (empty without one).
     planSamples: int # the samples of the plan `reference` and `tracks` are sized for
 
@@ -197,13 +259,46 @@ proc groundForceInto*[T: SampleType](mass, baseplate: openArray[T], reactionMass
 
 # ------------------------------------------------------------------ limits --
 
-func inRange(l: VibLimits, tMs: float64): bool {.inline.} =
-  not (tMs < l.fromMs) and not (tMs > l.toMs) # a NaN bound is no bound
+proc validate*(l: VibLimits) =
+  ## Checks the judged part's lengths: `skipStartMs` and `skipEndMs` NaN, or
+  ## finite and ≥ 0. Raises `ValueError` (`analyzeVibrators` calls it; the
+  ## per-track calls take a negative length as 0). The limit values are the
+  ## caller's: any value, NaN for none.
+  for (name, v) in [("skipStartMs", l.skipStartMs), ("skipEndMs", l.skipEndMs)]:
+    if not (v.isNaN or (v >= 0 and v < Inf)):
+      badVib(name & " must be NaN (the taper) or a finite length ≥ 0, got " & $v)
 
-func exceeds(t: SweepTrack, l: VibLimits, m: int): set[LimitKind] {.raises: [].} =
-  ## The per-point limits point `m` exceeds (none where not measured).
+func judgedPart*(e: SweepExtent, limits = VibLimits()): Slice[float64] {.raises: [].} =
+  ## The part of the sweep `e` that limits and summaries judge, as the
+  ## first and last point time in ms: the sweep without `skipStartMs` at its
+  ## start and `skipEndMs` at its end (NaN: its tapers, `e.flatStartMs ..
+  ## e.flatEndMs`; a negative length counts as 0), within `fromMs .. toMs`.
+  ## `NaN .. NaN` (no point) without a sweep.
+  if e.startMs.isNaN: return NaN .. NaN
+  let skipA = max(0.0, limits.skipStartMs) # (NaN: the taper)
+  let skipB = max(0.0, limits.skipEndMs)
+  var a = (if limits.skipStartMs.isNaN: e.flatStartMs else: e.startMs + skipA)
+  var b = (if limits.skipEndMs.isNaN: e.flatEndMs else: e.endMs - skipB)
+  if limits.fromMs > a: a = limits.fromMs # a NaN bound is no bound
+  if limits.toMs < b: b = limits.toMs
+  a .. b
+
+proc judgedInto*(track: SweepTrack, limits: VibLimits, dst: var openArray[bool]) {.
+    raises: [].} =
+  ## Per point, whether its time lies in the judged part of the track's
+  ## sweep (`judgedPart(track.extent, limits)`), measured or not: a viewer
+  ## leaves the other points out of a plot or draws them dimmed. `dst` has
+  ## one entry per point (an `AssertionDefect` otherwise).
+  doAssert dst.len == track.len, "dst needs one entry per point"
+  let span = track.extent.judgedPart(limits)
+  for m in 0 ..< track.len: dst[m] = track.timeMs[m] in span
+
+func exceeds(t: SweepTrack, l: VibLimits, span: Slice[float64], m: int): set[LimitKind] {.
+    raises: [].} =
+  ## The per-point limits point `m` exceeds (none where not measured or
+  ## not judged).
   let a1 = t.amplitude[0][m]
-  if a1.isNaN or not l.inRange(t.timeMs[m]): return
+  if a1.isNaN or t.timeMs[m] notin span: return
   if abs(t.phaseDeg[m]) > l.phaseDeg: result.incl lkPhase
   if t.thdPct[m] > l.thdPct: result.incl lkThd
   if l.harmonicPct == l.harmonicPct and a1 > 0:
@@ -216,16 +311,30 @@ func exceeds(t: SweepTrack, l: VibLimits, m: int): set[LimitKind] {.raises: [].}
 proc limitFlagsInto*(track: SweepTrack, limits: VibLimits,
     flags: var openArray[set[LimitKind]]) {.raises: [].} =
   ## Each point's per-point limits exceeded (module documentation): empty
-  ## where the point is not measured, outside `fromMs .. toMs`, or within
+  ## where the point is not measured, outside the judged part, or within
   ## every limit. `flags` has one entry per point (an `AssertionDefect`
   ## otherwise).
   doAssert flags.len == track.len, "flags needs one entry per point"
-  for m in 0 ..< track.len: flags[m] = track.exceeds(limits, m)
+  let span = track.extent.judgedPart(limits)
+  for m in 0 ..< track.len: flags[m] = track.exceeds(limits, span, m)
+
+func meanPhase(track: SweepTrack, span: Slice[float64]): float64 {.raises: [].} =
+  ## The circular mean of the phase over the judged points, weighted by the
+  ## fundamental, degrees; NaN without such points.
+  var re, im = 0.0
+  for m in 0 ..< track.len:
+    let a1 = track.amplitude[0][m]
+    let p = track.phaseDeg[m]
+    if a1.isNaN or p.isNaN or track.timeMs[m] notin span: continue
+    re += a1 * cos(degToRad(p))
+    im += a1 * sin(degToRad(p))
+  if re == 0 and im == 0: NaN else: radToDeg(arctan2(im, re))
 
 func summarize*(track: SweepTrack, limits = VibLimits()): TrackSummary {.raises: [].} =
-  ## The statistics of `track` over its measured points between
-  ## `limits.fromMs` and `limits.toMs`, the points beyond each per-point
-  ## limit and the limits failed (module documentation).
+  ## The statistics of `track` over its measured points in the judged part
+  ## of the sweep (`judgedPart`), the points beyond each per-point limit and
+  ## the limits failed (module documentation).
+  let span = track.extent.judgedPart(limits)
   var sumPhase, sumThd, sumForce = 0.0
   var nPhase, nThd = 0
   result.maxAbsPhaseDeg = NaN
@@ -235,7 +344,7 @@ func summarize*(track: SweepTrack, limits = VibLimits()): TrackSummary {.raises:
   result.maxPeak = NaN
   for m in 0 ..< track.len:
     let a1 = track.amplitude[0][m]
-    if a1.isNaN or not limits.inRange(track.timeMs[m]): continue
+    if a1.isNaN or track.timeMs[m] notin span: continue
     inc result.points
     sumForce += a1
     if not (a1 >= result.minForce): result.minForce = a1
@@ -252,7 +361,8 @@ func summarize*(track: SweepTrack, limits = VibLimits()): TrackSummary {.raises:
       if not (d <= result.maxThdPct): result.maxThdPct = d
     let pk = track.peak[m]
     if not pk.isNaN and not (pk <= result.maxPeak): result.maxPeak = pk
-    for k in track.exceeds(limits, m): inc result.exceeded[k]
+    for k in track.exceeds(limits, span, m): inc result.exceeded[k]
+  result.meanPhaseDeg = track.meanPhase(span)
   result.meanForce = (if result.points > 0: sumForce / float64(result.points) else: NaN)
   result.meanAbsPhaseDeg = (if nPhase > 0: sumPhase / float64(nPhase) else: NaN)
   result.meanThdPct = (if nThd > 0: sumThd / float64(nThd) else: NaN)
@@ -261,6 +371,21 @@ func summarize*(track: SweepTrack, limits = VibLimits()): TrackSummary {.raises:
   if result.meanAbsPhaseDeg > limits.meanPhaseDeg: result.failed.incl lkMeanPhase
   if result.meanThdPct > limits.meanThdPct: result.failed.incl lkMeanThd
   if result.meanForce < limits.meanForceLow: result.failed.incl lkMeanForce
+
+proc reversePolarity*(track: var SweepTrack) {.raises: [].} =
+  ## The measures of the signal reversed: every phase turned by 180°
+  ## (wrapped to (−180, 180]); the amplitudes, THD, peak and frequencies of
+  ## a signal times −1 are its own. No second pass over the samples.
+  for v in track.phaseDeg.mitems:
+    if not v.isNaN: v = wrapDeg(v + 180)
+
+proc automaticPolarity*(track: var SweepTrack, limits = VibLimits()): bool {.raises: [].} =
+  ## `poAutomatic` for one track: reverses it (`reversePolarity`) when its
+  ## mean phase over the judged part of the sweep (`judgedPart(track.extent,
+  ## limits)`; `TrackSummary.meanPhaseDeg`) is beyond ±90°, and says whether
+  ## it did; a track without judged points is left as it is.
+  result = abs(track.meanPhase(track.extent.judgedPart(limits))) > 90
+  if result: track.reversePolarity
 
 # --------------------------------------------------------------- analysis --
 
@@ -276,11 +401,23 @@ func vibratorWorkspace*[T](tp: SweepTrackPlan[T]): WorkspaceSize {.raises: [].} 
 proc fillNaN(t: var SweepTrack) {.raises: [].} =
   for s in [addr t.referenceHz, addr t.frequencyHz, addr t.phaseDeg, addr t.thdPct, addr t.peak]:
     for v in s[].mitems: v = NaN
+  for v in t.thdCount.mitems: v = 0
   for a in t.amplitude.mitems:
     for v in a.mitems: v = NaN
+  t.extent = SweepExtent()
+
+proc copyTimes[T](b: RowBlock[T], r, n: int, k: float64, dst: ptr UncheckedArray[T]) {.
+    raises: [].} =
+  ## The first `n` samples of row `r` times `k`, into `dst`.
+  let x = b.rowPtr(r)
+  for j in 0 ..< n: dst[j] = T(float64(x[j]) * k)
+
+func unitAfter(unit: VibUnit, role: VibRole): AmplitudeUnit {.inline.} =
+  ## A role's unit once its sensitivity (if any) is applied.
+  if unit.sensitivity[role].isSet: unit.sensitivity[role].unit else: unit.units[role]
 
 proc checkUnits[T](tp: SweepTrackPlan[T], b: RowBlock[T], meta: ChunkMeta,
-    units: openArray[VibUnit]) =
+    units: openArray[VibUnit], limits: VibLimits) =
   meta.checkShape(b)
   if not sameInterval(meta.dtMs, tp.dtMs):
     badVib("the rows are at " & $meta.dtMs & " ms, the plan at " & $tp.dtMs & " ms")
@@ -289,6 +426,7 @@ proc checkUnits[T](tp: SweepTrackPlan[T], b: RowBlock[T], meta: ChunkMeta,
       $meta.firstSample)
   if b.cols > tp.samples:
     badVib("the rows are " & $b.cols & " samples, the plan takes " & $tp.samples)
+  limits.validate
   for u, unit in units:
     if unit.rows[vsReference] < 0: badUnit(u, "a reference row is required")
     for role in VibRole:
@@ -300,12 +438,30 @@ proc checkUnits[T](tp: SweepTrackPlan[T], b: RowBlock[T], meta: ChunkMeta,
         if role == vsReference: badUnit(u, "the reference takes no sensitivity")
         if unit.units[role] != auVolt:
           badUnit(u, "a sensitivity takes a row in volts on to its quantity: the " &
-            $role & " row is in " & $unit.units[role] & " (set units[" & $role & "] = auVolt)")
+            $role & " row is in " & $unit.units[role] & " (set units[" & $role &
+            "] = auVolt; a channel calibrated by seismic rules gets their factors " &
+            "whatever its role: calibrate the record with target ctVolts)")
         let want = (if role == vsGroundForce: auForce else: auAcceleration)
         if s.unit != want:
           badUnit(u, "the " & $role & " sensitivity is per " & $s.unit & ", not " & $want)
     if unit.reactionMass.isSet != unit.baseplateMass.isSet:
       badUnit(u, "the generated ground force needs both masses (or neither)")
+    if unit.polarity[vsReference] == poAutomatic:
+      badUnit(u, "the reference is the phase origin: its polarity is as recorded or " &
+        "reversed, not automatic")
+    let pair = unit.rows[vsMass] >= 0 and unit.rows[vsBaseplate] >= 0 and
+      unit.reactionMass.isSet
+    let autoM = unit.rows[vsMass] >= 0 and unit.polarity[vsMass] == poAutomatic
+    let autoB = unit.rows[vsBaseplate] >= 0 and unit.polarity[vsBaseplate] == poAutomatic
+    if (autoM or autoB) and not pair:
+      badUnit(u, "an automatic polarity of M and B is decided from the ground force " &
+        "generated from them: it needs both rows and both masses")
+    if autoM != autoB:
+      badUnit(u, "M and B take one polarity, decided together: both poAutomatic, or " &
+        "each poAsRecorded or poReversed")
+    if pair and unit.unitAfter(vsMass) != unit.unitAfter(vsBaseplate):
+      badUnit(u, "the ground force generated from M and B needs both in one unit: M is " &
+        "in " & $unit.unitAfter(vsMass) & ", B in " & $unit.unitAfter(vsBaseplate))
 
 proc analyzeVibrators*[T: SampleType](tp: SweepTrackPlan[T], b: RowBlock[T],
     meta: ChunkMeta, units: openArray[VibUnit], limits: VibLimits,
@@ -315,15 +471,20 @@ proc analyzeVibrators*[T: SampleType](tp: SweepTrackPlan[T], b: RowBlock[T],
   ## call, refilled without allocation after). `ws` holds
   ## `vibratorWorkspace(tp)`. Raises `ValueError`, before any result
   ## changes, for a block that does not match the meta, another interval, a
-  ## window (`firstSample > 0`), rows wider than the plan, a unit without a
-  ## reference row, a row outside the block, a sensitivity on the reference,
-  ## on a row not in volts or of another quantity, or one mass without the
-  ## other.
-  tp.checkUnits(b, meta, units)
+  ## window (`firstSample > 0`), rows wider than the plan, limits `validate`
+  ## refuses, a unit without a reference row, a row outside the block, a
+  ## sensitivity on the reference, on a row not in volts or of another
+  ## quantity, one mass without the other, an automatic polarity on the
+  ## reference, on M or B without the generated ground force or on one of
+  ## them only, or M and B in different units with both masses.
+  tp.checkUnits(b, meta, units, limits)
   doAssert ws.fits(vibratorWorkspace(tp)), "reserve vibratorWorkspace(tp) first"
   if results.len != units.len: results.setLen(units.len)
   let cols = b.cols
   let own = tp.workspaceSize.elems(T)
+  # The judged part without limit values, for M, B and the reference.
+  let judging = VibLimits(skipStartMs: limits.skipStartMs, skipEndMs: limits.skipEndMs,
+    fromMs: limits.fromMs, toMs: limits.toMs)
   for u, unit in units:
     var res = addr results[u]
     # Sized for another plan (a record of another length can have as many
@@ -334,45 +495,53 @@ proc analyzeVibrators*[T: SampleType](tp: SweepTrackPlan[T], b: RowBlock[T],
       for s in VibSignal:
         res.tracks[s] = initSweepTrack(tp)
         res.flags[s] = newSeq[set[LimitKind]](tp.points)
+      res.judged = newSeq[bool](tp.points)
       res.planSamples = tp.samples
     res.signals = {}
+    res.reversed = {}
     for s in VibSignal:
       res.units[s] = auRecorded
       res.summaries[s] = TrackSummary()
       for f in res.flags[s].mitems: f = {}
       res.tracks[s].fillNaN
     template live(r: int): int = meta.liveSamples(r, cols)
+    let scaled = ws.scratch(T, cols, own)
+    # Each role's row times its factor: the sensitivity (volts to the
+    # quantity) and the polarity, before every measure.
+    var factor: array[VibRole, float64]
+    for role in VibRole:
+      let s = unit.sensitivity[role]
+      factor[role] = (if unit.polarity[role] == poReversed: -1.0 else: 1.0) *
+        (if s.isSet: 1 / s.voltsPerUnit else: 1.0)
     let refRow = unit.rows[vsReference]
     if meta.isFailed(refRow):
       tp.referenceInto(b.row(refRow, 0), res.reference, ws) # no sweep: every measure NaN
-    else:
+    elif factor[vsReference] == 1:
       tp.referenceInto(b.row(refRow, live(refRow)), res.reference, ws)
-    let scaled = ws.scratch(T, cols, own)
-    # The roles' rows, each in its unit (a sensitivity: volts to the quantity).
-    var factor: array[VibRole, float64]
+    else:
+      let n = live(refRow)
+      b.copyTimes(refRow, n, factor[vsReference], scaled)
+      tp.referenceInto(scaled.toOpenArray(0, n - 1), res.reference, ws)
     for role in VibRole:
       let r = unit.rows[role]
       if r < 0: continue
       res.signals.incl role
-      let s = unit.sensitivity[role]
-      factor[role] = (if s.isSet: 1 / s.voltsPerUnit else: 1.0)
-      res.units[role] = (if s.isSet: s.unit else: unit.units[role])
+      if unit.polarity[role] == poReversed: res.reversed.incl role
+      res.units[role] = unit.unitAfter(role)
       if meta.isFailed(r): continue # NaN
       let n = live(r)
-      if s.isSet:
-        let x = b.rowPtr(r)
-        for j in 0 ..< n: scaled[j] = T(float64(x[j]) * factor[role])
-        tp.trackInto(scaled.toOpenArray(0, n - 1), res.reference, res.tracks[role], ws)
-      else:
+      if factor[role] == 1:
         tp.trackInto(b.row(r, n), res.reference, res.tracks[role], ws)
-    # The ground force from M and B.
+      else:
+        b.copyTimes(r, n, factor[role], scaled)
+        tp.trackInto(scaled.toOpenArray(0, n - 1), res.reference, res.tracks[role], ws)
+    # The ground force from M and B, each with its factor.
     let rm = unit.rows[vsMass]
     let rb = unit.rows[vsBaseplate]
     if rm >= 0 and rb >= 0 and unit.reactionMass.isSet:
       res.signals.incl vsWeightedSum
-      res.units[vsWeightedSum] =
-        (if res.units[vsMass] == auAcceleration and res.units[vsBaseplate] == auAcceleration:
-          auForce else: auRecorded)
+      if {vsMass, vsBaseplate} <= res.reversed: res.reversed.incl vsWeightedSum
+      res.units[vsWeightedSum] = (if res.units[vsMass] == auAcceleration: auForce else: auRecorded)
       if res.weightedSum.len != cols: res.weightedSum.setLen(cols)
       if meta.isFailed(rm) or meta.isFailed(rb):
         for v in res.weightedSum.mitems: v = T(NaN)
@@ -383,9 +552,23 @@ proc analyzeVibrators*[T: SampleType](tp: SweepTrackPlan[T], b: RowBlock[T],
           res.reference, res.tracks[vsWeightedSum], ws)
     else:
       res.weightedSum.setLen(0)
+    # Automatic polarity, from the mean phase over the judged part: the
+    # ground force on its own, M and B together from the force they make.
+    if unit.rows[vsGroundForce] >= 0 and unit.polarity[vsGroundForce] == poAutomatic:
+      if res.tracks[vsGroundForce].automaticPolarity(judging):
+        res.reversed.incl vsGroundForce
+    if vsWeightedSum in res.signals and unit.polarity[vsMass] == poAutomatic:
+      if res.tracks[vsWeightedSum].automaticPolarity(judging):
+        res.tracks[vsMass].reversePolarity
+        res.tracks[vsBaseplate].reversePolarity
+        for v in res.weightedSum.mitems: v = -v
+        res.reversed.incl {vsMass, vsBaseplate, vsWeightedSum}
+    let span = res.reference.extent.judgedPart(limits)
+    for m in 0 ..< tp.points: res.judged[m] = tp.pointMs(m) in span
     for s in res.signals:
-      let l = (if s in {vsGroundForce, vsWeightedSum}: limits else: VibLimits())
+      let l = (if s in {vsGroundForce, vsWeightedSum}: limits else: judging)
       res.summaries[s] = summarize(res.tracks[s], l)
+      res.summaries[s].reversed = s in res.reversed
       if s in {vsGroundForce, vsWeightedSum}:
         limitFlagsInto(res.tracks[s], l, res.flags[s])
 

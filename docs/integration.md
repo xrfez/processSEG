@@ -412,11 +412,13 @@ keeps the assignment with the file). processSEG fills each plot's buffers, value
 | Correlation: raw, envelope | `cp.crossCorrelateInto(x, reference, lags, envelope, ws)` | `cp.lagMs(i)` |
 | Correlation: spectrum, phase | `cp.lagSpectrumInto(lags, amp, phaseDeg, ws)` | `cp.binHz(k)` |
 | QC: phase, fundamental force, peak force, frequency | `track.phaseDeg`, `.amplitude[0]`, `.peak`, `.frequencyHz` beside `.referenceHz` | `track.timeMs` |
-| Distortion: each harmonic, THD | `track.distortionInto(k, dst)`, `track.thdPct` | `track.timeMs` |
+| Distortion: each harmonic, THD | `track.distortionInto(k, dst)`, `track.thdPct`; the harmonics THD sums per point: `track.thdCount` | `track.timeMs` |
 | Distortion: time-variant spectrum | `sg.spectrogramInto(x, amp, ws)`, `toDbInto` per frame; overlay `k·track.referenceHz` | `sg.frameCol(i)`, `sg.binHz(k)` |
 | Comparison against time | `compareTracksInto(a, b, phaseDeg, ratioDb)` | `track.timeMs` |
 | Comparison against frequency | `cp.compareInto(a, b, ratioDb, phaseDeg, ws)` | `cp.binHz(k)` |
 | Limits (optional) | `UnitSignature.flags[s][point]` (the set of limits a point exceeds), `.summaries[s]` (pass or fail per unit); `limitFlagsInto`, `summarize` for any track | `track.timeMs` |
+| Judged part (every plot against time) | `UnitSignature.judged[point]`: false outside the part limits and summaries judge (the tapers by default): leave those points out or draw them dimmed; `judgedInto(track, limits, dst)` for a track alone | `track.timeMs` |
+| Polarity used | `UnitSignature.reversed` (the signals reversed, given or automatic), `.summaries[s].reversed`: reverse the viewer's row copies of those signals before the per-plot calls (`reversePolarity` on the row) | |
 
 - **Per record**, `tp.analyzeVibrators(samples, meta, units, limits, results, ws)` does
   every unit: its reference prepared once, each signal and the generated force tracked
@@ -426,22 +428,44 @@ keeps the assignment with the file). processSEG fills each plot's buffers, value
   `initSweepTrackPlan(float32, TrackParams(), dtMs, samples)`, `ws.reserve(vibratorWorkspace(tp))`.
 - **Per plot**, the plans of the table are built once per record length (they hold FFT
   plans and tables) and called when the plot opens or its parameters change; a parameter
-  change (cycles, step, harmonics, lag window, frame length) is a new plan.
+  change (cycles, minimum window, step, harmonics, THD's harmonics, lag window, frame
+  length) is a new plan. The limits and the judged part are not in the plan: a change of
+  them is `summarize`, `limitFlagsInto` and `judgedInto` on the kept tracks, no tracking.
 - **Units:** the rows as the caller says they are (`VibUnit.units`; calibrated rows from
-  `resolveInto`), and per role an optional `Sensitivity` from volts (auxiliary channels get
-  volts from a calibration, never a sensitivity: D15). Masses are entered with their unit
-  (`mass(2450, muKilogram)`); the generated force is in N when M and B are in m/s².
-  `UnitSignature.units[s]` labels each signal's axis.
-- **Conventions** (the guide states them; the user has open questions on them): phase is
-  the signal's minus the reference's, positive when the signal leads; THD over harmonics 2-5
-  relative to the fundamental; peak force is the largest |GF| per period of the
-  band-limited signal; the window is 4 periods of the fundamental, points every 10 ms.
+  `resolveInto`), and per role an optional `Sensitivity` from volts. Roles do not depend on
+  a row's trace status, but a calibration does (auxiliary rows to volts only, the
+  others by the seismic rules, which would make a ground-force channel m/s): calibrate a
+  vibrator record with its calibration's rules and `target = ctVolts`, so every row ends in
+  volts whatever its marking, then give the roles their sensitivities (m/s², N). M and B
+  must be in one unit for the generated force (refused otherwise). Masses are entered with
+  their unit (`mass(2450, muKilogram)`); the generated force is in N when M and B are in
+  m/s². `UnitSignature.units[s]` labels each signal's axis.
+- **Polarity** per role (`VibUnit.polarity`): as recorded (default), reversed, or automatic
+  (reversed when the mean phase over the judged part is beyond ±90°: the ground force on its
+  own; M and B together, from the ground force they make, never apart; the reference as
+  recorded or reversed only), applied before every measure and reported
+  (`UnitSignature.reversed`). A viewer that wants "phase near 0 on any system" sets the
+  ground force (and M, B) automatic and shows the reported polarity.
+- **Judged part:** limits and summaries run over the sweep without a part at its start and
+  end: the tapers by default, found from the pilot's envelope (`SweepTrack.extent`), or
+  `VibLimits.skipStartMs`, `skipEndMs` in ms from the sweep's ends, within `fromMs .. toMs`.
+  The measures there are returned and flagged per point (`UnitSignature.judged`).
+- **Conventions** (the guide states them): phase is the signal's minus the reference's,
+  positive when the signal leads; THD over harmonics 2-5 relative to the fundamental, each
+  of them (`thFixed`: NaN where the 5th passes 0.8 of Nyquist, above 80 Hz at 1 ms, 40 Hz
+  at 2 ms) or all that fit (`thAllThatFit`, with the count per point; up to 16 harmonics);
+  peak force is the largest |GF| per period of the band-limited signal; the window is 4
+  periods of the fundamental but at least 100 ms (an even count of periods), points every
+  10 ms.
 - **Where values are NaN:** outside the sweep (where the reference is more than 40 dB
-  below its peak), within half a window of its ends, a harmonic above 0.8 of Nyquist, a
-  window holding a NaN or infinite sample, a failed row. The viewer draws gaps there.
+  below its peak), within half a window of its ends, a harmonic above 0.8 of Nyquist (and
+  THD, by default, where one of its harmonics is), a window holding a NaN or infinite
+  sample, a failed row. The viewer draws gaps there.
 - **Cost** (bench/README "Vibrator QC", one thread, float32, an 8 s sweep at 1 ms with a
   2 s listen time): see the table there; all of it is a few milliseconds per signal, so the
-  viewer can compute on demand, on a worker thread when a plot opens.
+  viewer can compute on demand, on a worker thread when a plot opens. The minimum window
+  adds a scan per window length the sweep passes through (three at 100 ms on an 8-80 Hz
+  sweep), 2 % more instructions than 4 periods everywhere.
 
 ## Display gain: CPU or GPU
 
@@ -706,11 +730,12 @@ pass it through `user`, with the workspaces.
 9. For a brute stack, run `bruteStack` on a background thread, with a `progress` hook
    that returns false to cancel. Other threads may keep reading the file meanwhile, but
    none may edit or close it ("Batch results", thread contract).
-10. For vibrator QC of a wireline record, assign each unit's rows to their roles (a
+10. For vibrator QC of a wireline record, calibrate it to volts (`target = ctVolts`: its
+   channels may be marked auxiliary or not), assign each unit's rows to their roles (a
    `VibUnit` per unit, `vibUnitsInOrder` for the usual Ref, GF, M, B layout), with the
-   sensitivities and masses, call `analyzeVibrators` once per record into a kept
-   `seq[UnitSignature]`, and fill the other plots from the table in "Vibrator signature
-   analysis" when they open.
+   sensitivities, masses and polarities, call `analyzeVibrators` once per record into a
+   kept `seq[UnitSignature]`, and fill the other plots from the table in "Vibrator
+   signature analysis" when they open, dimming the points outside `judged`.
 
 ## Open questions
 

@@ -14,12 +14,12 @@ into the caller's buffers; drawing is the viewer's.
 | Spectrum: amplitude, phase | `SpectrumPlan.amplitudeInto`; against the reference: the correlation's `lagSpectrumInto` | `binHz` |
 | Correlation: raw, envelope | `cp.crossCorrelateInto(x, reference, lags, envelope, ws)` | `cp.lagMs(i)` |
 | Correlation: spectrum, phase | `cp.lagSpectrumInto(lags, amp, phaseDeg, ws)` | `cp.binHz(k)` |
-| QC: phase, fundamental force, peak force, frequency | `track.phaseDeg`, `track.amplitude[0]`, `track.peak`, `track.frequencyHz` and `track.referenceHz` | `track.timeMs` |
-| Distortion: each harmonic, THD | `track.distortionInto(k, dst)`, `track.thdPct` | `track.timeMs` |
+| QC: phase, fundamental force, peak force, frequency | `track.phaseDeg`, `track.amplitude[0]`, `track.peak`, `track.frequencyHz` and `track.referenceHz`; dim the points where `UnitSignature.judged[m]` is false | `track.timeMs` |
+| Distortion: each harmonic, THD | `track.distortionInto(k, dst)`, `track.thdPct` (the harmonics it counts: `track.thdCount`) | `track.timeMs` |
 | Distortion: time-variant spectrum | `sg.spectrogramInto(x, amp, ws)` (then `toDbInto`) | `sg.frameCol(i)`, `sg.binHz(k)` |
 | Comparison against time | `compareTracksInto(a, b, phaseDeg, ratioDb)` | `track.timeMs` |
 | Comparison against frequency | `cp.compareInto(a, b, ratioDb, phaseDeg, ws)` | `cp.binHz(k)` |
-| Limits (optional) | `limitFlagsInto`, `summarize`; `UnitSignature.flags`, `.summaries` | `track.timeMs` |
+| Limits (optional) | `limitFlagsInto`, `summarize`; `UnitSignature.flags`, `.summaries`, `.judged`, `.reversed` | `track.timeMs` |
 | Everything of a record | `tp.analyzeVibrators(samples, meta, units, limits, results, ws)` | |
 
 ## Roles and units
@@ -30,16 +30,83 @@ layout, each unit's channels in the order Ref, GF, M, B (another `order` can be 
 the caller to pass or edit.
 
 Rows are taken in the unit the caller says they are in (`VibUnit.units`, `auRecorded` by
-default; a calibrated row's from `resolveInto`, [calibration](calibration.md)). Wireline
-channels are often auxiliary traces, which a calibration takes to volts only; a role's
-`Sensitivity` takes such a row on to its quantity: M and B in V/g or V/(m/s²) to m/s², the
-ground-force channel in V/N, V/kN or V/lbf to N. The ground force generated from M and B
-is the weighted sum `Mr·a_M + Mb·a_B`, with the reaction mass and the baseplate mass entered
-with their unit (`mass(2450, muKilogram)`, `mass(5400, muPound)`): in newtons when both
-accelerations are in m/s². Its sign is the accelerometers': if it comes out at 180° to a
-recorded ground force, they are wired the other way. Reverse both rows (`reversePolarity` on
-the M and B rows) before `analyzeVibrators`: reversing `weightedSum` after it leaves the
-generated force's track as it was.
+default; a calibrated row's from `resolveInto`, [calibration](calibration.md)). A role's
+`Sensitivity` takes a row in volts on to its quantity: M and B in V/g or V/(m/s²) to m/s²,
+the ground-force channel in V/N, V/kN or V/lbf to N. Nothing in the analysis depends on a
+row's trace status, but a calibration does: it takes auxiliary rows to volts only, and
+gives the others the seismic rules' factors (a catch-all geophone rule makes a ground-force
+channel m/s, and its role's sensitivity is then refused). Wireline channels may be marked
+either way, so calibrate a vibrator record to volts, every row alike: the same rules with
+`target = ctVolts` (`var c = cal; c.target = ctVolts; initCalibrationPlan(c)`), then the
+roles' sensitivities. (A row the file's headers say is already physical, a SEG-D Rev 3
+channel set in newtons, cannot be taken to volts: calibrate such a record to physical units,
+and give that role no sensitivity.)
+
+The ground force generated from M and B is the weighted sum `Mr·a_M + Mb·a_B`, with the
+reaction mass and the baseplate mass entered with their unit (`mass(2450, muKilogram)`,
+`mass(5400, muPound)`): in newtons when both accelerations are in m/s². M and B must be in
+one unit (after their sensitivities): a sum of m/s² and a recorded value is refused.
+
+## Polarity
+
+A ground-force channel is often at 180° to the reference ("this changes system to
+system"), and an accelerometer can be wired either way. Each role has a polarity,
+`VibUnit.polarity`, applied before every measure:
+
+- `poAsRecorded` (the default) and `poReversed` (the row times −1), for any role;
+- `poAutomatic`: reversed when the signal's mean phase to the reference, over the judged
+  part of the sweep, is beyond ±90° (the circular mean weighted by the fundamental,
+  `TrackSummary.meanPhaseDeg`). For the **ground force**, from its own phase. **M and B are
+  never decided apart**: the baseplate moves against the mass, so it sits near 180° from it
+  by physics, and deciding each from its own phase would turn the weighted sum into a
+  difference. They take one polarity, from the phase of the ground force generated from
+  them, and reverse together (both `poAutomatic`, which needs both rows and both masses).
+  The **reference** is the phase origin: as recorded or reversed only.
+
+The polarity used is reported: `UnitSignature.reversed` (the signals reversed, given or
+decided; `vsWeightedSum` with M and B) and `TrackSummary.reversed`. A ground force at +100°
+is "reversed" to −80° too: automatic corrects wiring, and a phase that far off still fails
+its limits, so check the summary. For a track alone, `reversePolarity(track)` turns its
+phases by 180° (the other measures of a signal times −1 are its own) and
+`automaticPolarity(track, limits)` decides. The per-plot calls (correlation, lag spectrum,
+comparison, spectrogram) take rows: reverse the viewer's copies of the rows in
+`UnitSignature.reversed` (`reversePolarity` on the row) before them.
+
+```nim
+import std/math
+import parseSEG, processSEG
+
+# A ground force recorded at 180° + 4° to its pilot: as recorded it reads −176°,
+# automatic reads +4° and says it reversed it.
+let spec = linearSweep(10, 60, 2000, 1, initSweepTaper(200, 200))
+let n = spec.sweepLen + 500
+var keys = newSeq[TraceKeys](2)
+var counts = newSeq[int](2)
+var data = zeros[float64](2, n)
+let pilot = spec.sweepSamples(float64)
+let gf = linearSweep(10, 60, 2000, 1, initSweepTaper(200, 200), startPhaseDeg = 184,
+  amplitude = 4e4).sweepSamples(float64)
+for r in 0 ..< 2:
+  keys[r] = initTraceKeys()
+  keys[r].t0Ms = 0
+  counts[r] = n
+for j in 0 ..< pilot.len:
+  data[0, j] = pilot[j]
+  data[1, j] = gf[j]
+let meta = initChunkMeta(rowsOf(keys, counts), dtMs = 1)
+var unit = initVibUnit(0, groundForce = 1)
+unit.units[vsGroundForce] = auForce
+unit.polarity[vsGroundForce] = poAutomatic
+let tp = initSweepTrackPlan(float64, TrackParams(), dtMs = 1, samples = n)
+var ws = initWorkspace()
+ws.reserve(vibratorWorkspace(tp))
+var results: seq[UnitSignature[float64]]
+tp.analyzeVibrators(data, meta, [unit], VibLimits(phaseDeg: 5), results, ws)
+let s = results[0].summaries[vsGroundForce]
+doAssert vsGroundForce in results[0].reversed and s.reversed
+doAssert abs(s.meanPhaseDeg - 4) < 0.05 and s.failed == {}   # within the 5° limit
+doAssert abs(results[0].tracks[vsGroundForce].phaseDeg[100] - 4) < 0.05
+```
 
 ## Everything at once
 
@@ -94,7 +161,7 @@ let tp = initSweepTrackPlan(float64, TrackParams(), dtMs = 1, samples = n)
 var ws = initWorkspace()
 ws.reserve(vibratorWorkspace(tp))
 var results: seq[UnitSignature[float64]]
-let limits = VibLimits(phaseDeg: 3, fromMs: 300, toMs: 1700) # leave out the tapers
+let limits = VibLimits(phaseDeg: 3) # judged without the tapers (by default)
 tp.analyzeVibrators(data, meta, units, limits, results, ws)
 
 # The ground force's fundamental: 2450 kg × 20 m/s² ∠5° + 1180 kg × 15 m/s² ∠−175°.
@@ -111,6 +178,8 @@ doAssert abs(gf.referenceHz[m] - spec.frequencyAt(1000)) < 0.05
 doAssert abs(u.tracks[vsWeightedSum].amplitude[0][m] - gf.amplitude[0][m]) < 1e-6 * abs(want)
 doAssert lkPhase in u.summaries[vsGroundForce].failed and lkPhase in u.flags[vsGroundForce][m]
 doAssert u.summaries[vsMass].failed == {}     # M and B have no limits
+# The judged part: the sweep less its tapers (200 ms each), from the pilot's envelope.
+doAssert u.judged[m] and not u.judged[10] and not u.judged[195]
 ```
 
 ## Against sweep time
@@ -118,19 +187,34 @@ doAssert u.summaries[vsMass].failed == {}     # M and B have no limits
 A `SweepTrackPlan` measures one signal against one reference at points every `stepMs`
 (10 ms) along the sweep. The reference's phase ψ comes from its own analytic signal, so any
 sweep law (linear, dB/octave, exponential, a table, a recorded pilot) is handled the same
-way. At each point, harmonic `k`'s amplitude and phase are a Fourier coefficient over
-`cycles` (4) periods of the reference with a cos⁴ weight in phase: over whole periods it is
-orthogonal to every other harmonic and to DC, whatever the law, which is what a vibrator
-controller's tracking filter does. The measures, one value per point, NaN where not
-measured (outside the sweep, within half a window of its ends, a harmonic above
-`maxHarmonicFraction` of Nyquist):
+way. At each point, harmonic `k`'s amplitude and phase are a Fourier coefficient over a
+whole number of periods of the reference with a cos⁴ weight in phase: over whole periods it
+is orthogonal to every other harmonic and to DC, whatever the law, which is what a vibrator
+controller's tracking filter does.
+
+**The window** is `cycles` (4) periods of the reference, but never shorter than
+`minWindowMs` (100 ms): where 4 periods are shorter, it is the smallest **even** number of
+periods that reaches it (4 up to 40 Hz, 6 to 60 Hz, 8 to 80 Hz, 10 to 100 Hz). Whole periods
+keep the harmonics apart; the minimum time keeps the curves steady at high frequency, where
+4 periods are a few tens of ms (on white noise the phase's scatter falls by √(C/4): 1.41 times
+at 80 Hz); an even count lets nothing of a subharmonic at f/2 or 3f/2 (a decoupling plate)
+into the fundamental, where 4 periods let in 1/6 of it and 5 or 7 periods 4 %. A step in
+phase takes about 0.36 of a window to show (35 ms at 100 ms). `reference.cyclesAt(point)`
+gives the window's periods at a point; `minWindowMs = 0` keeps `cycles` everywhere.
+
+The measures, one value per point, NaN where not measured (outside the sweep, within half a
+window of its ends, a harmonic above `maxHarmonicFraction` of Nyquist):
 
 - `phaseDeg`: the fundamental's phase minus the reference's, degrees in (−180, 180],
   positive when the signal leads (the reference delayed by τ reads −360·f·τ);
 - `amplitude[k − 1]`: harmonic k's peak amplitude; `amplitude[0]` of a ground force is the
   **fundamental force**;
-- `thdPct`: total harmonic distortion, `100·√(Σ_{k≥2} A_k²)/A_1` (`thdFundamental`) or over
-  `√(Σ_{k≥1} A_k²)` (`thdTotal`); `distortionInto(k, dst)`: one harmonic's `100·A_k/A_1`;
+- `thdPct`: total harmonic distortion, `100·√(Σ_{k≥2} A_k²)/A_1` (`thdFundamental`, the
+  default) or over `√(Σ_{k≥1} A_k²)` (`thdTotal`, under 100 %), over harmonics 2 to
+  `harmonics` (5): all of them by default (`thFixed`: NaN where one is past the harmonic
+  limit, so THD means the same all along the sweep), or those that fit below it
+  (`thAllThatFit`: THD steps down where one leaves the band); `thdCount` gives the harmonics
+  summed at each point; `distortionInto(k, dst)`: one harmonic's `100·A_k/A_1`;
 - `peak`: the largest |s| within one period, harmonics and noise included, of the
   band-limited signal (the **peak force**, against the hold-down weight);
 - `referenceHz` and `frequencyHz`: the reference's instantaneous frequency (the sweep law
@@ -255,40 +339,66 @@ doAssert db[best] == 0
 
 Limits are optional, all off (NaN) by default: per point, `phaseDeg` (|phase|), `thdPct`,
 `harmonicPct` (any one harmonic), `forceLow` and `forceHigh` (the fundamental), `peakForce`;
-over the sweep, `meanPhaseDeg`, `meanThdPct` and `meanForceLow`; all checked between
-`fromMs` and `toMs` (set them to leave out the tapers, where the force ramps). For any
-track, `limitFlagsInto(track, limits, flags)` gives each point the set of limits it exceeds
+over the sweep, `meanPhaseDeg`, `meanThdPct` and `meanForceLow`. For any track,
+`limitFlagsInto(track, limits, flags)` gives each point the set of limits it exceeds
 (`set[LimitKind]`), for the viewer to mark, and `summarize(track, limits)` the statistics
-(points measured; mean and maximum |phase| and THD; the fundamental's mean, minimum and
-maximum; the largest peak), the points beyond each limit and the limits failed, for a pass
-or fail table per unit. `analyzeVibrators` applies them to the two ground forces, recorded
-and generated.
+(points measured; the mean phase, circular; mean and maximum |phase| and THD; the
+fundamental's mean, minimum and maximum; the largest peak), the points beyond each limit and
+the limits failed, for a pass or fail table per unit. `analyzeVibrators` applies them to the
+two ground forces, recorded and generated, and summarizes the other signals over the same
+part of the sweep without them.
+
+**The judged part.** Limits and summaries judge the sweep without a part at its start and
+at its end, where the force ramps and the measures run to extremes (with 1 % noise, the end
+taper's last 100 ms reach 2-4° of phase and 8 % more THD while the flat part stays within
+0.3°). By default those parts are the **tapers**, found from the reference's envelope
+(`SweepReference.extent`, `SweepTrack.extent`: where the envelope, averaged over a period,
+stops rising and starts falling; within a period of a cos², linear or Blackman taper's end
+in the tests, and an untapered sweep is judged whole). `skipStartMs` and `skipEndMs` give
+them in ms instead, from the sweep's first and last sample (0: none), and `fromMs`, `toMs`
+bound them further in record time. The measures outside are still returned: per point,
+`UnitSignature.judged[m]` (or `judgedInto(track, limits, dst)` for a track alone) says
+whether it is judged, so a plot can leave the others out or draw them dimmed. Where the
+envelope keeps rising or falling (an amplitude that changes by more than 2 % of the tapers'
+steepest rise, all along), no taper is found on that side and the judged part runs to that
+end of the sweep: give the lengths in ms.
 
 ## Conventions, and what is still to confirm
 
 Vibrator QC systems differ in some definitions; processSEG takes these, and states them:
 
 - **Phase:** signal minus reference, positive when the signal leads.
-- **Distortion:** THD over harmonics 2 to 5 (`harmonics`) relative to the fundamental;
-  `thdTotal` relative to the fundamental and harmonics together. Noise and subharmonics are
-  not counted as such, but the window lets through what lies within its main lobe of a
-  harmonic: noise in the harmonics' bands, and a subharmonic at f/2 or 3f/2 at 1/6 of its
-  level into the fundamental and the 2nd harmonic over 4 periods (0.04 over 5, nothing over
-  6).
+- **Distortion:** THD over harmonics 2 to 5 (`harmonics`) relative to the fundamental, each
+  of them (`thFixed`), as a controller's report gives it; `thdTotal` relative to the
+  fundamental and harmonics together; `thAllThatFit` for those below the harmonic limit, as
+  far as the band allows. At most 16 harmonics are tracked in this version (`harmonics` ≤
+  16: the lanes of the running sums). THD's noise floor grows with the harmonics it counts,
+  as their square root: 1 % white noise on a clean fundamental reads 0.29 % over harmonics
+  2-5 and 0.58 % over 2-16 (0.5 ms, 8-40 Hz); so a THD over all that fit is not comparable
+  along a sweep where the count falls. Noise and subharmonics are not counted as such, but
+  the window lets through what lies within its main lobe of a harmonic: noise in the
+  harmonics' bands, and a subharmonic at f/2 or 3f/2 at 1/6 of its level into the
+  fundamental and the 2nd harmonic over 4 periods (0.04 over 5, nothing over 6 or any even
+  count).
 - **Reference:** a clean sweep (the pilot, as recorded or generated). Harmonics of its own
   bend its phase: a 5 % 2nd harmonic in the reference reads as a false 2nd harmonic of about
   3 % in every signal tracked against it. Compare two signals with `compareTracksInto`, not
   by taking one as the other's reference.
 - **Peak force:** the largest |GF| per period of the fundamental, harmonics included; the
   summary also has the largest fundamental force.
-- **Window:** 4 periods of the fundamental (`cycles`), points every 10 ms (`stepMs`).
-- **Ground force from M and B:** `Mr·a_M + Mb·a_B`, the accelerometers' polarity.
+- **Window:** 4 periods of the fundamental (`cycles`), never shorter than 100 ms
+  (`minWindowMs`, an even count of periods), points every 10 ms (`stepMs`).
+- **Ground force from M and B:** `Mr·a_M + Mb·a_B`, with M and B in their polarity
+  (`VibUnit.polarity`).
+- **Polarity:** as recorded by default; automatic on request, reported.
+- **Judged part:** the sweep without its tapers, by default.
 - **Accuracy** (the test suite, on synthetic sweeps): phase within 0.05°, harmonic levels
-  within 0.02 % of the fundamental (0.04 % at the slow start of a strongly nonlinear law),
-  the fundamental within 1e-4, the peak within 2e-4, the
-  frequency within 0.05 Hz, away from the sweep's ends; in a taper's first periods, where the
-  amplitude changes within the window, the phase is off by up to 0.1°. Near the harmonic
-  limit (2.5 samples a period) the fundamental's phase is within 0.4° and its amplitude
-  0.5 %. With noise the ends of a sweep are the least steady part, the end most (its windows
-  are short and its amplitude small): leave the tapers out of limits with `fromMs`, `toMs`.
+  within 0.02 % of the fundamental (0.04 % at the slow start of a strongly nonlinear law;
+  16 harmonics within 2e-5), the fundamental within 1e-4, the peak within 2e-4, the
+  frequency within 0.05 Hz, away from the sweep's ends; over 6 or more periods a clean
+  fundamental's phase is within 1e-5° and its false 2nd harmonic under 1e-5. In a taper's
+  first periods, where the amplitude changes within the window, the phase is off by up to
+  0.1°. Near the harmonic limit (2.5 samples a period) the fundamental's phase is within 0.4°
+  and its amplitude 0.5 %. With noise the ends of a sweep are the least steady part: the
+  judged part leaves the tapers out.
 - **NaN and infinite samples** blank the points whose window holds them, and only those.
