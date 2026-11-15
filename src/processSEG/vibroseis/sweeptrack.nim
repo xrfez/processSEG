@@ -35,15 +35,39 @@
 ## reference's envelope is within `minReferenceDb` of its peak; a reference
 ## with a NaN or no energy has no sweep.
 ##
+## **The flat part** (`flatSpan`, `extent`): the sweep between its tapers,
+## from the reference's envelope averaged over one period around each
+## sample (which leaves out the ripple at 2f of an imperfect analytic signal,
+## and the slow 1/t tail the Hilbert transform puts after an abrupt start).
+## The start taper ends at the first sample, above half the peak, after
+## which the average rises over 10 ms by no more than 2e-4 of itself or 2 %
+## of its fastest rise before (so a plateau with a slope is flat); the end
+## taper starts at the last such sample, mirrored. Measured on cos², linear
+## and Blackman tapers of 0.3 and 1 s (8-80 Hz, 0.5-2 ms): within 0.75 of
+## a period of the reference of each taper's end, 1.5 with 1 % noise; an
+## untapered sweep is flat from 0.8 of a period after its start. Each taper
+## is looked for in its half of the sweep: where the envelope never settles
+## there (an amplitude changing by more than 2 % of the tapers' steepest
+## rise all along), that end of the sweep. `vibqc` judges limits and
+## summaries over this part by default.
+##
 ## **Tracking.** At point `m` (sample `c = m·step`), harmonic `k` (1: the
 ## fundamental) has the complex amplitude
 ##
 ##   c_k = 2·∫ w·s·e^{−ikψ} dψ / ∫ w dψ,   w = cos⁴((ψ − ψ_c)/2C),
 ##
-## over the `cycles` = C periods of the reference centred on the point (|ψ −
-## ψ_c| < πC): a window in phase, so it follows the sweep (4 periods are
-## 500 ms at 8 Hz, 50 ms at 80 Hz), the square of a Hann window. For a
-## signal `Σ A_k·cos(kψ + θ_k)` (plus a DC offset) it is exactly
+## over C periods of the reference centred on the point (|ψ − ψ_c| < πC):
+## a window in phase, so it follows the sweep, the square of a Hann window.
+## C is `cycles` (4: 500 ms at 8 Hz), but where those are shorter than
+## `minWindowMs` (100 ms), the smallest **even** number of periods that
+## reaches it, from the reference's frequency at the point (`cyclesAt`):
+## 4 up to 40 Hz, then 6 to 60 Hz, 8 to 80 Hz. The minimum time steadies the
+## measures where 4 periods are a few tens of ms (on white noise the phase's
+## rms falls by √(C/4), measured 1.24 at C = 6 and 1.42 at C = 8); an even
+## count, because an odd one lets a subharmonic at f/2 into the fundamental
+## (below).
+##
+## For a signal `Σ A_k·cos(kψ + θ_k)` (plus a DC offset) the window gives exactly
 ## `A_k·e^{iθ_k}`: `w = (3 + 4·cos(x/C) + cos(2x/C))/8` is a sum of cosines
 ## with fewer than C periods in the window, so over a whole number C ≥ 3 of
 ## periods it is orthogonal to DC and to every other harmonic, whatever the
@@ -54,16 +78,19 @@
 ## 1e-6 down to 6 samples per period (a Hann window, vanishing to the second
 ## order, leaked 5e-5 of the fundamental into the 2nd harmonic at 8 samples
 ## per period). The weight factors into cosines and sines of `ψ/C` and
-## `2ψ/C`, so five running sums per harmonic give every window in one pass,
-## the harmonics in SIMD lanes: the cost is O(samples × harmonics), whatever
-## the window.
+## `2ψ/C`, so five running sums per harmonic give every window of one C in
+## one pass, the harmonics in SIMD lanes: one pass per window length the
+## sweep passes through (three on an 8-80 Hz sweep at 100 ms, each over its
+## points' samples), so the cost is O(samples × harmonics), whatever the
+## window.
 ##
 ## **What the window lets through.** Only whole harmonics (and DC) are
 ## rejected exactly. Content between them inside the window's main lobe
 ## (`±3f/C`) leaks in: a subharmonic at `f/2` or `3f/2` (a decoupling
 ## plate) reads 1/6 of its level in the fundamental and the 2nd harmonic
-## over 4 periods (the weight's `cos(2x/C)` term is at `f/2`), 0.04 over 5,
-## nothing over an even number from 6; so do noise (THD counts the noise in
+## over 4 periods (the weight's `cos(2x/C)` term is at `f/2`), 0.04 over 5
+## and 7, nothing over an even number from 6 (hence the even counts a
+## minimum time raises the window to); so do noise (THD counts the noise in
 ## the harmonics' bands) and harmonics folded from above Nyquist (recorded
 ## data are anti-alias filtered). The reference must be a clean sweep: a
 ## harmonic of its own at level `a` bends ψ once per period, and every
@@ -79,9 +106,16 @@
 ## - `amplitude[k − 1]`: `|c_k|`, the peak amplitude of harmonic k (not RMS)
 ##   in the signal's unit: `amplitude[0]` of a ground force is the
 ##   *fundamental force*;
-## - `thdPct`: `100·√(Σ_{k≥2} A_k²)/A_1` over the harmonics measured there
-##   (`thdFundamental`), or over `√(Σ_{k≥1} A_k²)` (`thdTotal`); NaN where no
-##   harmonic is measured; `distortionInto` gives one harmonic's `100·A_k/A_1`;
+## - `thdPct`: `100·√(Σ_{k≥2} A_k²)/A_1` (`thdFundamental`), or over
+##   `√(Σ_{k≥1} A_k²)` (`thdTotal`), over the harmonics 2 .. `harmonics`: every one of
+##   them (`thFixed`, the default: NaN where one is past the harmonic limit,
+##   so THD has one meaning all along the sweep), or those measured there
+##   (`thAllThatFit`: it steps down where one leaves the band); `thdCount`
+##   gives how many it sums at each point (0 where it is NaN). THD's noise
+##   floor grows as the square root of that count (1 % white noise: 0.29 %
+##   over 2-5, 0.58 % over 2-16, at 0.5 ms). At most 16 harmonics are
+##   tracked (the lanes of the sums); `distortionInto` gives one harmonic's
+##   `100·A_k/A_1`;
 ## - `peak`: the largest `|s|` within one period of the reference centred on
 ##   the point, harmonics and noise included (a ground force's *peak force*),
 ##   of the band-limited signal between the samples: around the largest and
@@ -99,7 +133,8 @@
 ##
 ## **Where it is measured.** A point is measured when its window lies inside
 ## the sweep, so the measures start half a window after the reference does
-## and stop half a window before its end. Harmonic `k` is measured where
+## and stop half a window before its end (4 periods of the end's frequency
+## at 100 ms and 80 Hz: 50 ms). Harmonic `k` is measured where
 ## `k·f ≤ maxHarmonicFraction · Nyquist` all through the window. Inside the
 ## sweep's tapers the amplitudes follow the ramps and the phase is measured
 ## as long as the reference is above `minReferenceDb`.
@@ -127,16 +162,34 @@ type
     thdFundamental = "fundamental" ## `√(Σ_{k≥2} A_k²) / A_1`
     thdTotal = "total"             ## `√(Σ_{k≥2} A_k²) / √(Σ_{k≥1} A_k²)`, under 100 %
 
+  ThdHarmonics* = enum
+    ## Which harmonics the total harmonic distortion sums at a point.
+    thFixed = "fixed"
+      ## Every one of 2 .. `harmonics`: NaN where one of them is past the
+      ## harmonic limit, so THD has one meaning along the whole sweep.
+    thAllThatFit = "all that fit"
+      ## Those of 2 .. `harmonics` measured at the point (below the harmonic
+      ## limit): THD steps down where one leaves the band.
+
   TrackParams* = object
     ## What `SweepTrackPlan` measures; see the module documentation.
-    harmonics*: int = 5                 ## The highest harmonic order tracked, 1 (the fundamental only) .. 16.
-    cycles*: int = 4                    ## The window: this many periods of the reference (≥ 3), cos⁴ weighted.
-    stepMs*: float64 = 10               ## Points every `stepMs` (rounded to whole samples, at least one).
+    harmonics*: int = 5
+      ## The highest harmonic order tracked, 1 (the fundamental only) .. 16;
+      ## THD sums the orders 2 .. `harmonics` (`thdHarmonics`).
+    cycles*: int = 4
+      ## The window: at least this many periods of the reference (≥ 3), cos⁴
+      ## weighted.
+    minWindowMs*: float64 = 100
+      ## ... and at least this long: where `cycles` periods are shorter, the
+      ## window is the smallest even number of periods that reaches it (0:
+      ## `cycles` everywhere; 0 .. 1e6).
+    stepMs*: float64 = 10 ## Points every `stepMs` (rounded to whole samples, at least one).
     minReferenceDb*: float64 = -40
       ## The sweep is where the reference's envelope is within this of its peak (< 0).
     maxHarmonicFraction*: float64 = 0.8
       ## Harmonic k is measured where `k·f` stays below this fraction of Nyquist (0 .. 1].
     thd*: ThdReference = thdFundamental ## What THD is relative to.
+    thdHarmonics*: ThdHarmonics = thFixed ## Which harmonics THD sums.
 
   SweepTrackPlan*[T: SampleType] = object
     ## Tracking of signals of up to `samples` samples at `dtMs`; see the
@@ -147,14 +200,29 @@ type
     dtMs: float64
     samples, step, points, lanes: int
 
+  SweepExtent* = object
+    ## Where a reference's sweep lies, in ms from the rows' first sample (NaN
+    ## for a reference without a sweep): the sweep and its flat part, between
+    ## the tapers. See the module documentation, "The flat part".
+    startMs*: float64 = NaN ## The sweep's first sample (its envelope within `minReferenceDb`).
+    endMs*: float64 = NaN ## Its last sample.
+    flatStartMs*: float64 = NaN ## Where the start taper ends: the flat part's first sample.
+    flatEndMs*: float64 = NaN ## Where the end taper starts: its last sample.
+
   SweepReference* = object
     ## A reference prepared by `referenceInto`: its phase and frequency per
-    ## sample and each point's windows. Make it with `initSweepReference`.
+    ## sample, its extent and each point's windows. Make it with
+    ## `initSweepReference`.
     samples, points: int # the plan's (a shape check)
+    dtMs: float64
     first, last: int # the sweep's samples (inclusive); first = −1: no sweep
-    cosPsi, sinPsi, cosC, sinC, freqHz: seq[float64] # per sample
+    flatFirst, flatLast: int # its flat part (inclusive)
+    psi, cosPsi, sinPsi, freqHz: seq[float64] # per sample: the unwrapped phase, e^{iψ}, f
     lo, hi, lo1, hi1: seq[int] # per point: the C-period and one-period windows; lo = −1: not measured
+    cyc: seq[int] # per point: the window's periods C (0: not measured)
     weight, refHz, maxHz: seq[float64] # per point: Σ w·f, f at the point, the largest f in the window
+    groups: seq[int] # the distinct window lengths C of the measured points (the first groupCount)
+    groupCount: int
 
   SweepTrack* = object
     ## The measures of one signal against its reference, one value per point
@@ -166,14 +234,20 @@ type
     phaseDeg*: seq[float64] ## The fundamental's phase minus the reference's, degrees, (−180, 180].
     amplitude*: seq[seq[float64]] ## `[order − 1][point]`: harmonic `order`'s peak amplitude.
     thdPct*: seq[float64] ## Total harmonic distortion, %.
+    thdCount*: seq[int] ## The harmonics THD sums at the point (0 where THD is NaN).
     peak*: seq[float64] ## The largest `|s|` within one period around the point.
+    extent*: SweepExtent ## The reference's sweep and flat part (`SweepReference.extent`).
 
 const
   maxHarmonics = 16
-  peakPhases = 8 # sub-sample positions of the band-limited peak
-  peakHalf = 8   # taps each side of the interpolator
-  peakBeta = 8.0 # its Kaiser window
-  sumCount = 10  # running sums per harmonic: 5 weights, real and imaginary
+  peakPhases = 8      # sub-sample positions of the band-limited peak
+  peakHalf = 8        # taps each side of the interpolator
+  peakBeta = 8.0      # its Kaiser window
+  sumCount = 10       # running sums per harmonic: 5 weights, real and imaginary
+  flatLookMs = 10.0   # the flat part: the envelope, averaged over a period, rises (falls)
+  flatRise = 2e-4     # by at most this fraction of itself over the next (previous) flatLookMs,
+  flatSlowdown = 0.02 # or of its fastest rise (fall) before
+  maxMinWindowMs = 1e6
 
 proc badTrack(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
@@ -185,6 +259,8 @@ proc validate*(p: TrackParams) =
   if p.cycles notin 3 .. 1000:
     badTrack("cycles must be a whole number of periods in 3 .. 1000 (over fewer, the " &
       "window is not orthogonal to the neighbouring harmonics), got " & $p.cycles)
+  if not (p.minWindowMs >= 0 and p.minWindowMs <= maxMinWindowMs):
+    badTrack("minWindowMs must be in 0 .. " & $maxMinWindowMs & ", got " & $p.minWindowMs)
   if not (p.stepMs > 0 and p.stepMs < Inf):
     badTrack("stepMs must be finite and positive, got " & $p.stepMs)
   if not (p.minReferenceDb < 0 and p.minReferenceDb > -Inf):
@@ -276,14 +352,18 @@ proc initSweepReference*[T](tp: SweepTrackPlan[T]): SweepReference =
   let p = tp.points
   result.samples = n
   result.points = p
+  result.dtMs = tp.dtMs
   result.first = -1
   result.last = -1
-  for s in [addr result.cosPsi, addr result.sinPsi, addr result.cosC, addr result.sinC,
-      addr result.freqHz]:
+  result.flatFirst = -1
+  result.flatLast = -1
+  for s in [addr result.psi, addr result.cosPsi, addr result.sinPsi, addr result.freqHz]:
     s[] = newSeq[float64](n)
   for s in [addr result.lo, addr result.hi, addr result.lo1, addr result.hi1]:
     s[] = newSeq[int](p)
     for v in s[].mitems: v = -1
+  result.cyc = newSeq[int](p)
+  result.groups = newSeq[int](p)
   for s in [addr result.weight, addr result.refHz, addr result.maxHz]:
     s[] = newSeq[float64](p)
 
@@ -296,6 +376,8 @@ proc initSweepTrack*[T](tp: SweepTrackPlan[T]): SweepTrack =
       addr result.thdPct, addr result.peak]:
     s[] = newSeq[float64](p)
     for v in s[].mitems: v = NaN
+  result.thdCount = newSeq[int](p)
+  result.extent = SweepExtent()
   result.amplitude = newSeq[seq[float64]](tp.params.harmonics)
   for a in result.amplitude.mitems:
     a = newSeq[float64](p)
@@ -306,9 +388,27 @@ func span*(r: SweepReference): Slice[int] {.inline, raises: [].} =
   ## `minReferenceDb` of its peak); empty (`0 .. -1`) when there is none.
   if r.first < 0: 0 .. -1 else: r.first .. r.last
 
+func flatSpan*(r: SweepReference): Slice[int] {.inline, raises: [].} =
+  ## The samples of the sweep's flat part, between its tapers (module
+  ## documentation); empty (`0 .. -1`) without a sweep.
+  if r.first < 0: 0 .. -1 else: r.flatFirst .. r.flatLast
+
+func extent*(r: SweepReference): SweepExtent {.raises: [].} =
+  ## The sweep and its flat part in ms (`span` and `flatSpan` times the
+  ## interval); every field NaN without a sweep.
+  result = SweepExtent() # (`result` alone would be zeros, not the fields' defaults)
+  if r.first >= 0:
+    result = SweepExtent(startMs: float64(r.first) * r.dtMs, endMs: float64(r.last) * r.dtMs,
+      flatStartMs: float64(r.flatFirst) * r.dtMs, flatEndMs: float64(r.flatLast) * r.dtMs)
+
 func isMeasured*(r: SweepReference, point: int): bool {.inline, raises: [].} =
   ## Point `point`'s window lies inside the sweep.
   point >= 0 and point < r.lo.len and r.lo[point] >= 0
+
+func cyclesAt*(r: SweepReference, point: int): int {.inline, raises: [].} =
+  ## The periods of the reference in point `point`'s window (`cycles`, or
+  ## more where `minWindowMs` raises it); 0 where it is not measured.
+  if r.isMeasured(point): r.cyc[point] else: 0
 
 func len*(t: SweepTrack): int {.inline, raises: [].} =
   ## The number of points.
@@ -323,7 +423,8 @@ func sizedFor(t: SweepTrack, points, harmonics: int): bool {.raises: [].} =
   ## caller's to read, and could have been resized).
   result = t.timeMs.len == points and t.referenceHz.len == points and
     t.frequencyHz.len == points and t.phaseDeg.len == points and
-    t.thdPct.len == points and t.peak.len == points and t.amplitude.len == harmonics
+    t.thdPct.len == points and t.thdCount.len == points and t.peak.len == points and
+    t.amplitude.len == harmonics
   if result:
     for a in t.amplitude:
       if a.len != points: return false
@@ -334,6 +435,46 @@ func wrapDeg*(deg: float64): float64 {.raises: [].} =
   ## An angle in degrees wrapped to (−180, 180] (NaN stays NaN).
   let r = floorMod(deg, 360.0)
   if r > 180: r - 360 else: r
+
+func windowCycles(p: TrackParams, f: float64): int {.raises: [].} =
+  ## The window's periods at the frequency `f`: `cycles`, or where those
+  ## are shorter than `minWindowMs`, the smallest even number that is not
+  ## (an odd count lets a subharmonic at f/2 into the fundamental).
+  result = p.cycles
+  let need = p.minWindowMs * f / 1000 # periods in minWindowMs
+  if need > float64(p.cycles) * (1 + 1e-9): # (a rounding past the edge is not)
+    result = 2 * int(ceil(need / 2 - 1e-9))
+
+proc flatPart(e: ptr UncheckedArray[float64], first, last, look: int,
+    floor: float64): (int, int) {.raises: [].} =
+  ## The flat part of the sweep `first .. last` from its envelope averaged
+  ## over a period, `e[j − first]`: from the first sample above `floor`
+  ## after which it rises over `look` samples by no more than `flatRise` of
+  ## itself or `flatSlowdown` of the fastest rise before (a plateau with a
+  ## slope is flat), to the last before which it fell by no more. A taper
+  ## is looked for in its half of the sweep: without one there (an envelope
+  ## that keeps rising), that end of the sweep.
+  template at(j: int): float64 = e[j - first]
+  let mid = (first + last) div 2
+  result = (first, last)
+  var fastest = 0.0
+  for j in first .. mid:
+    var top = at(j)
+    for k in j + 1 .. min(last, j + look): top = max(top, at(k))
+    let rise = top - at(j)
+    fastest = max(fastest, rise)
+    if at(j) >= floor and rise <= max(flatRise * at(j), flatSlowdown * fastest):
+      result[0] = j
+      break
+  fastest = 0.0
+  for j in countdown(last, mid):
+    var top = at(j)
+    for k in max(first, j - look) .. j - 1: top = max(top, at(k))
+    let fall = top - at(j)
+    fastest = max(fastest, fall)
+    if at(j) >= floor and fall <= max(flatRise * at(j), flatSlowdown * fastest):
+      result[1] = j
+      break
 
 proc referenceInto*[T: SampleType](tp: SweepTrackPlan[T], x: openArray[T],
     dst: var SweepReference, ws: var Workspace) {.raises: [].} =
@@ -352,11 +493,15 @@ proc referenceInto*[T: SampleType](tp: SweepTrackPlan[T], x: openArray[T],
     dst.hi[m] = -1
     dst.lo1[m] = -1
     dst.hi1[m] = -1
+    dst.cyc[m] = 0
     dst.weight[m] = NaN
     dst.refHz[m] = NaN
     dst.maxHz[m] = NaN
   dst.first = -1
   dst.last = -1
+  dst.flatFirst = -1
+  dst.flatLast = -1
+  dst.groupCount = 0
   if n < 5: return
   # The analytic signal xh + i·h of the reference, demeaned and without the
   # content below its band (module documentation).
@@ -385,6 +530,7 @@ proc referenceInto*[T: SampleType](tp: SweepTrackPlan[T], x: openArray[T],
     below += float64(re[ka]) ^ 2 + float64(im[ka]) ^ 2
   let k0 = 0.25 * float64(ka)
   let k1 = 0.5 * float64(ka)
+  let bandHz = float64(ka) * 1000 / (float64(nf) * tp.dtMs)       # the band's lower edge
   re[0] = T(0)
   im[0] = T(0)
   for k in 1 ..< bins:
@@ -421,9 +567,9 @@ proc referenceInto*[T: SampleType](tp: SweepTrackPlan[T], x: openArray[T],
   if last - first < 4: return
   dst.first = first
   dst.last = last
-  # The unwrapped phase over the sweep, in the scratch (float64), and the
-  # unit phasor e^{iψ} from the analytic signal itself.
-  let psi = ws.scratch(float64, 5 * (tp.samples + 1), at = tp.sumsAt)
+  # The unwrapped phase over the sweep and the unit phasor e^{iψ} from the
+  # analytic signal itself.
+  template psi: untyped = dst.psi
   for j in first .. last:
     let a = float64(xh[j])
     let b = float64(h[j])
@@ -447,13 +593,33 @@ proc referenceInto*[T: SampleType](tp: SweepTrackPlan[T], x: openArray[T],
     let a = max(first, j - 2)
     let b = min(last, j + 2)
     dst.freqHz[j] = (psi[b] - psi[a]) / (2 * PI * dtS * float64(b - a))
-  let C = float64(tp.params.cycles)
+  # The flat part, from the envelope averaged over one period of the
+  # reference around each sample (which leaves out the ripple an abrupt
+  # start puts into the analytic envelope, a 1/t tail of the Hilbert
+  # transform): its prefix sums in run 0, the averages in run 1.
+  let stride = tp.samples + 1
+  let sums = ws.scratch(float64, 5 * stride, at = tp.sumsAt)
+  template run(q, i: int): untyped = sums[q * stride + i]
+  run(0, 0) = 0
   for j in first .. last:
-    dst.cosC[j] = cos(psi[j] / C)
-    dst.sinC[j] = sin(psi[j] / C)
-  # Each point's windows (from ψ), then the weight's running sums, which
-  # overwrite ψ.
-  let halfC = PI * C
+    run(0, j - first + 1) = run(0, j - first) + hypot(float64(xh[j]), float64(h[j]))
+  # The period from the frequency, which is not to be trusted where the
+  # envelope is small (it read 1 Hz at the −40 dB start of an 8 Hz sweep):
+  # never longer than at half the band's lower edge.
+  var top = 0.0
+  for j in first .. last:
+    var f = dst.freqHz[j]
+    if not (f >= 0.5 * bandHz): f = 0.5 * bandHz
+    let half = (if f < Inf: min(last - first, int(round(500 / (f * tp.dtMs)))) else: 0)
+    let a = max(first, j - half)
+    let b = min(last, j + half)
+    let e = (run(0, b - first + 1) - run(0, a - first)) / float64(b - a + 1)
+    run(1, j - first) = e
+    top = max(top, e)
+  (dst.flatFirst, dst.flatLast) = flatPart(cast[ptr UncheckedArray[float64]](addr run(1, 0)),
+    first, last, max(1, int(round(flatLookMs / tp.dtMs))), 0.5 * top)
+  # Each point's window: C periods (`windowCycles`) centred on the point,
+  # from ψ; the pointers move both ways, as C changes from point to point.
   var lo = first
   var hi = first
   var lo1 = first
@@ -461,11 +627,15 @@ proc referenceInto*[T: SampleType](tp: SweepTrackPlan[T], x: openArray[T],
   for m in 0 ..< tp.points:
     let c = m * tp.step
     if c < first or c > last: continue
+    let C = windowCycles(tp.params, dst.freqHz[c])
+    let halfC = PI * float64(C)
     let pc = psi[c]
     if not (pc - halfC >= psi[first]): continue # the window starts before the sweep
+    while lo > first and psi[lo - 1] > pc - halfC: dec lo
     while lo < c and psi[lo] <= pc - halfC: inc lo
+    while hi > c + 1 and psi[hi - 1] >= pc + halfC: dec hi
     while hi <= last and psi[hi] < pc + halfC: inc hi
-    if hi > last: break # the window ends after the sweep: so do the later points'
+    if hi > last: continue # the window ends after the sweep
     while lo1 < c and psi[lo1] <= pc - PI: inc lo1
     hi1 = max(hi1, c)
     while hi1 <= last and psi[hi1] < pc + PI: inc hi1
@@ -473,32 +643,57 @@ proc referenceInto*[T: SampleType](tp: SweepTrackPlan[T], x: openArray[T],
     dst.hi[m] = hi
     dst.lo1[m] = lo1
     dst.hi1[m] = hi1
+    dst.cyc[m] = C
     dst.refHz[m] = dst.freqHz[c]
-    dst.maxHz[m] = max(dst.freqHz[lo], max(dst.freqHz[hi - 1], dst.freqHz[c]))
-  # Σ f·(1, cos ψ/C, sin ψ/C, cos 2ψ/C, sin 2ψ/C) from `first`: in run q,
-  # index i holds the sum over `first ..< first + i`.
-  let stride = tp.samples + 1
-  template run(q, i: int): untyped = psi[q * stride + i]
-  for q in 0 ..< 5: run(q, 0) = 0
-  for j in first .. last:
-    let i = j - first
-    let f = dst.freqHz[j]
-    let (c1, s1) = (dst.cosC[j], dst.sinC[j])
-    run(0, i + 1) = run(0, i) + f
-    run(1, i + 1) = run(1, i) + f * c1
-    run(2, i + 1) = run(2, i) + f * s1
-    run(3, i + 1) = run(3, i) + f * (c1 * c1 - s1 * s1)
-    run(4, i + 1) = run(4, i) + f * (2 * s1 * c1)
-  for m in 0 ..< tp.points:
-    let lo = dst.lo[m]
-    if lo < 0: continue
-    let c = m * tp.step
-    let a = lo - first
-    let b = dst.hi[m] - first
-    let (c1, s1) = (dst.cosC[c], dst.sinC[c])
-    template d(q: int): float64 = run(q, b) - run(q, a)
-    dst.weight[m] = (3 * d(0) + 4 * (c1 * d(1) + s1 * d(2)) +
-      ((c1 * c1 - s1 * s1) * d(3) + 2 * s1 * c1 * d(4))) / 8
+    let g = dst.groupCount # the distinct window lengths, in order of first use
+    if g == 0 or dst.groups[g - 1] != C:
+      var seen = false
+      for i in 0 ..< g:
+        if dst.groups[i] == C: seen = true
+      if not seen:
+        dst.groups[g] = C
+        inc dst.groupCount
+  # Per window length C: the windows made monotone along the points (they
+  # are, unless ψ steps back somewhere, which a scan cannot follow), and
+  # the weight from the running sums Σ f·(1, cos ψ/C, sin ψ/C, cos 2ψ/C,
+  # sin 2ψ/C) over the group's samples: in run q, index i holds the sum over
+  # `g0 ..< g0 + i`.
+  for g in 0 ..< dst.groupCount:
+    let C = dst.groups[g]
+    let Cf = float64(C)
+    var g0 = high(int) # the group's samples, g0 ..< g1
+    var g1 = -1
+    var lastLo, lastHi = -1
+    for m in 0 ..< tp.points:
+      if dst.lo[m] < 0 or dst.cyc[m] != C: continue
+      dst.lo[m] = max(dst.lo[m], lastLo)
+      dst.hi[m] = max(dst.hi[m], lastHi)
+      (lastLo, lastHi) = (dst.lo[m], dst.hi[m])
+      g0 = min(g0, dst.lo[m])
+      g1 = max(g1, dst.hi[m])
+      let c = m * tp.step
+      dst.maxHz[m] = max(dst.freqHz[dst.lo[m]], max(dst.freqHz[dst.hi[m] - 1], dst.freqHz[c]))
+    for q in 0 ..< 5: run(q, 0) = 0
+    for j in g0 ..< g1:
+      let i = j - g0
+      let f = dst.freqHz[j]
+      let a = psi[j] / Cf
+      let (c1, s1) = (cos(a), sin(a))
+      run(0, i + 1) = run(0, i) + f
+      run(1, i + 1) = run(1, i) + f * c1
+      run(2, i + 1) = run(2, i) + f * s1
+      run(3, i + 1) = run(3, i) + f * (c1 * c1 - s1 * s1)
+      run(4, i + 1) = run(4, i) + f * (2 * s1 * c1)
+    for m in 0 ..< tp.points:
+      if dst.lo[m] < 0 or dst.cyc[m] != C: continue
+      let c = m * tp.step
+      let a = dst.lo[m] - g0
+      let b = dst.hi[m] - g0
+      let ac = psi[c] / Cf
+      let (c1, s1) = (cos(ac), sin(ac))
+      template d(q: int): float64 = run(q, b) - run(q, a)
+      dst.weight[m] = (3 * d(0) + 4 * (c1 * d(1) + s1 * d(2)) +
+        ((c1 * c1 - s1 * s1) * d(3) + 2 * s1 * c1 * d(4))) / 8
 
 # -------------------------------------------------------------- tracking --
 
@@ -536,15 +731,16 @@ proc finishPoint[T; L: static int](tp: SweepTrackPlan[T], r: SweepReference, m: 
     now, before: Lanes[L], track: var SweepTrack) {.raises: [].} =
   ## Point `m`'s measures from the sums at its window's end and start.
   let c = m * tp.step
-  let c1 = r.cosC[c]
-  let s1 = r.sinC[c]
+  let ac = r.psi[c] / float64(r.cyc[m])
+  let c1 = cos(ac)
+  let s1 = sin(ac)
   # The window's weights at the centre: cos⁴ = (3 + 4·cos(x/C) + cos(2x/C))/8.
   let coef = [3.0, 4 * c1, 4 * s1, c1 * c1 - s1 * s1, 2 * s1 * c1]
   let w = r.weight[m]
   let nyq = 500 / tp.dtMs
   let limit = tp.params.maxHarmonicFraction * nyq
   var a1, harm = 0.0
-  var measured = 0
+  var measured, missing = 0 # harmonics (k ≥ 2) measured, and past the limit
   for k in 1 .. tp.params.harmonics:
     let l = k - 1
     var re, im = 0.0
@@ -556,6 +752,7 @@ proc finishPoint[T; L: static int](tp: SweepTrackPlan[T], r: SweepReference, m: 
     let ci = im / (4 * w)
     if float64(k) * r.maxHz[m] > limit:
       track.amplitude[l][m] = NaN
+      if k > 1: inc missing
       continue
     let a = hypot(cr, ci)
     track.amplitude[l][m] = a
@@ -568,27 +765,29 @@ proc finishPoint[T; L: static int](tp: SweepTrackPlan[T], r: SweepReference, m: 
   if track.amplitude[0][m].isNaN:
     track.phaseDeg[m] = NaN
     track.thdPct[m] = NaN
-  elif measured == 0 or not (a1 > 0):
+  elif measured == 0 or not (a1 > 0) or (missing > 0 and tp.params.thdHarmonics == thFixed):
     track.thdPct[m] = NaN
   else:
     track.thdPct[m] = 100 * sqrt(harm) /
       (if tp.params.thd == thdFundamental: a1 else: sqrt(a1 * a1 + harm))
+    track.thdCount[m] = measured
 
 proc scan[T; L: static int](tp: SweepTrackPlan[T], x: openArray[T], r: SweepReference,
-    track: var SweepTrack, ws: var Workspace) {.raises: [].} =
-  ## One pass over the sweep's samples: the sums are snapshotted at each
-  ## measured point's window start, and the point finished at its end. A
-  ## NaN or infinite sample is left out of the sums and counted (the count
-  ## snapshotted too): the points whose window holds one stay NaN, the
-  ## others are measured.
+    track: var SweepTrack, ws: var Workspace, C: int) {.raises: [].} =
+  ## One pass over the samples of the points whose window is `C` periods:
+  ## the sums are snapshotted at each one's window start, and the point
+  ## finished at its end. A NaN or infinite sample is left out of the sums
+  ## and counted (the count snapshotted too): the points whose window holds
+  ## one stay NaN, the others are measured.
   const stride = sumCount * L + 1 # a snapshot: the sums, then the count
   let snaps = ws.scratch(float64, tp.points * stride, tp.sumsAt)
-  # The measured points, in order; their windows' starts and ends both
-  # increase with the point.
+  let Cf = float64(C)
+  # The group's points, in order; their windows' starts and ends both
+  # increase with the point (`referenceInto`).
   var mLo = 0 # the next point whose window starts
   var mHi = 0 # the next point whose window ends
   template skip(m: var int) =
-    while m < tp.points and r.lo[m] < 0: inc m
+    while m < tp.points and (r.lo[m] < 0 or r.cyc[m] != C): inc m
   skip(mLo)
   skip(mHi)
   if mLo >= tp.points: return
@@ -611,7 +810,9 @@ proc scan[T; L: static int](tp: SweepTrackPlan[T], x: openArray[T], r: SweepRefe
       skip(mHi)
     if mHi >= tp.points: break
     let t = (if j < n: r.freqHz[j] * float64(x[j]) else: 0.0)
-    if t - t == 0: acc.addSample(t, r.cosC[j], r.sinC[j], r.cosPsi[j], -r.sinPsi[j])
+    if t - t == 0:
+      let a = r.psi[j] / Cf
+      acc.addSample(t, cos(a), sin(a), r.cosPsi[j], -r.sinPsi[j])
     else: inc bad
     inc j
 
@@ -634,11 +835,15 @@ proc trackInto*[T: SampleType](tp: SweepTrackPlan[T], x: openArray[T],
     track.frequencyHz[m] = NaN
     track.phaseDeg[m] = NaN
     track.thdPct[m] = NaN
+    track.thdCount[m] = 0
     track.peak[m] = NaN
     for a in track.amplitude.mitems: a[m] = NaN
+  track.extent = reference.extent
   if reference.first < 0: return
-  if tp.lanes == 8: tp.scan[:T, 8](x, reference, track, ws)
-  else: tp.scan[:T, 16](x, reference, track, ws)
+  for g in 0 ..< reference.groupCount: # one scan per window length
+    let C = reference.groups[g]
+    if tp.lanes == 8: tp.scan[:T, 8](x, reference, track, ws, C)
+    else: tp.scan[:T, 16](x, reference, track, ws, C)
   # Peaks over one period, and the fundamental's frequency from the phase.
   let n = x.len
   template at(j: int): float64 = (if j >= 0 and j < n: float64(x[j]) else: 0.0)

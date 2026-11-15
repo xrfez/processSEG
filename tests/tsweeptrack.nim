@@ -3,12 +3,15 @@
 ## a phase shift, a delay, harmonics at known levels, the fundamental's
 ## amplitude (with a DC offset and with noise), the frequency law, the peak
 ## per period; NaN outside the sweep and above the harmonic limit; float32;
-## comparisons; refusals; no allocation. On the example files (skipped when
-## absent): a recorded pilot against itself and against its law.
+## comparisons; refusals; no allocation. Task 15.9, on signals generated
+## apart from the library (`utils/chirps`): the window's minimum time, the
+## flat part of a reference, THD's harmonics and their count. On the example
+## files (skipped when absent): a recorded pilot against itself and against
+## its law.
 
 import std/[assertions, math, os, random]
 import parseSEG, processSEG
-import utils/allocs
+import utils/[allocs, chirps]
 
 type Harmonic = tuple[order: int, amp, phaseDeg: float64]
 
@@ -68,6 +71,17 @@ proc flat(spec: SweepSpec, tMs, marginMs: float64): bool =
   let e = spec.taper.endMs
   tMs > s + marginMs and tMs < spec.lengthMs - e - marginMs
 
+func expectedCycles(f: float64, cycles = 4, minWindowMs = 100.0): int =
+  ## The window's periods at `f` (module documentation): `cycles`, or the
+  ## smallest even count reaching `minWindowMs`.
+  let need = minWindowMs * f / 1000
+  if need <= float64(cycles): cycles else: 2 * int(ceil(need / 2))
+
+func nearEdge(f: float64, minWindowMs = 100.0): bool =
+  ## `f` within 0.2 % of a frequency where the window's periods change.
+  let need = minWindowMs * f / 1000
+  abs(need / 2 - round(need / 2)) < 2e-3 * need
+
 proc setup[T](spec: SweepSpec, n: int, params = TrackParams()): (SweepTrackPlan[T],
     SweepReference, SweepTrack) =
   let tp = initSweepTrackPlan(T, params, spec.dtMs, n)
@@ -107,7 +121,11 @@ block phase_shifts_and_amplitude:
           $spec.law & " θ " & $theta & " at " & $track.timeMs[m] & ": " & $track.phaseDeg[m]
         doAssert abs(track.amplitude[0][m] - amp) < 1e-4 * amp,
           $spec.law & " at " & $track.timeMs[m] & ": " & $track.amplitude[0][m]
-        doAssert track.thdPct[m] < 0.01 and track.amplitude[1][m] < 1e-4 * amp,
+        # THD over harmonics 2-5, each of them (thFixed): NaN where the 5th
+        # is past the limit (above 40 Hz at 2 ms).
+        let all = not track.amplitude[4][m].isNaN
+        doAssert track.amplitude[1][m] < 1e-4 * amp and (if all: track.thdPct[m] < 0.01 and
+          track.thdCount[m] == 4 else: track.thdPct[m].isNaN and track.thdCount[m] == 0),
           $spec.law & " dt " & $spec.dtMs & " at " & $track.timeMs[m] & ": H2 " &
           $track.amplitude[1][m] & ", THD " & $track.thdPct[m]
         inc seen
@@ -155,26 +173,34 @@ block harmonics_at_known_levels:
 
 block harmonics_above_the_limit_are_nan:
   # At 2 ms (Nyquist 250 Hz, limit 200 Hz) the 3rd harmonic of an 8-80 Hz
-  # sweep is measured up to 66.7 Hz only; THD then uses the 2nd alone.
+  # sweep is measured up to 66.7 Hz only; THD then uses the 2nd alone when
+  # it counts all that fit, and is NaN when it counts 2-3 (fixed).
   let spec = linear2
   let n = spec.sweepLen
-  var (tp, reference, track) = setup[float64](spec, n, TrackParams(harmonics: 3))
-  var ws = initWorkspace()
-  ws.reserve(tp.workspaceSize)
-  tp.referenceInto(spec.sweepSamples(float64), reference, ws)
-  tp.trackInto(signal(spec, n, [(1, 1.0, 0.0), (2, 0.1, 0.0), (3, 0.03, 0.0)]), reference,
-    track, ws)
-  var above, below = 0
-  for m in 0 ..< track.len:
-    if not flat(spec, track.timeMs[m], 300): continue
-    let f = spec.frequencyAt(track.timeMs[m])
-    if 3 * f > 205:
-      doAssert track.amplitude[2][m].isNaN and abs(track.thdPct[m] - 10) < 0.02
-      inc above
-    elif 3 * f < 195:
-      doAssert abs(track.amplitude[2][m] - 0.03) < 2e-4
-      inc below
-  doAssert above > 20 and below > 100
+  for mode in ThdHarmonics:
+    var (tp, reference, track) = setup[float64](spec, n,
+      TrackParams(harmonics: 3, thdHarmonics: mode))
+    var ws = initWorkspace()
+    ws.reserve(tp.workspaceSize)
+    tp.referenceInto(spec.sweepSamples(float64), reference, ws)
+    tp.trackInto(signal(spec, n, [(1, 1.0, 0.0), (2, 0.1, 0.0), (3, 0.03, 0.0)]), reference,
+      track, ws)
+    var above, below = 0
+    for m in 0 ..< track.len:
+      if not flat(spec, track.timeMs[m], 300): continue
+      let f = spec.frequencyAt(track.timeMs[m])
+      if 3 * f > 205:
+        doAssert track.amplitude[2][m].isNaN
+        if mode == thAllThatFit:
+          doAssert abs(track.thdPct[m] - 10) < 0.02 and track.thdCount[m] == 1
+        else:
+          doAssert track.thdPct[m].isNaN and track.thdCount[m] == 0
+        inc above
+      elif 3 * f < 195:
+        doAssert abs(track.amplitude[2][m] - 0.03) < 2e-4 and track.thdCount[m] == 2 and
+          abs(track.thdPct[m] - 100 * sqrt(0.1 ^ 2 + 0.03 ^ 2)) < 0.02, $mode & " " & $f
+        inc below
+    doAssert above > 20 and below > 100
 
 block delay_and_frequency:
   # The pilot delayed by τ = 3.5 ms: phase −360·∫f over the delay, the
@@ -287,14 +313,18 @@ block outside_the_sweep:
     let t = track.timeMs[m]
     if t > 6000 or t < float64(sp.a):
       doAssert track.amplitude[0][m].isNaN and not reference.isMeasured(m)
-    # Half a window (two periods, by the law's phase) inside the span:
-    # measured; reaching out of it: not.
+    if t > 6000 or nearEdge(spec.frequencyAt(t)): continue
+    # Half a window (C/2 periods, by the law's phase; C = 4 up to 40 Hz,
+    # then 6 and 8 by the 100 ms minimum) inside the span: measured;
+    # reaching out of it: not.
+    let half = PI * float64(expectedCycles(spec.frequencyAt(t)))
     let pc = spec.phaseAt(t)
-    if pc - 4 * PI > spec.phaseAt(float64(sp.a) + 2) and
-        pc + 4 * PI < spec.phaseAt(float64(sp.b) - 2):
+    if pc - half > spec.phaseAt(float64(sp.a) + 2) and
+        pc + half < spec.phaseAt(float64(sp.b) - 2):
       doAssert reference.isMeasured(m) and abs(track.phaseDeg[m]) < 0.05, $t
-    if pc - 4 * PI < spec.phaseAt(float64(sp.a) - 2) or
-        pc + 4 * PI > spec.phaseAt(float64(sp.b) + 2):
+      doAssert reference.cyclesAt(m) == expectedCycles(spec.frequencyAt(t)), $t
+    if pc - half < spec.phaseAt(float64(sp.a) - 2) or
+        pc + half > spec.phaseAt(float64(sp.b) + 2):
       doAssert not reference.isMeasured(m) and track.phaseDeg[m].isNaN, $t
   var zeros = newSeq[float64](n)
   tp.referenceInto(zeros, reference, ws)
@@ -347,7 +377,8 @@ block float32_plan:
   for m in 0 ..< track.len:
     if not flat(spec, track.timeMs[m], 600): continue
     doAssert abs(track.phaseDeg[m] + 30) < 0.05 and abs(track.amplitude[0][m] - 3) < 1e-3
-    doAssert abs(track.thdPct[m] - 10) < 0.05
+    if track.amplitude[4][m].isNaN: doAssert track.thdPct[m].isNaN # above 40 Hz at 2 ms
+    else: doAssert abs(track.thdPct[m] - 10) < 0.05
     inc seen
   doAssert seen > 200
 
@@ -427,7 +458,7 @@ block nan_stays_in_its_windows:
         doAssert track.amplitude[0][m].isNaN
         continue
       let t = track.timeMs[m]
-      let half = 2000 / spec.frequencyAt(t) # half a window (two periods), ms
+      let half = 500 * float64(reference.cyclesAt(m)) / spec.frequencyAt(t) # half a window, ms
       if abs(t - 2000) < half - 2:
         doAssert track.amplitude[0][m].isNaN and track.phaseDeg[m].isNaN and
           track.thdPct[m].isNaN and track.peak[m].isNaN, $bad & " at " & $t
@@ -454,7 +485,8 @@ block window_selectivity:
   let n = spec.sweepLen
   let pilot = spec.sweepSamples(float64)
   for (cycles, leak) in [(4, 1 / 6), (6, 0.0)]:
-    var (tp, reference, track) = setup[float64](spec, n, TrackParams(cycles: cycles))
+    var (tp, reference, track) = setup[float64](spec, n,
+      TrackParams(cycles: cycles, minWindowMs: 0))
     var ws = initWorkspace()
     ws.reserve(tp.workspaceSize)
     tp.referenceInto(pilot, reference, ws)
@@ -531,7 +563,9 @@ block example_pilot:
     for m in 0 ..< self.len:
       let t = self.timeMs[m]
       if t < 1000 or t > 11000: continue
-      doAssert abs(self.phaseDeg[m]) < 1e-3 and self.thdPct[m] < 0.01, $t
+      doAssert abs(self.phaseDeg[m]) < 1e-3, $t
+      # THD over harmonics 2-5: NaN from 80 Hz, where the 5th passes the limit.
+      doAssert self.thdPct[m] < 0.01 or (self.thdPct[m].isNaN and self.amplitude[4][m].isNaN), $t
       doAssert abs(self.referenceHz[m] - law.frequencyAt(t)) < 0.05,
         $t & ": " & $self.referenceHz[m] & " vs " & $law.frequencyAt(t)
       doAssert abs(gen.frequencyHz[m] - self.referenceHz[m]) < 0.05
@@ -539,3 +573,219 @@ block example_pilot:
       hi = max(hi, gen.phaseDeg[m])
       inc seen
     doAssert seen == 1001 and hi - lo < 1, $lo & " .. " & $hi
+
+# --------------------------------------------------------------- 15.9 --
+
+proc tracked(c: Chirp, dtMs: float64, n: int, x: seq[float64],
+    params = TrackParams()): (SweepTrack, SweepReference) =
+  ## `x` tracked against the clean chirp `c` (both from `utils/chirps`).
+  let tp = initSweepTrackPlan(float64, params, dtMs, n)
+  var ws = initWorkspace()
+  ws.reserve(tp.workspaceSize)
+  var r = initSweepReference(tp)
+  var t = initSweepTrack(tp)
+  tp.referenceInto(chirp(c, dtMs, n), r, ws)
+  tp.trackInto(x, r, t, ws)
+  (t, r)
+
+let up = Chirp(law: clLinear, f0: 8, f1: 80, lengthMs: 6000, startMs: 300, endMs: 300)
+
+proc clear(c: Chirp, r: SweepReference, t: SweepTrack, m: int): bool =
+  ## Point `m` is measured and its window is clear of the tapers.
+  if not r.isMeasured(m): return false
+  let tMs = t.timeMs[m]
+  let half = 500 * float64(r.cyclesAt(m)) / c.freqAt(tMs)
+  tMs - half > c.startMs and tMs + half < c.lengthMs - c.endMs
+
+block window_minimum_time:
+  # 4 periods up to 40 Hz, then the smallest even count reaching 100 ms: 6
+  # to 60 Hz, 8 to 80 Hz. A clean fundamental is measured as well over any
+  # whole number of periods, so nothing jumps where the count changes; a
+  # subharmonic at f/2 leaks 1/6 of its level over 4 periods and nothing
+  # over the even counts; on white noise the phase's rms falls by √(C/4).
+  let n = 6001
+  let (t, r) = tracked(up, 1, n, chirp(up, 1, n, [Tone(amp: 2, phaseDeg: -75)]))
+  var seen: array[10, int]
+  for m in 0 ..< t.len:
+    if not up.clear(r, t, m): continue
+    let f = up.freqAt(t.timeMs[m])
+    if nearEdge(f): continue
+    let C = r.cyclesAt(m)
+    doAssert C == expectedCycles(f), $t.timeMs[m] & ": " & $C
+    # (Just past the start taper, over 4 periods, a false H2 of 1.3e-4 of A1,
+    # as in 15.8; over 6 and 8 periods at most 5e-7.)
+    doAssert abs(t.phaseDeg[m] + 75) < 0.002 and abs(t.amplitude[0][m] - 2) < 2e-4 and
+      t.amplitude[1][m] < 2 * 2e-4, $t.timeMs[m]
+    if C >= 6: doAssert t.amplitude[1][m] < 2 * 1e-5 and abs(t.phaseDeg[m] + 75) < 1e-5
+    if m > 0 and r.cyclesAt(m - 1) != C and up.clear(r, t, m - 1): # no jump
+      doAssert abs(t.phaseDeg[m] - t.phaseDeg[m - 1]) < 2e-3 and
+        abs(t.amplitude[0][m] - t.amplitude[0][m - 1]) < 1e-5
+    inc seen[C]
+  doAssert seen[4] > 200 and seen[6] > 100 and seen[8] > 100, $seen
+  # An odd `cycles` stays where it is long enough; raised, it is even.
+  let (t5, r5) = tracked(up, 1, n, chirp(up, 1, n), TrackParams(cycles: 5))
+  for m in 0 ..< t5.len:
+    if r5.isMeasured(m):
+      let f = up.freqAt(t5.timeMs[m])
+      if not nearEdge(f): doAssert r5.cyclesAt(m) == expectedCycles(f, cycles = 5)
+  # The subharmonic.
+  let sub = chirp(up, 1, n, [Tone(), Tone(order: 0.5, amp: 0.05)])
+  let (ts, _) = tracked(up, 1, n, sub)
+  let (tc, _) = tracked(up, 1, n, chirp(up, 1, n))
+  var leak: array[10, float64]
+  for m in 0 ..< ts.len:
+    if up.clear(r, ts, m): leak[r.cyclesAt(m)] = max(leak[r.cyclesAt(m)],
+      abs(ts.amplitude[0][m] - tc.amplitude[0][m]))
+  doAssert abs(leak[4] - 0.05 / 6) < 3e-4 and leak[6] < 1e-5 and leak[8] < 1e-5, $leak
+  # White noise of 1 % over 12 realizations: the phase's rms per band.
+  var sq: array[2, array[10, float64]]
+  var count: array[10, int]
+  for seed in 1 .. 12:
+    let x = chirp(up, 1, n, [Tone(phaseDeg: 20)], noise = 0.01, seed = seed)
+    let (t4, _) = tracked(up, 1, n, x, TrackParams(minWindowMs: 0))
+    let (tm, rm) = tracked(up, 1, n, x)
+    for m in 0 ..< tm.len:
+      let f = up.freqAt(tm.timeMs[m])
+      if f < 20 or f > 76 or nearEdge(f) or tm.phaseDeg[m].isNaN or t4.phaseDeg[m].isNaN:
+        continue
+      let C = rm.cyclesAt(m)
+      sq[0][C] += wrapDeg(t4.phaseDeg[m] - 20) ^ 2
+      sq[1][C] += wrapDeg(tm.phaseDeg[m] - 20) ^ 2
+      inc count[C]
+  for C in [4, 6, 8]:
+    let ratio = sqrt(sq[0][C] / sq[1][C])
+    doAssert count[C] > 1000 and abs(ratio / sqrt(float64(C) / 4) - 1) < 0.1,
+      $C & ": " & $ratio # measured 1.000, 1.240, 1.417
+
+block flat_part:
+  # The flat part between the tapers, from the reference's envelope: within
+  # a period (of the reference there) of each taper's end, for cos², linear
+  # and Blackman tapers of 0.3 and 1 s, at 1 and 2 ms; an untapered sweep is
+  # flat from within a period of its start (before its first measured
+  # point) to within a period of its end.
+  for dtMs in [1.0, 2.0]:
+    let n = int(7000 / dtMs) + 1
+    for ramp in [rmCos2, rmLinear, rmBlackman, rmNone]:
+      for taperMs in [300.0, 1000.0]:
+        if ramp == rmNone and taperMs > 300: continue
+        let c = Chirp(law: clLinear, f0: 8, f1: 80, lengthMs: 6000, ramp: ramp,
+          startMs: (if ramp == rmNone: 0.0 else: taperMs),
+          endMs: (if ramp == rmNone: 0.0 else: taperMs))
+        let tp = initSweepTrackPlan(float64, TrackParams(), dtMs, n)
+        var ws = initWorkspace()
+        ws.reserve(tp.workspaceSize)
+        var r = initSweepReference(tp)
+        tp.referenceInto(chirp(c, dtMs, n), r, ws)
+        let e = r.extent
+        doAssert e.startMs == float64(r.span.a) * dtMs and e.endMs == float64(r.span.b) * dtMs
+        doAssert e.flatStartMs == float64(r.flatSpan.a) * dtMs
+        let a = c.startMs
+        let b = c.lengthMs - c.endMs
+        doAssert abs(e.flatStartMs - a) <= 1000 / c.freqAt(a) and
+          abs(e.flatEndMs - b) <= 1000 / c.freqAt(b),
+          $ramp & " " & $taperMs & " at " & $dtMs & " ms: " & $e
+        if ramp == rmNone:
+          # The first measured point is half a window (2 periods) in.
+          var first = 0
+          while not r.isMeasured(first): inc first
+          doAssert e.flatStartMs <= float64(first) * 10, $e
+  # A sloped plateau (the amplitude rising by 30 % over the sweep) is still
+  # flat, between tapers of 300 ms; one rising faster than 2 % of its
+  # tapers' fastest rise has no flat start in its first half: there the
+  # judged part runs from the sweep's start (it fails visibly, rather than
+  # leaving most of the sweep out).
+  for (taperMs, found) in [(300.0, true), (1000.0, false)]:
+    let c = Chirp(law: clLinear, f0: 8, f1: 80, lengthMs: 6000, startMs: taperMs,
+      endMs: taperMs, tilt: 0.3)
+    let n = 7001
+    let tp = initSweepTrackPlan(float64, TrackParams(), 1, n)
+    var ws = initWorkspace()
+    ws.reserve(tp.workspaceSize)
+    var r = initSweepReference(tp)
+    tp.referenceInto(chirp(c, 1, n), r, ws)
+    let e = r.extent
+    let b = c.lengthMs - c.endMs
+    # (The end within 1.4 periods with the 1 s taper: the slope offsets the
+    # start of its fall.)
+    doAssert abs(e.flatEndMs - b) <= (if found: 1.0 else: 2.0) * 1000 / c.freqAt(b), $e
+    if found: doAssert abs(e.flatStartMs - taperMs) <= 1000 / c.freqAt(taperMs), $e
+    else: doAssert e.flatStartMs == e.startMs, $e
+  # No sweep, no extent.
+  let tp = initSweepTrackPlan(float64, TrackParams(), 1, 1000)
+  var ws = initWorkspace()
+  ws.reserve(tp.workspaceSize)
+  var r = initSweepReference(tp)
+  tp.referenceInto(newSeq[float64](1000), r, ws)
+  doAssert r.extent.startMs.isNaN and r.extent.flatEndMs.isNaN and r.flatSpan.len == 0
+  var t = initSweepTrack(tp)
+  tp.trackInto(newSeq[float64](1000), r, t, ws)
+  doAssert t.extent.flatStartMs.isNaN
+
+block thd_harmonic_count:
+  # 16 harmonics at known levels (A_k = 0.1/k, phases of their own), each
+  # faded out before Nyquist as an anti-alias filter would, at 0.5 ms on an
+  # 8-80 Hz sweep: every harmonic measured within 2e-4 of A1, THD the direct
+  # sum over the harmonics it counts, and the count per point the number of
+  # harmonics below the limit (0.8 of Nyquist all through the window):
+  # all 15 up to 50 Hz, falling to 9 at 80 Hz. Counted all that fit, THD is
+  # that sum; counted fixed (2-16), it is NaN once one is past the limit.
+  let n = 12001
+  var tones: seq[Tone]
+  for k in 1 .. 16:
+    tones.add Tone(order: float64(k), amp: (if k == 1: 1.0 else: 0.1 / float64(k)),
+      phaseDeg: 17 * float64(k))
+  let x = chirp(up, 0.5, n, tones, nyquistFade = true)
+  for mode in ThdHarmonics:
+    let (t, r) = tracked(up, 0.5, n, x, TrackParams(harmonics: 16, thdHarmonics: mode))
+    var counts: array[17, int]
+    for m in 0 ..< t.len:
+      if not up.clear(r, t, m): continue
+      let tMs = t.timeMs[m]
+      let fTop = up.freqAt(tMs + 500 * float64(r.cyclesAt(m)) / up.freqAt(tMs))
+      var sum, own = 0.0 # the levels put in, and as measured
+      var measured = 0
+      for k in 1 .. 16:
+        let a = t.amplitude[k - 1][m]
+        let below = float64(k) * fTop < 800
+        if abs(float64(k) * fTop - 800) > 2: doAssert below == not a.isNaN, $k & " at " & $tMs
+        if a.isNaN: continue
+        doAssert abs(a - tones[k - 1].amp) < 2e-4, $k & " at " & $tMs & ": " & $a
+        if k > 1:
+          sum += tones[k - 1].amp ^ 2
+          own += a ^ 2
+          inc measured
+      if mode == thAllThatFit or measured == 15:
+        doAssert t.thdCount[m] == measured and
+          abs(t.thdPct[m] - 100 * sqrt(own) / t.amplitude[0][m]) < 1e-9 and
+          abs(t.thdPct[m] - 100 * sqrt(sum)) < 5e-3, # 1e-3 from 700 ms
+          $mode & " at " & $tMs & ": " & $t.thdPct[m] & " vs " & $(100 * sqrt(sum))
+      else:
+        doAssert t.thdPct[m].isNaN and t.thdCount[m] == 0
+      inc counts[t.thdCount[m]]
+    if mode == thAllThatFit:
+      for c in 9 .. 15: doAssert counts[c] > 0, $counts
+    else:
+      doAssert counts[0] > 100 and counts[15] > 200, $counts
+  # THD's noise floor grows as the square root of the harmonics it counts:
+  # 1 % white noise on a clean fundamental reads 0.29 % over 2-5 and 0.58 %
+  # over 2-16 (0.5 ms, 8-40 Hz: all 16 measured).
+  let low = Chirp(law: clLinear, f0: 8, f1: 40, lengthMs: 6000, startMs: 300, endMs: 300)
+  var floorPct: array[2, float64]
+  for i, h in [5, 16]:
+    var cnt = 0
+    for seed in 1 .. 3:
+      let (t, _) = tracked(low, 0.5, n, chirp(low, 0.5, n, noise = 0.01, seed = seed),
+        TrackParams(harmonics: h))
+      for m in 0 ..< t.len:
+        if t.timeMs[m] > 1000 and t.timeMs[m] < 5000:
+          floorPct[i] += t.thdPct[m]
+          inc cnt
+    floorPct[i] /= float64(cnt)
+  doAssert abs(floorPct[0] - 0.29) < 0.03 and
+    abs(floorPct[1] / floorPct[0] / sqrt(15 / 4) - 1) < 0.1, $floorPct
+
+block new_parameters_refused:
+  for w in [-1.0, NaN, Inf, 2e6]:
+    doAssertRaises(ValueError):
+      discard initSweepTrackPlan(float64, TrackParams(minWindowMs: w), 1, 100)
+  doAssert initSweepTrackPlan(float64, TrackParams(minWindowMs: 0), 1, 100).params.minWindowMs == 0

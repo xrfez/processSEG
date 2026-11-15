@@ -589,19 +589,21 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 ## vibroseis/sweeptrack: vibrator signals against sweep time
 
 A signal (ground force, mass or baseplate acceleration) against its reference (the pilot),
-at points every `stepMs` along the sweep: harmonic k's complex amplitude over `cycles`
-periods of the reference, with a cos⁴ weight in phase (orthogonal to every other harmonic
-for any sweep law). The reference's phase comes from its own analytic signal, demeaned and
-without its content below the band. Guide: [vibrator QC](guide/vibrator-qc.md), with the
-plot each call fills.
+at points every `stepMs` along the sweep: harmonic k's complex amplitude over a whole number
+of periods of the reference (`cycles`, at least `minWindowMs`), with a cos⁴ weight in phase
+(orthogonal to every other harmonic for any sweep law). The reference's phase comes from its
+own analytic signal, demeaned and without its content below the band. Guide: [vibrator
+QC](guide/vibrator-qc.md), with the plot each call fills.
 
 | Proc | What |
 |---|---|
-| `TrackParams` (`harmonics = 5`, `cycles = 4`, `stepMs = 10`, `minReferenceDb = -40`, `maxHarmonicFraction = 0.8`, `thd = thdFundamental`), `validate(params)` | Highest harmonic order tracked (1 .. 16), the window in periods (≥ 3), the points' spacing, where the sweep is (the reference's envelope within this of its peak), where harmonic k is measured (`k·f` below this fraction of Nyquist), what THD is relative to. `ValueError` out of range. |
+| `TrackParams` (`harmonics = 5`, `cycles = 4`, `minWindowMs = 100`, `stepMs = 10`, `minReferenceDb = -40`, `maxHarmonicFraction = 0.8`, `thd = thdFundamental`, `thdHarmonics = thFixed`), `validate(params)` | Highest harmonic order tracked (1 .. 16; THD sums 2 .. it), the window in periods (≥ 3) and its minimum length (where `cycles` periods are shorter, the smallest even number of periods that reaches it; 0 .. 1e6, 0: off), the points' spacing, where the sweep is (the reference's envelope within this of its peak), where harmonic k is measured (`k·f` below this fraction of Nyquist), what THD is relative to, which harmonics it sums. `ValueError` out of range. |
 | `ThdReference` (`thdFundamental`, `thdTotal`) | THD as `√(Σ_{k≥2} A_k²) / A_1`, or over `√(Σ_{k≥1} A_k²)`. |
+| `ThdHarmonics` (`thFixed`, `thAllThatFit`) | THD over every harmonic 2 .. `harmonics` (NaN where one is past the limit), or over those measured at the point (the count falls along the sweep). |
 | `SweepTrackPlan[T]`; `initSweepTrackPlan(T, params, dtMs, samples)`, `tp.params`, `tp.dtMs`, `tp.samples`, `tp.points`, `tp.stepSamples`, `tp.pointMs(point)`, `tp.workspaceSize` | Tracking of signals of up to `samples` samples; points every `stepSamples` from sample 0. |
-| `SweepReference`; `initSweepReference(tp)`, `tp.referenceInto(x, dst, ws)`, `r.span`, `r.isMeasured(point)` | A reference prepared once (its phase, frequency and each point's windows): the sweep's samples (empty when it has none: zeros, a NaN), whether a point's window lies inside the sweep. |
-| `SweepTrack` (`timeMs`, `referenceHz`, `frequencyHz`, `phaseDeg`, `amplitude`, `thdPct`, `peak`); `initSweepTrack(tp)`, `t.len`, `t.harmonics` | One value per point, NaN where not measured: the reference's and the signal fundamental's instantaneous frequency, the phase to the reference (degrees, (−180, 180], positive when the signal leads), each harmonic's peak amplitude (`amplitude[order − 1]`: `[0]` is the fundamental, a ground force's *fundamental force*), THD %, the largest \|s\| per period of the band-limited signal (*peak force*). |
+| `SweepReference`; `initSweepReference(tp)`, `tp.referenceInto(x, dst, ws)`, `r.span`, `r.flatSpan`, `r.extent`, `r.isMeasured(point)`, `r.cyclesAt(point)` | A reference prepared once (its phase, frequency, extent and each point's window): the sweep's samples (empty when it has none: zeros, a NaN), its flat part between the tapers, both in ms, whether a point's window lies inside the sweep and its length in periods (0: not measured). |
+| `SweepExtent` (`startMs`, `endMs`, `flatStartMs`, `flatEndMs`; NaN: no sweep) | Where the sweep and its flat part lie, ms from the rows' first sample: the flat part from the reference's envelope averaged over a period (where it stops rising and starts falling; the sweep's end on a side where it never does). |
+| `SweepTrack` (`timeMs`, `referenceHz`, `frequencyHz`, `phaseDeg`, `amplitude`, `thdPct`, `thdCount`, `peak`, `extent`); `initSweepTrack(tp)`, `t.len`, `t.harmonics` | One value per point, NaN where not measured: the reference's and the signal fundamental's instantaneous frequency, the phase to the reference (degrees, (−180, 180], positive when the signal leads), each harmonic's peak amplitude (`amplitude[order − 1]`: `[0]` is the fundamental, a ground force's *fundamental force*), THD % and the harmonics it sums (0 where NaN), the largest \|s\| per period of the band-limited signal (*peak force*); the reference's extent. |
 | `tp.trackInto(x, reference, track, ws)` | Every measure of `x` against `reference`. No allocation; never raises. |
 | `track.distortionInto(order, dst)` | `100·A_order / A_1` % per point. `ValueError` for an order outside `2 .. harmonics`. |
 | `compareTracksInto(a, b, phaseDeg, ratioDb)` | Signal `a` against `b` per point: the fundamentals' phase difference (wrapped) and ratio in dB. |
