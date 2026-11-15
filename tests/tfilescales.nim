@@ -142,7 +142,7 @@ block write_physical_and_read_back:
   k.status = tsLive
   k.sensorType = 2
   let v = @[1.5e-6'f32, -2e-6, 3e-7, 0]
-  for u in [auVelocity, auPressure, auVolt]:
+  for u in [auVelocity, auPressure, auVolt, auForce]:
     w.writeTrace(k, v, segyUnitOverrides(u))
   doAssert w.close().len == 0
   var f = openSeismic(path, keys = true)
@@ -150,6 +150,7 @@ block write_physical_and_read_back:
   doAssert s[0].physical and s[0].unit == auVelocity and s[0].descale == 1
   doAssert s[1].physical and s[1].unit == auPressure
   doAssert not s[2].physical and s[2].descale == 1 and s[2].sensitivity.isNaN # volts
+  doAssert s[3].physical and s[3].unit == auForce and s[3].descale == 1 # newtons (15.1)
   var x = f.readTraces(0 ..< f.len, float32)
   let meta = chunkMeta(f, 0 ..< f.len, scales = s)
   let plan = initCalibrationPlan(initCalibration([CalibrationRule(
@@ -157,6 +158,7 @@ block write_physical_and_read_back:
   var rc = newSeq[RowCalibration](f.len)
   discard plan.resolveInto(meta, rc)
   doAssert rc[0].factor == 1 and rc[0].unit == auVelocity and rc[0].conflict
+  doAssert rc[3].factor == 1 and rc[3].unit == auForce
   # The volts row: the file's descale beats the catch-all rule (a conflict),
   # whose sensitivity then applies.
   doAssert rc[2].unit == auVelocity and rc[2].descaleFrom == fsFile and rc[2].conflict

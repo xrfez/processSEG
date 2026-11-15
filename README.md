@@ -34,7 +34,7 @@ with no hidden allocation and no hidden threads.
   and amplitude QC per trace and record (dead, clipped, spiky, DC, weak, noisy traces).
 
 float32 and float64 throughout; units are ms, Hz, dB and distance units per second, and
-amplitudes are as recorded until calibrated to V, m/s, m/s² or Pa.
+amplitudes are as recorded until calibrated to V, m/s, m/s², Pa or N.
 
 ## Quick start
 

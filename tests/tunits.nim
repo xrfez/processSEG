@@ -1,6 +1,7 @@
 ## Amplitude units (task 14.1): sensitivities and descales entered with their
 ## units, converted to SI exactly; the damped sensitivity from the
 ## open-circuit one and the resistances; `valueIn` round trips; refusals.
+## Task 15.1: force sensitivities (a ground-force channel) and masses.
 
 import std/[assertions, math, strutils]
 import processSEG
@@ -25,10 +26,38 @@ block sensitivity_units_to_si:
   # Quantities.
   for (u, q) in [(suVPerMPerS, auVelocity), (suVPerInPerS, auVelocity),
       (suVPerMPerS2, auAcceleration), (suVPerG, auAcceleration), (suVPerBar, auPressure),
-      (suVPerPa, auPressure), (suMicroVPerPa, auPressure), (suDbReVPerMicroPa, auPressure)]:
+      (suVPerPa, auPressure), (suMicroVPerPa, auPressure), (suDbReVPerMicroPa, auPressure),
+      (suVPerN, auForce), (suVPerKN, auForce), (suVPerLbf, auForce)]:
     doAssert quantityOf(u) == q
     doAssert sensitivity(1, u).unit == q
     doAssert sensitivity(1, u).form == snAsWired and sensitivity(1, u).isSet
+
+block force_units_to_si:
+  # 1 lbf = 0.45359237 kg · 9.80665 m/s² = 4.4482216152605 N exactly.
+  doAssert sensitivity(2.5e-4, suVPerN).voltsPerUnit == 2.5e-4
+  doAssert closeTo(sensitivity(1, suVPerKN).voltsPerUnit, 1e-3)
+  doAssert closeTo(sensitivity(0.25, suVPerKN).voltsPerUnit, 2.5e-4)
+  doAssert closeTo(sensitivity(1, suVPerLbf).voltsPerUnit, 1 / 4.4482216152605)
+  doAssert closeTo(sensitivity(1, suVPerLbf).voltsPerUnit, 0.22480894309971047)
+  doAssert closeTo(sensitivity(1, suVPerKN).valueIn(suVPerLbf), 4.4482216152605e-3)
+  doAssert $sensitivity(1, suVPerKN) == "1 V/kN (0.001 V/N)"
+  doAssert $sensitivity(2e-4, suVPerN) == "0.0002 V/N"
+
+block masses:
+  doAssert mass(2450, muKilogram).kilograms == 2450
+  doAssert mass(9000, muPound).kilograms == 9000 * 0.45359237
+  doAssert closeTo(mass(1, muPound).kilograms, 0.45359237)
+  doAssert mass(2.45, muTonne).kilograms == 2450
+  doAssert closeTo(mass(2450, muKilogram).valueIn(muPound), 2450 / 0.45359237)
+  doAssert closeTo(mass(9000, muPound).valueIn(muPound), 9000)
+  doAssert closeTo(mass(2450, muKilogram).valueIn(muTonne), 2.45)
+  doAssert $mass(2450, muKilogram) == "2450 kg" and $mass(9000, muPound) == "9000 lb"
+  doAssert $Mass() == "not set" and not Mass().isSet and Mass().kilograms.isNaN
+  doAssert mass(1, muTonne).isSet
+  for bad in [0.0, -1.0, NaN, Inf, -Inf]:
+    doAssertRaises(ValueError): discard mass(bad, muKilogram)
+  doAssertRaises(ValueError): discard mass(1e308, muTonne)
+  doAssertRaises(ValueError): discard Mass().valueIn(muKilogram)
 
 block value_in_round_trips:
   for u in SensitivityUnit:

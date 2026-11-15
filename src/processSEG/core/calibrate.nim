@@ -459,7 +459,7 @@ func resolveRow(p: CalibrationPlan, meta: ChunkMeta, row: int): RowCalibration {
     var sUnit = auRecorded
     let fileD = fs.descale.finite and fs.descale > 0
     let fileS = fs.sensitivity.finite and fs.sensitivity > 0 and
-      fs.unit in {auVelocity, auAcceleration, auPressure}
+      fs.unit in {auVelocity, auAcceleration, auPressure, auForce}
     template pick(fileHas: bool, fileV: float64, specIdx, ruleIdx: int, field: untyped,
         v: var float64, src: var FactorSource, ri: var int) =
       if p.fileFactors == ffFirst and fileHas: (v, src) = (fileV, fsFile)
@@ -485,7 +485,7 @@ func resolveRow(p: CalibrationPlan, meta: ChunkMeta, row: int): RowCalibration {
       # The quantity the sensor type, or the file's headers, name.
       let want = expectedUnit(k.sensorType)
       result.mismatch = (want != auRecorded and want != sUnit) or
-        (fs.unit in {auVelocity, auAcceleration, auPressure} and fs.unit != sUnit)
+        (fs.unit in {auVelocity, auAcceleration, auPressure, auForce} and fs.unit != sUnit)
     if not d.isNaN:
       if aux or p.target == ctVolts:
         (factor, unit) = (d / g, auVolt)

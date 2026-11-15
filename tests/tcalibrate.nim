@@ -422,7 +422,7 @@ block sub_meta_and_printing:
   doAssert $RuleMatch(station: some stationKey(10, 201, 2), channel: 3) ==
     "station 10.0/201.0.2, channel 3.0"
   doAssert $CalibrationSummary(converted: 2, units: [auRecorded: 0, auVolt: 0,
-    auVelocity: 2, auAcceleration: 0, auPressure: 0]) ==
+    auVelocity: 2, auAcceleration: 0, auPressure: 0, auForce: 0]) ==
     "2 converted (2 m/s), 0 unresolved, 0 kept"
 
 block out_of_range_factors:

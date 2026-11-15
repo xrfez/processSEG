@@ -7,12 +7,18 @@
 ##   unit (count), as a recorder's documentation or a SEG-D channel set gives
 ##   it (`descale(0.5, duMicroVPerCount)`);
 ## - the **sensitivity** (`Sensitivity`): volts out of the sensor per unit of
-##   ground motion or pressure (`sensitivity(22.5, suVPerMPerS)`).
+##   ground motion, pressure or force (`sensitivity(22.5, suVPerMPerS)`).
 ##
 ## A recorded value `x` is then `x · descale` volts, and `x · descale /
 ## sensitivity` metres per second (geophone), metres per second squared
-## (accelerometer) or pascals (hydrophone). Units are SI throughout; a viewer
-## prints prefixes (µm/s, mPa) itself.
+## (accelerometer), pascals (hydrophone) or newtons (a vibrator's ground-force
+## channel). Units are SI throughout; a viewer prints prefixes (µm/s, mPa, kN)
+## itself.
+##
+## **Mass** (`Mass`) is entered with its unit too (`mass(2450, muKilogram)`):
+## a vibrator's ground force is the weighted sum of its reaction-mass and
+## baseplate accelerations (`vibroseis/vibqc`), in newtons for accelerations
+## in m/s².
 ##
 ## ```nim
 ## let geophone = sensitivity(22.5, suVPerMPerS)        # as wired: the damped figure
@@ -55,6 +61,7 @@ type
     auVelocity = "m/s"       ## Particle velocity (geophones).
     auAcceleration = "m/s²" ## Acceleration (accelerometers).
     auPressure = "Pa"        ## Pressure (hydrophones).
+    auForce = "N"            ## Force (a vibrator's ground force).
 
   SensitivityUnit* = enum
     ## The unit a sensitivity is entered in. `$` gives its symbol.
@@ -66,6 +73,9 @@ type
     suVPerPa = "V/Pa"                    ## Volts per pascal.
     suMicroVPerPa = "µV/Pa"             ## Microvolts per pascal.
     suDbReVPerMicroPa = "dB re 1 V/µPa" ## Decibels relative to 1 V per micropascal.
+    suVPerN = "V/N"                      ## Volts per newton.
+    suVPerKN = "V/kN"                    ## Volts per kilonewton.
+    suVPerLbf = "V/lbf"                  ## Volts per pound-force (4.4482216152605 N).
 
   SensitivityForm* = enum
     ## How a `Sensitivity` was entered.
@@ -115,10 +125,25 @@ type
       ## The headers say the samples are already in `unit` (times
       ## `descale`): no sensitivity applies.
 
+  MassUnit* = enum
+    ## The unit a mass is entered in. `$` gives its symbol.
+    muKilogram = "kg" ## Kilograms.
+    muPound = "lb"    ## Pounds (avoirdupois, 0.45359237 kg).
+    muTonne = "t"     ## Tonnes (1000 kg).
+
+  Mass* = object
+    ## A mass in kilograms, with what was entered. `Mass()` is not set
+    ## (`isSet`). Build it with `mass`.
+    kilograms: float64 # 0: not set
+    entered: float64
+    enteredUnit: MassUnit
+
 const
   inch = 0.0254       # m
   standardG = 9.80665 # m/s²
   bar = 1e5           # Pa
+  pound = 0.45359237  # kg
+  poundForce = pound * standardG # N: 4.4482216152605
 
 proc badValue(what: string, v: float64) {.noinline, noreturn.} =
   raise newException(ValueError, what & " must be finite and positive, got " & $v)
@@ -126,31 +151,36 @@ proc badValue(what: string, v: float64) {.noinline, noreturn.} =
 func finite(x: float64): bool {.inline.} = x.classify notin {fcNan, fcInf, fcNegInf}
 
 func quantityOf*(u: SensitivityUnit): AmplitudeUnit =
-  ## What a sensitivity in `u` measures: `auVelocity`, `auAcceleration` or
-  ## `auPressure`.
+  ## What a sensitivity in `u` measures: `auVelocity`, `auAcceleration`,
+  ## `auPressure` or `auForce`.
   case u
   of suVPerMPerS, suVPerInPerS: auVelocity
   of suVPerMPerS2, suVPerG: auAcceleration
   of suVPerBar, suVPerPa, suMicroVPerPa, suDbReVPerMicroPa: auPressure
+  of suVPerN, suVPerKN, suVPerLbf: auForce
 
 func toSi(value: float64, u: SensitivityUnit): float64 =
   # Volts per SI unit of the quantity.
   case u
-  of suVPerMPerS, suVPerMPerS2, suVPerPa: value
+  of suVPerMPerS, suVPerMPerS2, suVPerPa, suVPerN: value
   of suVPerInPerS: value / inch
   of suVPerG: value / standardG
   of suVPerBar: value / bar
   of suMicroVPerPa: value * 1e-6
   of suDbReVPerMicroPa: pow(10.0, value / 20) * 1e6 # V/µPa → V/Pa
+  of suVPerKN: value * 1e-3
+  of suVPerLbf: value / poundForce
 
 func fromSi(si: float64, u: SensitivityUnit): float64 =
   case u
-  of suVPerMPerS, suVPerMPerS2, suVPerPa: si
+  of suVPerMPerS, suVPerMPerS2, suVPerPa, suVPerN: si
   of suVPerInPerS: si * inch
   of suVPerG: si * standardG
   of suVPerBar: si * bar
   of suMicroVPerPa: si * 1e6
   of suDbReVPerMicroPa: 20 * log10(si * 1e-6)
+  of suVPerKN: si * 1e3
+  of suVPerLbf: si * poundForce
 
 proc checkedSi(value: float64, unit: SensitivityUnit): float64 =
   if unit == suDbReVPerMicroPa:
@@ -228,13 +258,13 @@ func form*(s: Sensitivity): SensitivityForm {.inline, raises: [].} =
   s.form
 
 func unit*(s: Sensitivity): AmplitudeUnit {.inline, raises: [].} =
-  ## What the sensor measures: `auVelocity`, `auAcceleration` or
-  ## `auPressure` (`auRecorded` when not set).
+  ## What the sensor measures: `auVelocity`, `auAcceleration`, `auPressure`
+  ## or `auForce` (`auRecorded` when not set).
   s.unit
 
 func voltsPerUnit*(s: Sensitivity): float64 {.inline, raises: [].} =
   ## The effective sensitivity in volts per SI unit (V/(m/s), V/(m/s²),
-  ## V/Pa); NaN when not set.
+  ## V/Pa, V/N); NaN when not set.
   if s.form == snNone: NaN else: s.voltsPerUnit
 
 proc valueIn*(s: Sensitivity, unit: SensitivityUnit): float64 =
@@ -268,6 +298,7 @@ func siUnit(u: AmplitudeUnit): string =
   of auVelocity: $suVPerMPerS
   of auAcceleration: $suVPerMPerS2
   of auPressure: $suVPerPa
+  of auForce: $suVPerN
   else: ""
 
 func `$`*(s: Sensitivity): string =
@@ -278,7 +309,7 @@ func `$`*(s: Sensitivity): string =
   of snNone: result = "not set"
   of snAsWired:
     result = num(s.entered) & " " & $s.enteredUnit
-    if s.enteredUnit notin {suVPerMPerS, suVPerMPerS2, suVPerPa}:
+    if s.enteredUnit notin {suVPerMPerS, suVPerMPerS2, suVPerPa, suVPerN}:
       result.add " (" & num(s.voltsPerUnit) & " " & siUnit(s.unit) & ")"
   of snOpenCircuit:
     result = num(s.voltsPerUnit) & " " & siUnit(s.unit) & " (open circuit " & num(s.entered) &
@@ -339,3 +370,40 @@ func `$`*(f: FileScale): string =
   if not f.sensitivity.isNaN: result.add num(f.sensitivity) & " " & siUnit(f.unit)
   elif f.unit != auRecorded: result.add "no sensitivity (the headers name " & $f.unit & ")"
   else: result.add "no sensitivity"
+
+# ------------------------------------------------------------------- mass --
+
+func toKilograms(value: float64, u: MassUnit): float64 =
+  case u
+  of muKilogram: value
+  of muPound: value * pound
+  of muTonne: value * 1e3
+
+proc mass*(value: float64, unit: MassUnit): Mass =
+  ## A mass of `value` in `unit` (a vibrator's reaction mass or baseplate).
+  ## Raises `ValueError` unless `value` is finite and positive.
+  runnableExamples:
+    doAssert mass(9000, muPound).kilograms == 9000 * 0.45359237
+    doAssert $mass(2.45, muTonne) == "2.45 t"
+  if not value.finite or value <= 0: badValue("a mass", value)
+  let kg = toKilograms(value, unit)
+  if not kg.finite or kg <= 0:
+    raise newException(ValueError, "a mass of " & $value & " " & $unit & " is out of range")
+  Mass(kilograms: kg, entered: value, enteredUnit: unit)
+
+func isSet*(m: Mass): bool {.inline, raises: [].} =
+  ## The mass was entered (not `Mass()`).
+  m.kilograms > 0
+
+func kilograms*(m: Mass): float64 {.inline, raises: [].} =
+  ## The mass in kilograms; NaN when not set.
+  if m.kilograms > 0: m.kilograms else: NaN
+
+proc valueIn*(m: Mass, unit: MassUnit): float64 =
+  ## The mass in `unit`. Raises `ValueError` when it is not set.
+  if not m.isSet: raise newException(ValueError, "the mass is not set")
+  m.kilograms / toKilograms(1, unit)
+
+func `$`*(m: Mass): string =
+  ## The mass as entered: `"2450 kg"`, `"9000 lb"`.
+  result = (if m.isSet: num(m.entered) & " " & $m.enteredUnit else: "not set")

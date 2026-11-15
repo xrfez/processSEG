@@ -120,7 +120,7 @@ Every per-trace value is read from parseSEG's `TraceRows` view when it is needed
   second, with distance in the file's coordinate units (`summary.coordinateUnits`).
   processSEG never converts feet and metres silently. Samples are as recorded (counts, or
   what the file stores) until a calibration converts them; then they are SI: V, m/s,
-  m/s² or Pa, per row (`AmplitudeUnit`).
+  m/s², Pa or N (a vibrator's ground force), per row (`AmplitudeUnit`).
 - **Errors:** as in parseSEG. A bad argument (an empty band, a negative window) raises
   `ValueError` when the plan is built, not per chunk; a bad `ChunkMeta` raises when it is
   built. Applying a valid plan does not raise. NaN or Inf in the input stays local to its

@@ -35,11 +35,11 @@
 ##   constant `C`, mantissa × 10^exponent, and its units): the physical value
 ##   is taken as `sample · 2^−N · C` (N applied before C: the standard does
 ##   not say, and N is 0 in most files). A count is `2^−N` of the value unit (V or mV); a
-##   value unit of Pa, m/s or m/s² makes the samples already physical
+##   value unit of Pa, m/s, m/s² or N makes the samples already physical
 ##   (`FileScale.physical`). A value unit of 0 (unknown) is volts only when
 ##   N ≠ 0 (Rev 1 defines N as the LSB in volts); the standard reads headers
 ##   that are all zero as volts, but here they are **unknown**, since that is
-##   what an unfilled header looks like. `C` in Pa, m/s or m/s² gives the
+##   what an unfilled header looks like. `C` in Pa, m/s, m/s² or N gives the
 ##   sensitivity `v / C` (V per unit, `v` the volts of one value unit), or,
 ##   when the volts are unknown, makes the samples physical directly
 ##   (`2^−N · C` per count); `C` in V or mV gives the descale; `C` with
@@ -88,6 +88,7 @@ func segyQuantity(code: int): AmplitudeUnit =
   of 1: auPressure
   of 6: auVelocity
   of 7: auAcceleration
+  of 8: auForce # newton (SEG-Y Rev 2)
   else: auRecorded
 
 func positive(x: float64): bool {.inline.} =
@@ -311,7 +312,7 @@ func `$`*(g: ScaleGroup): string =
 proc segyUnitOverrides*(unit: AmplitudeUnit): seq[HeaderOverride] =
   ## The SEG-Y trace header values that state samples written in `unit`
   ## (D14: pass them to parseSEG's `writeTrace`): the trace value unit
-  ## (bytes 203-204: Pa 1, V 2, m/s 6, m/s² 7; 0 for `auRecorded`), the trace
+  ## (bytes 203-204: Pa 1, V 2, m/s 6, m/s² 7, N 8; 0 for `auRecorded`), the trace
   ## weighting factor 0 and no transduction constant (205-212 zero). A file
   ## written so reads back through `fileScalesInto` as physical (or as
   ## volts), so a calibration does not scale it again.
@@ -321,6 +322,7 @@ proc segyUnitOverrides*(unit: AmplitudeUnit): seq[HeaderOverride] =
     of auVelocity: 6
     of auAcceleration: 7
     of auPressure: 1
+    of auForce: 8
   @[headerOverride("trace.traceValueUnit", code),
     headerOverride("trace.traceWeightingFactor", 0),
     headerOverride("trace.transductionMantissa", 0),

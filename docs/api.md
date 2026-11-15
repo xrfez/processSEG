@@ -53,7 +53,7 @@ These hold throughout; a row below only mentions what departs from them.
 - **Units.** Time in ms, frequency in Hz, gain in dB, velocity in distance units per
   second, with distance in the file's coordinate units (`summary.coordinateUnits`); no
   feet/metres conversion happens. Amplitudes are as recorded until a calibration converts
-  them, per row, to V, m/s, m/s² or Pa (`core/calibrate`).
+  them, per row, to V, m/s, m/s², Pa or N (`core/calibrate`).
 - **Time axis.** Sample `j` of row `r` is at `t0Ms[r] + (firstSample + j) · dtMs`
   (`ChunkMeta.sampleTimeMs`), where `firstSample` is the origin of a decoded sample window
   (0 for whole traces).
@@ -153,14 +153,16 @@ above the sensor's natural frequency only. Guide: [calibration](guide/calibratio
 
 | Proc | What |
 |---|---|
-| `AmplitudeUnit` (`auRecorded`, `auVolt`, `auVelocity`, `auAcceleration`, `auPressure`) | A row's unit: as recorded, V at the recorder's input, m/s, m/s², Pa. `$` gives the symbol. |
-| `SensitivityUnit` (`suVPerMPerS`, `suVPerInPerS`, `suVPerMPerS2`, `suVPerG`, `suVPerBar`, `suVPerPa`, `suMicroVPerPa`, `suDbReVPerMicroPa`); `quantityOf(unit)` | The units a sensitivity is entered in (`$`: `V/(m/s)`, `dB re 1 V/µPa`, ...), and what each measures. |
+| `AmplitudeUnit` (`auRecorded`, `auVolt`, `auVelocity`, `auAcceleration`, `auPressure`, `auForce`) | A row's unit: as recorded, V at the recorder's input, m/s, m/s², Pa, N (a vibrator's ground force). `$` gives the symbol. |
+| `SensitivityUnit` (`suVPerMPerS`, `suVPerInPerS`, `suVPerMPerS2`, `suVPerG`, `suVPerBar`, `suVPerPa`, `suMicroVPerPa`, `suDbReVPerMicroPa`, `suVPerN`, `suVPerKN`, `suVPerLbf`); `quantityOf(unit)` | The units a sensitivity is entered in (`$`: `V/(m/s)`, `dB re 1 V/µPa`, `V/kN`, ...), and what each measures (1 lbf = 4.4482216152605 N). |
 | `Sensitivity`; `sensitivity(value, unit)` | A sensor's sensitivity **as wired to the recorder** (a geophone's damped figure), used as it is. `ValueError` unless finite and positive (finite in dB). |
 | `openCircuitSensitivity(value, unit, coilOhms, shuntOhms, inputOhms = Inf, inSeries = 1, inParallel = 1)` | The as-wired value from the open-circuit one: `n·S₀ · R_L / (n·R_c/m + R_L)`, `R_L = shunt ∥ input` (`Inf`: none). `ValueError` for bad resistances. |
 | `s.isSet`, `s.form` (`SensitivityForm`: `snNone`, `snAsWired`, `snOpenCircuit`), `s.unit`, `s.voltsPerUnit`, `s.valueIn(unit)`, `$s` | Read back: the effective SI value (NaN when not set), in any unit of the same quantity (`ValueError` otherwise), and as text with how it was entered. |
 | `DescaleUnit` (`duVPerCount`, `duMilliVPerCount`, `duMicroVPerCount`, `duNanoVPerCount`); `Descale`; `descale(value, unit)` | A recorder's volts per count. `ValueError` unless finite and positive. |
 | `d.isSet`, `d.voltsPerCount`, `d.valueIn(unit)`, `$d` | Read back (NaN when not set). |
 | `FileScale` (`descale`, `sensitivity`, `unit`, `physical`); `initFileScale()`; `$f` | What a file's headers say about one trace's scale, in SI (NaN where they say nothing), as `fileScalesInto` reads them. |
+| `MassUnit` (`muKilogram`, `muPound`, `muTonne`); `Mass`; `mass(value, unit)` | A mass entered with its unit (a vibrator's reaction mass or baseplate; 1 lb = 0.45359237 kg). `ValueError` unless finite and positive. |
+| `m.isSet`, `m.kilograms`, `m.valueIn(unit)`, `$m` | Read back (NaN when not set; `valueIn` raises `ValueError` then). |
 
 ## core/calibrate: recorded values to volts or physical units
 
@@ -501,7 +503,7 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 |---|---|
 | `fileScalesInto(f, traces: openArray[int] \| Slice[int], dst)`, `fileScalesInto(f, rows: TraceRows, dst)` | One `FileScale` per trace from its headers (SEG-D MP factor, Rev 3 descale multiplier and Sensor Info STY with its physical unit, STY read as mV per unit: an assumption, see the module; SEG-Y bytes 169-170, 203-212; SEG-2 DESCALING_FACTOR / STACK), for a meta's `scales`. SEG-Y headers that are all zero are unknown, not volts. Allocates a little scratch; `ValueError` for a wrong `dst` length or a trace outside the file. |
 | `ScaleGroup` (`first`, `count`, `channelSet`, `fields`, `scale`); `scaleReport(f[, traces: Slice[int]])`, `$g` | The raw scale headers of the traces, grouped by distinct values (with the gain fields: SEG-Y 119-124, SEG-2 FIXED_GAIN, the SEG-D format code), and the `FileScale` they give: to check a file before calibrating. |
-| `segyUnitOverrides(unit): seq[HeaderOverride]` | The SEG-Y trace header values stating samples in `unit` (203-204 set; 169-170 and 205-212 zero), for parseSEG's `writeTrace`; `fileScalesInto` reads them back as physical. |
+| `segyUnitOverrides(unit): seq[HeaderOverride]` | The SEG-Y trace header values stating samples in `unit` (203-204 set: Pa 1, V 2, m/s 6, m/s² 7, N 8; 169-170 and 205-212 zero), for parseSEG's `writeTrace`; `fileScalesInto` reads them back as physical. |
 
 ## vibroseis/taper: sweep-end tapers
 
