@@ -248,12 +248,12 @@ type
 
 const
   maxHarmonics = 16
-  peakPhases = 8      # sub-sample positions of the band-limited peak
-  peakHalf = 8        # taps each side of the interpolator
-  peakBeta = 8.0      # its Kaiser window
-  sumCount = 10       # running sums per harmonic: 5 weights, real and imaginary
-  flatLookMs = 10.0   # the flat part: the envelope, averaged over a period, rises (falls)
-  flatRise = 2e-4     # by at most this fraction of itself over the next (previous) flatLookMs,
+  peakPhases = 8                   # sub-sample positions of the band-limited peak
+  peakHalf = 8                     # taps each side of the interpolator
+  peakBeta = 8.0                   # its Kaiser window
+  sumCount = 10                    # running sums per harmonic: 5 weights, real and imaginary
+  flatLookMs = 10.0                # the flat part: the envelope, averaged over a period, rises (falls)
+  flatRise = 2e-4                  # by at most this fraction of itself over the next (previous) flatLookMs,
   flatSlowdowns = [0.02, 0.1, 0.3] # or of its fastest rise (fall) before: the first that finds one
   maxMinWindowMs = 1e6
 
