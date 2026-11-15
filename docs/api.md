@@ -489,9 +489,17 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 | Proc | What |
 |---|---|
 | `intervalMs(rows: TraceRows)` | The rows' common interval from their keys' `intervalUs` (`ValueError` when unknown, 0 or mixed). |
-| `chunkMeta(c: PrefetchChunk[T], dtMs = NaN)` | The meta of a prefetch chunk: its rows, interval, `firstSample` and `failedRows`, in place. `dtMs` overrides headers without an interval. |
-| `chunkMeta(f, traces: Slice[int] \| openArray[int], [samples: Slice[int],] failed = [], dtMs = NaN)` | The meta of a `readTracesInto` of a range or list (and sample window), with its `failedRows` list. |
+| `chunkMeta(c: PrefetchChunk[T], dtMs = NaN, scales = [])` | The meta of a prefetch chunk: its rows, interval, `firstSample` and `failedRows`, in place. `dtMs` overrides headers without an interval; `scales`, a `FileScale` per row (`fileScalesInto`), is pointed at, not copied. |
+| `chunkMeta(f, traces: Slice[int] \| openArray[int], [samples: Slice[int],] failed = [], dtMs = NaN, scales = [])` | The meta of a `readTracesInto` of a range or list (and sample window), with its `failedRows` list and file scales. |
 | `pilotFromTrace(f, trace, T = float64, t0Ms = NaN, dtMs = NaN): Pilot[T]` | A recorded pilot (aux sweep or ground-force trace) from a file: samples, interval and start time from its keys, `sweep` from the SEG-Y sweep fields (trace header, else binary) when they describe a linear or exponential sweep that the trace can be: valid at its interval, no longer than it, and reaching the upper half of its band in the samples (`energyAbove`; some controllers write 0.1 Hz). |
+
+## filescales: what a file says about its scale
+
+| Proc | What |
+|---|---|
+| `fileScalesInto(f, traces: openArray[int] \| Slice[int], dst)`, `fileScalesInto(f, rows: TraceRows, dst)` | One `FileScale` per trace from its headers (SEG-D MP factor, Rev 3 descale multiplier and Sensor Info STY with its physical unit; SEG-Y bytes 169-170, 203-212; SEG-2 DESCALING_FACTOR / STACK), for a meta's `scales`. SEG-Y headers that are all zero are unknown, not volts. Allocates a little scratch; `ValueError` for a wrong `dst` length or a trace outside the file. |
+| `ScaleGroup` (`first`, `count`, `channelSet`, `fields`, `scale`); `scaleReport(f[, traces: Slice[int]])`, `$g` | The raw scale headers of the traces, grouped by distinct values (with the gain fields: SEG-Y 119-124, SEG-2 FIXED_GAIN, the SEG-D format code), and the `FileScale` they give: to check a file before calibrating. |
+| `segyUnitOverrides(unit): seq[HeaderOverride]` | The SEG-Y trace header values stating samples in `unit` (203-204 set; 169-170 and 205-212 zero), for parseSEG's `writeTrace`; `fileScalesInto` reads them back as physical. |
 
 ## vibroseis/taper: sweep-end tapers
 

@@ -36,6 +36,8 @@
 ## - `processSEG/pipeline`: `Op`, `Pipeline`, `compile` → `PipelinePlan`, `apply`;
 ## - `processSEG/core/pool`: `ProcessPool`, persistent workers that apply plans;
 ## - `processSEG/adapters`: `chunkMeta` from a prefetch chunk or a trace read, `pilotFromTrace`;
+## - `processSEG/filescales`: what a file's headers say about its scale (`fileScalesInto`,
+##   `scaleReport`, `segyUnitOverrides`);
 ## - `processSEG/vibroseis/taper`: sweep-end tapers (`SweepTaper`);
 ## - `processSEG/vibroseis/sweep`: sweep generation (`SweepSpec`, `sweepSamples`);
 ## - `processSEG/vibroseis/pilot`: generated and recorded pilots (`Pilot`), resampling,
@@ -54,7 +56,7 @@ import processSEG/core/[types, rows, workspace, basic, mute, shift, units, calib
 import processSEG/fft/[plan, spectrum]
 import processSEG/filter/[design, apply, iir]
 import processSEG/gain/[gain, curves, stats]
-import processSEG/[pipeline, adapters, batch]
+import processSEG/[pipeline, adapters, batch, filescales]
 import processSEG/core/pool
 import processSEG/velocity/[model, formats, moveout]
 import processSEG/statics/elevation
@@ -66,6 +68,6 @@ import processSEG/survey/patch
 export types, rows, workspace, basic, mute, plan, spectrum, design,
     apply, iir, gain, curves, stats, pipeline, adapters, pool, shift, model,
     formats, moveout, elevation, nmo, binning, stack, batch, geometry, firstbreak, snr,
-    shotfit
+    shotfit, filescales
 export taper, sweep, pilot, correlate, vstack, slice, patch, fold, record, amplitude, units,
     calibrate

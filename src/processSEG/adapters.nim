@@ -20,6 +20,11 @@
 ## let meta = chunkMeta(f, first .. last, 500 .. 999, failed)  # the same window
 ## ```
 ##
+## **File scales.** Every form takes an optional `scales`, a caller's column
+## of one `FileScale` per row (`fileScalesInto`, module `filescales`), which
+## the meta points at for a calibration; like `failed`, it must outlive the
+## meta.
+##
 ## **One interval per meta.** SEG-D records can mix sample intervals across
 ## channel sets. A chunk whose rows disagree raises `ValueError`: prefetch with
 ## `uniform = true`, or split the traces with `uniformRuns`.
@@ -35,7 +40,7 @@
 
 import std/[math, options]
 import parseSEG
-import core/types
+import core/[types, units]
 import vibroseis/[sweep, pilot]
 
 proc noInterval(msg: string) {.noinline, noreturn.} =
@@ -71,34 +76,35 @@ proc intervalMs*(rows: TraceRows): float64 =
   us / 1000
 
 proc metaOf(rows: TraceRows, dtMs: float64, firstSample: int,
-    failed: openArray[int]): ChunkMeta =
+    failed: openArray[int], scales: openArray[FileScale]): ChunkMeta =
   requireKeys(rows)
   initChunkMeta(rows, if dtMs.isNaN: intervalMs(rows) else: dtMs, firstSample,
-    failed)
+    failed, scales)
 
-proc chunkMeta*[T: SampleType](c: PrefetchChunk[T], dtMs = NaN): ChunkMeta =
+proc chunkMeta*[T: SampleType](c: PrefetchChunk[T], dtMs = NaN,
+    scales: openArray[FileScale] = []): ChunkMeta =
   ## The meta of a prefetch chunk: its rows, their sample interval, the
   ## chunk's `firstSample` and its `failedRows`, wrapped in place (valid until
   ## `c` is filled again). The interval comes from the rows' keys
   ## (`intervalMs`) unless `dtMs` is given, for headers without one. Raises
   ## `ValueError` as `intervalMs` and `initChunkMeta` do.
-  metaOf(c.rows, dtMs, c.firstSample, c.failedRows)
+  metaOf(c.rows, dtMs, c.firstSample, c.failedRows, scales)
 
 proc chunkMeta*(f: SeismicFile, traces: Slice[int], failed: openArray[int] = [],
-    dtMs = NaN): ChunkMeta =
+    dtMs = NaN, scales: openArray[FileScale] = []): ChunkMeta =
   ## The meta of the traces `traces` as `readTracesInto(f, traces, dst,
   ## failed)` decodes them, with `failed` the positions it left zero (not
   ## copied: it must outlive the meta). The interval is from the keys unless
   ## `dtMs` is given. Raises `ValueError` as `intervalMs` and `initChunkMeta`
   ## do, and for traces outside the file.
-  metaOf(f.rowsOf(traces), dtMs, 0, failed)
+  metaOf(f.rowsOf(traces), dtMs, 0, failed, scales)
 
 proc chunkMeta*(f: SeismicFile, traces: openArray[int],
-    failed: openArray[int] = [], dtMs = NaN): ChunkMeta =
+    failed: openArray[int] = [], dtMs = NaN, scales: openArray[FileScale] = []): ChunkMeta =
   ## The meta of a list of traces (a gather, a sort order), in list order; see
   ## the `Slice` form. The view keeps a pointer to `traces`: the list must
   ## outlive the meta and keep its size.
-  metaOf(f.rowsOf(traces), dtMs, 0, failed)
+  metaOf(f.rowsOf(traces), dtMs, 0, failed, scales)
 
 proc checkWindow(samples: Slice[int]) =
   if samples.a < 0 or samples.b < samples.a:
@@ -106,19 +112,19 @@ proc checkWindow(samples: Slice[int]) =
       " must be a..b with 0 <= a <= b")
 
 proc chunkMeta*(f: SeismicFile, traces: Slice[int], samples: Slice[int],
-    failed: openArray[int] = [], dtMs = NaN): ChunkMeta =
+    failed: openArray[int] = [], dtMs = NaN, scales: openArray[FileScale] = []): ChunkMeta =
   ## The meta of the sample window `samples` of `traces`, as
   ## `readTracesInto(f, traces, samples, dst, failed)` decodes it: column 0 is
   ## trace sample `samples.a`. Otherwise as the form without a window.
   checkWindow(samples)
-  metaOf(f.rowsOf(traces), dtMs, samples.a, failed)
+  metaOf(f.rowsOf(traces), dtMs, samples.a, failed, scales)
 
 proc chunkMeta*(f: SeismicFile, traces: openArray[int], samples: Slice[int],
-    failed: openArray[int] = [], dtMs = NaN): ChunkMeta =
+    failed: openArray[int] = [], dtMs = NaN, scales: openArray[FileScale] = []): ChunkMeta =
   ## The meta of the sample window `samples` of a list of traces; see the
   ## `Slice` forms.
   checkWindow(samples)
-  metaOf(f.rowsOf(traces), dtMs, samples.a, failed)
+  metaOf(f.rowsOf(traces), dtMs, samples.a, failed, scales)
 
 proc pilotFromTrace*(f: SeismicFile, trace: int, T: typedesc[SampleType] = float64,
     t0Ms = NaN, dtMs = NaN): Pilot[T] =

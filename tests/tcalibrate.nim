@@ -239,6 +239,16 @@ block gain_and_mismatch:
   let s = initCalibrationPlan(initCalibration([CalibrationRule(descale: d1,
     sensitivity: geo)])).resolveInto(meta, rc)
   doAssert rc[0].mismatch and rc[0].unit == auVelocity and s.mismatches == 1
+  # A velocity sensitivity where the file's headers name pascals: flagged too.
+  var k2 = @[initTraceKeys()]
+  k2[0].status = tsLive
+  let c2 = @[cols]
+  let fileUnit = @[FileScale(descale: 1e-6, sensitivity: NaN, unit: auPressure)]
+  let m2 = initChunkMeta(rowsOf(k2, c2), dtMs = 2, scales = fileUnit)
+  discard initCalibrationPlan(initCalibration([CalibrationRule(sensitivity: geo)])).resolveInto(m2, rc)
+  doAssert rc[0].mismatch and rc[0].status == csConverted
+  discard initCalibrationPlan(initCalibration([CalibrationRule(sensitivity: hyd)])).resolveInto(m2, rc)
+  doAssert not rc[0].mismatch
   # A negative gain (attenuation the descale does not hold) multiplies.
   discard initCalibrationPlan(initCalibration([CalibrationRule(descale: d1, sensitivity: hyd,
     gainDb: -20)])).resolveInto(meta, rc)

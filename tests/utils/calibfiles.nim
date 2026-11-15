@@ -142,8 +142,12 @@ const segyCases* = [
   SegyCase(n: 10, valueUnit: 2, mantissa: 5, exponent: 1, units: 6),
     # 3: 2⁻¹⁰ V, transduction 50 (m/s per V): 0.02 V/(m/s)
   SegyCase(n: 3, valueUnit: 1),                 # 4: already physical: 2⁻³ Pa
-  SegyCase(valueUnit: 2, mantissa: 2, exponent: -3, units: 1)]
+  SegyCase(valueUnit: 2, mantissa: 2, exponent: -3, units: 1),
     # 5: 1 V, transduction 0.002 Pa per V: 500 V/Pa
+  SegyCase(mantissa: 1024),
+    # 6: a transduction constant without units, no value unit, N = 0: unknown
+  SegyCase(mantissa: 5, exponent: -1, units: 6)]
+    # 7: no value unit, N = 0, transduction 0.5 m/s per count: already physical
 
 proc writeSegy*(path = segyPath()) =
   ## SEG-Y Rev 2.1, IEEE float, one trace per `segyCases` entry (100 samples

@@ -107,9 +107,10 @@ type
       ## recorded unit.
     sensitivity*: float64 ## Volts per unit of `unit`.
     unit*: AmplitudeUnit
-      ## The unit of `sensitivity` (`auVelocity`, `auAcceleration`,
-      ## `auPressure`), or of the samples when `physical`; `auRecorded` when
-      ## the headers name none.
+      ## The quantity the headers name (`auVelocity`, `auAcceleration`,
+      ## `auPressure`): the unit of `sensitivity`, or of the samples when
+      ## `physical`, or (SEG-D Rev 3) the physical unit of a trace without a
+      ## sensitivity; `auRecorded` when they name none.
     physical*: bool
       ## The headers say the samples are already in `unit` (times
       ## `descale`): no sensitivity applies.
@@ -330,5 +331,6 @@ func `$`*(f: FileScale): string =
     return (if f.descale.isNaN: "?" else: num(f.descale)) & " " & $f.unit & "/count (physical)"
   result = (if f.descale.isNaN: "no descale" else: num(f.descale) & " V/count")
   result.add ", "
-  result.add(if f.sensitivity.isNaN: "no sensitivity"
-             else: num(f.sensitivity) & " " & siUnit(f.unit))
+  if not f.sensitivity.isNaN: result.add num(f.sensitivity) & " " & siUnit(f.unit)
+  elif f.unit != auRecorded: result.add "no sensitivity (the headers name " & $f.unit & ")"
+  else: result.add "no sensitivity"

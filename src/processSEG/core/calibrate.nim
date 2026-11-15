@@ -51,7 +51,8 @@
 ## give a factor, more than 0.1 % apart, is a **conflict** (`RowCalibration.
 ## conflict`, `CalibrationSummary.conflicts`), whichever won. A sensitivity
 ## whose quantity does not fit the row's SEG-D sensor type (a V/(m/s) value on
-## a hydrophone, sensor type 1) is a **mismatch**, reported likewise. A row
+## a hydrophone, sensor type 1), or the physical unit the file's headers name,
+## is a **mismatch**, reported likewise. A row
 ## whose headers say it is already physical (`FileScale.physical`) is taken
 ## as the file says, unless `ffIgnore`; a rule that gives it a factor is a
 ## conflict.
@@ -166,7 +167,9 @@ type
       ## The index in `Calibration.rules` of the rule that gave each factor;
       ## -1 when none did.
     conflict*: bool ## The file and a rule both gave a factor, more than 0.1 % apart.
-    mismatch*: bool ## The sensitivity's quantity does not fit the SEG-D sensor type.
+    mismatch*: bool
+      ## The sensitivity's quantity does not fit the SEG-D sensor type or the
+      ## unit the file's headers name.
 
   CalibrationSummary* = object
     ## Counts over the rows of one `resolveInto` (or `calibrate`) call.
@@ -456,8 +459,10 @@ func resolveRow(p: CalibrationPlan, meta: ChunkMeta, row: int): RowCalibration {
     let g = (if rg >= 0: p.gain[rg] else: 1.0)
     result.gainRule = rg
     if wantS and not s.isNaN:
+      # The quantity the sensor type, or the file's headers, name.
       let want = expectedUnit(k.sensorType)
-      result.mismatch = want != auRecorded and want != sUnit
+      result.mismatch = (want != auRecorded and want != sUnit) or
+        (fs.unit in {auVelocity, auAcceleration, auPressure} and fs.unit != sUnit)
     if not d.isNaN:
       if aux or p.target == ctVolts:
         (factor, unit) = (d / g, auVolt)
