@@ -142,6 +142,23 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 | `muteTop(x, startCol, taperCols)`, `muteBottom(x, endCol, taperCols)` | Row kernels in fractional columns: zero before `startCol` (after `endCol`) with a sin² taper on the muted side. |
 | `muteTop(b \| samples, meta, curve, taperMs = 0)`, `muteBottom(...)` | Each live row muted at its curve time, on its own time axis. |
 
+## core/units: amplitude units, sensitivities, descales
+
+Values are entered with their units and held in SI. Enter a sensor's sensitivity as it holds
+wired to the recorder (the damped figure for a shunted geophone); it holds in the flat band
+above the sensor's natural frequency only.
+
+| Proc | What |
+|---|---|
+| `AmplitudeUnit` (`auRecorded`, `auVolt`, `auVelocity`, `auAcceleration`, `auPressure`) | A row's unit: as recorded, V at the recorder's input, m/s, m/s², Pa. `$` gives the symbol. |
+| `SensitivityUnit` (`suVPerMPerS`, `suVPerInPerS`, `suVPerMPerS2`, `suVPerG`, `suVPerBar`, `suVPerPa`, `suMicroVPerPa`, `suDbReVPerMicroPa`); `quantityOf(unit)` | The units a sensitivity is entered in (`$`: `V/(m/s)`, `dB re 1 V/µPa`, ...), and what each measures. |
+| `Sensitivity`; `sensitivity(value, unit)` | A sensor's sensitivity **as wired to the recorder** (a geophone's damped figure), used as it is. `ValueError` unless finite and positive (finite in dB). |
+| `openCircuitSensitivity(value, unit, coilOhms, shuntOhms, inputOhms = Inf, inSeries = 1, inParallel = 1)` | The as-wired value from the open-circuit one: `n·S₀ · R_L / (n·R_c/m + R_L)`, `R_L = shunt ∥ input` (`Inf`: none). `ValueError` for bad resistances. |
+| `s.isSet`, `s.form` (`SensitivityForm`: `snNone`, `snAsWired`, `snOpenCircuit`), `s.unit`, `s.voltsPerUnit`, `s.valueIn(unit)`, `$s` | Read back: the effective SI value (NaN when not set), in any unit of the same quantity (`ValueError` otherwise), and as text with how it was entered. |
+| `DescaleUnit` (`duVPerCount`, `duMilliVPerCount`, `duMicroVPerCount`, `duNanoVPerCount`); `Descale`; `descale(value, unit)` | A recorder's volts per count. `ValueError` unless finite and positive. |
+| `d.isSet`, `d.voltsPerCount`, `d.valueIn(unit)`, `$d` | Read back (NaN when not set). |
+| `FileScale` (`descale`, `sensitivity`, `unit`, `physical`); `initFileScale()`; `$f` | What a file's headers say about one trace's scale, in SI (NaN where they say nothing), as `fileScalesInto` reads them. |
+
 ## fft/plan: `FftPlan`
 
 | Proc | What |

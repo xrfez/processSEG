@@ -8,6 +8,8 @@
 ## - `processSEG/core/workspace`: `Workspace`, grow-only per-thread scratch;
 ## - `processSEG/core/basic`: demean, detrend, scale, clip, polarity, pad taper;
 ## - `processSEG/core/mute`: top and bottom mutes (`MuteCurve`);
+## - `processSEG/core/units`: amplitude units; sensitivities and descales entered with their
+##   units (`Sensitivity`, `Descale`, `FileScale`);
 ## - `processSEG/fft/plan`: `FftPlan`, real mixed-radix FFTs, batched across traces;
 ## - `processSEG/fft/spectrum`: `SpectrumPlan`, amplitude spectra and dB for display;
 ## - `processSEG/filter/design`: `FilterSpec`, cos² trapezoid, Butterworth and notch responses;
@@ -46,7 +48,7 @@
 ## - `processSEG/qc/record`: field records against the XPS (`recordCompleteness`, `summarize`);
 ## - `processSEG/qc/amplitude`: amplitude QC per trace and per record (`traceAmplitudeInto`, `recordAmplitude`).
 
-import processSEG/core/[types, rows, workspace, basic, mute, shift]
+import processSEG/core/[types, rows, workspace, basic, mute, shift, units]
 import processSEG/fft/[plan, spectrum]
 import processSEG/filter/[design, apply, iir]
 import processSEG/gain/[gain, curves, stats]
@@ -63,4 +65,4 @@ export types, rows, workspace, basic, mute, plan, spectrum, design,
     apply, iir, gain, curves, stats, pipeline, adapters, pool, shift, model,
     formats, moveout, elevation, nmo, binning, stack, batch, geometry, firstbreak, snr,
     shotfit
-export taper, sweep, pilot, correlate, vstack, slice, patch, fold, record, amplitude
+export taper, sweep, pilot, correlate, vstack, slice, patch, fold, record, amplitude, units
