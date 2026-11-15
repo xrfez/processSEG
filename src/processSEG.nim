@@ -45,6 +45,8 @@
 ##   instrument filters, SEG-Y sweep headers;
 ## - `processSEG/vibroseis/correlate`: correlation and sweep deconvolution (`CorrelationPlan`);
 ## - `processSEG/vibroseis/vstack`: `RecordStack`, vertical and diversity stacks of repeated records;
+## - `processSEG/vibroseis/sweeptrack`: vibrator signals against sweep time: phase, fundamental,
+##   harmonics, THD, peak and frequency (`SweepTrackPlan`, `trackInto`);
 ## - `processSEG/continuous/slice`: continuous recordings cut into records at shot times
 ##   (`planSlices`, `extractInto`);
 ## - `processSEG/survey/patch`: receiver patches of an X survey, template and distance box
@@ -63,7 +65,7 @@ import processSEG/velocity/[model, formats, moveout]
 import processSEG/statics/elevation
 import processSEG/stack/[nmo, binning, stack]
 import processSEG/qc/[geometry, firstbreak, snr, shotfit, fold, record, amplitude]
-import processSEG/vibroseis/[taper, sweep, pilot, correlate, vstack]
+import processSEG/vibroseis/[taper, sweep, pilot, correlate, vstack, sweeptrack]
 import processSEG/continuous/slice
 import processSEG/survey/patch
 export types, rows, workspace, basic, mute, plan, spectrum, hilbert, design,
@@ -71,4 +73,4 @@ export types, rows, workspace, basic, mute, plan, spectrum, hilbert, design,
     formats, moveout, elevation, nmo, binning, stack, batch, geometry, firstbreak, snr,
     shotfit, filescales
 export taper, sweep, pilot, correlate, vstack, slice, patch, fold, record, amplitude, units,
-    calibrate
+    calibrate, sweeptrack

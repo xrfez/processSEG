@@ -68,8 +68,10 @@ const
     # Vibrator signatures, instantiated in `utils/vecsignature` (their plans
     # use the one-trace FFT, scalar by design): the Hilbert transform's
     # spectrum times −i (fft/hilbert); the envelope's square roots (there,
-    # with -fno-math-errno).
-    ("rotateBins", "__vecsignature"), ("envelopeKernel", "ZfftZhilbert")]
+    # with -fno-math-errno); the tracking's running sums, every harmonic in
+    # one lane group (vibroseis/sweeptrack: its phasor powers are serial).
+    ("rotateBins", "__vecsignature"), ("envelopeKernel", "ZfftZhilbert"),
+    ("addSample", "__vecsignature")]
 
 const mostlyPacked = ["sosKernel"]
   # Kernels whose loop must be packed as a whole: over all their instances,
