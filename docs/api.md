@@ -213,6 +213,14 @@ auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guid
 | `amplitudePhaseInto(re, im, amp, phase)` | Modulus and phase of a raw `forward` spectrum, unscaled. |
 | `DbReference` (`dbPeak`, `dbAbsolute`); `toDbInto(amp, db, reference = dbPeak, floorDb = -120)` | 20·log10 of the amplitudes, 0 dB at the peak or at 1, clamped at `floorDb`. |
 
+## fft/hilbert: `HilbertPlan`
+
+| Proc | What |
+|---|---|
+| `HilbertPlan[T]`; `initHilbertPlan(T, samples, nfft = 0)`, `hp.samples`, `hp.nfft`, `hp.workspaceSize` | The Hilbert transform of traces of up to `samples` samples, zero padded to `nfft` (0: `nextFastLen(2·samples)`, so nothing wraps). `ValueError` for `samples < 1` or an `nfft` below `2·samples` or not smooth. |
+| `hp.hilbertInto(x, h, ws)` | `H[x]`, the imaginary part of the analytic signal (`H[cos] = sin`; 0 Hz and Nyquist to zero), `x.len` values. |
+| `hp.envelopeInto(x, env, ws)` | The envelope `\|x + i·H[x]\|`. |
+
 ## filter/design: `FilterSpec`
 
 | Proc | What |

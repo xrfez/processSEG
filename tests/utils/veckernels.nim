@@ -2,7 +2,7 @@
 ## builds this module and checks their disassembly for packed SIMD.
 
 import processSEG
-import synth, veccorrelate
+import synth, veccorrelate, vecsignature
 
 template wrap(name, kernel: untyped, T: typedesc, args: varargs[untyped]) =
   proc name(x: var openArray[T]) {.exportc: astToStr(name), noinline.} =
@@ -188,6 +188,7 @@ proc shiftOnce() =
   vec_shift_f32(x, -2.5, siCubic)
 
 when isMainModule:
+  signatureOnce()
   amplitudeOnce()
   correlateOnce()
   recordStackOnce()

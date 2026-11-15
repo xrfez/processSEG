@@ -64,7 +64,12 @@ const
     # Vibroseis, instantiated in `utils/veccorrelate` (away from the lanes
     # FFT instances above): a bin of the lanes' spectra times the pilot's
     # (correlation), the resampling filter's dot product (pilots).
-    ("mulKernel", "__veccorrelate"), ("dot", "__veccorrelate")]
+    ("mulKernel", "__veccorrelate"), ("dot", "__veccorrelate"),
+    # Vibrator signatures, instantiated in `utils/vecsignature` (their plans
+    # use the one-trace FFT, scalar by design): the Hilbert transform's
+    # spectrum times −i (fft/hilbert); the envelope's square roots (there,
+    # with -fno-math-errno).
+    ("rotateBins", "__vecsignature"), ("envelopeKernel", "ZfftZhilbert")]
 
 const mostlyPacked = ["sosKernel"]
   # Kernels whose loop must be packed as a whole: over all their instances,
