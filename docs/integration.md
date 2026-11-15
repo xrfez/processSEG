@@ -374,8 +374,8 @@ For the viewer:
   any op. A table edit is a recompile (the rules are indexed in microseconds) and a
   reprocess of the panel's processed buffers (a new `generation`); the raw cache and its
   columns stay valid. Cost: a 2000 × 2001 float32 panel converts in about 1.4 ms `src →
-  dst` on one thread (0.9 ms in place), its rows' rules resolved included (bench/README,
-  "Calibration").
+  dst` on one thread (0.8 ms in place, the memory baseline), its rows' rules resolved
+  included (bench/README, "Calibration").
 - **Labels**: `plan.amplitudeUnits` is `paCalibrated` when nothing after the calibration
   changes amplitudes, `paRelative` after a gain, `paRecorded` without one. For calibrated
   output, `initCalibrationPlan(flow[0].calibration).resolveInto(meta, rows)` gives each row
