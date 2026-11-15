@@ -618,6 +618,17 @@ without its content below the band.
 | `cp.compareInto(a, b, ratioDb, phaseDeg, ws)` | `a` against `b` per bin: `10·log10(Ŝ_aa/Ŝ_bb)` dB and `arg Ŝ_ab` degrees, from the lag-windowed spectra. |
 
 
+## vibroseis/vibqc: vibrator QC of a record
+
+| Proc | What |
+|---|---|
+| `VibSignal` (`vsReference`, `vsGroundForce`, `vsMass`, `vsBaseplate`, `vsWeightedSum`), `VibRole` (`vsReference .. vsBaseplate`), `defaultOrder` | A unit's signals: the four roles a row can have, and the ground force generated from M and B; the usual channel order (Ref, GF, M, B). |
+| `VibUnit` (`rows`, `units`, `sensitivity`, `reactionMass`, `baseplateMass`); `initVibUnit(reference, groundForce = -1, mass = -1, baseplate = -1, reactionMass = Mass(), baseplateMass = Mass())`, `vibUnitsInOrder(count, firstRow = 0, order = defaultOrder, reactionMass, baseplateMass)` | One unit: each role's row (−1: none; the reference is required), the unit each row is in as passed, an optional sensitivity per role (a row in volts to m/s² or N), the masses. `vibUnitsInOrder` lays out `count` units whose channels follow each other in `order` (`ValueError` for a bad count or order). The library never assigns a role by position. |
+| `groundForceInto(mass, baseplate, reactionMass, baseplateMass, dst)` | `Mr·a_M + Mb·a_B`, the masses in kg: N for accelerations in m/s² (NaN for a mass not set). |
+| `LimitKind` (`lkPhase`, `lkThd`, `lkHarmonic`, `lkForceLow`, `lkForceHigh`, `lkPeakForce`, `lkMeanPhase`, `lkMeanThd`, `lkMeanForce`), `VibLimits` (`phaseDeg`, `thdPct`, `harmonicPct`, `forceLow`, `forceHigh`, `peakForce`, `meanPhaseDeg`, `meanThdPct`, `meanForceLow`, `fromMs`, `toMs`; NaN: none) | Optional limits per point and on the means over the sweep, checked between `fromMs` and `toMs`. |
+| `limitFlagsInto(track, limits, flags)`, `TrackSummary` (`points`, `meanAbsPhaseDeg`, `maxAbsPhaseDeg`, `meanThdPct`, `maxThdPct`, `meanForce`, `minForce`, `maxForce`, `maxPeak`, `exceeded`, `failed`); `summarize(track, limits = VibLimits())` | Each point's set of limits exceeded; a signal's statistics, the points beyond each limit and the limits failed. |
+| `UnitSignature[T]` (`signals`, `reference`, `tracks`, `units`, `summaries`, `flags`, `weightedSum`); `vibratorWorkspace(tp)`; `tp.analyzeVibrators(b \| samples, meta, units, limits, results, ws)` | Every measure of every unit of a record: each signal tracked against the unit's reference, the generated force, the summaries (limits on the two ground forces) and per-point flags. Sized on the first call, refilled without allocating after. `ValueError` (before any result changes) for a block that does not fit, another interval, a window, rows wider than the plan, a unit without a reference, a row outside the block, a sensitivity on the reference, on a row not in volts or of another quantity, or one mass without the other. |
+
 ## continuous/slice: continuous recordings into records
 
 | Proc | What |

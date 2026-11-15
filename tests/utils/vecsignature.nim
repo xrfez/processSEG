@@ -58,7 +58,26 @@ proc crossOnce(T: typedesc) =
   else: vec_cross_f64(cp, x, r, lags, ws)
   echo lags[3]
 
+proc vec_weightedSum_f32(m, b: openArray[float32], dst: var openArray[float32]) {.
+    exportc: "vec_weightedSum_f32", noinline.} =
+  groundForceInto(m, b, mass(2450, muKilogram), mass(1180, muKilogram), dst)
+
+proc vec_weightedSum_f64(m, b: openArray[float64], dst: var openArray[float64]) {.
+    exportc: "vec_weightedSum_f64", noinline.} =
+  groundForceInto(m, b, mass(2450, muKilogram), mass(1180, muKilogram), dst)
+
+proc forceOnce() =
+  # weightedSumKernel: Mr·a_M + Mb·a_B (vibqc).
+  var a, b, f = newSeq[float32](100)
+  var c, d, g = newSeq[float64](100)
+  a[1] = 1
+  c[1] = 1
+  vec_weightedSum_f32(a, b, f)
+  vec_weightedSum_f64(c, d, g)
+  echo f[1], g[1]
+
 proc signatureOnce*() =
+  forceOnce()
   crossOnce(float32)
   crossOnce(float64)
   # scan (sweeptrack), 8 and 16 lanes, both sample types.

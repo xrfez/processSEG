@@ -73,7 +73,9 @@ const
     ("rotateBins", "__vecsignature"), ("envelopeKernel", "ZfftZhilbert"),
     ("addSample", "__vecsignature"),
     # A signal's spectrum times the reference's conjugate (crosscorrelate).
-    ("crossKernel", "__vecsignature")]
+    ("crossKernel", "__vecsignature"),
+    # The ground force from mass and baseplate (vibqc).
+    ("weightedSumKernel", "__vecsignature")]
 
 const mostlyPacked = ["sosKernel"]
   # Kernels whose loop must be packed as a whole: over all their instances,
