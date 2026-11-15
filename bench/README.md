@@ -173,7 +173,7 @@ AGC and normalization (same run, 1 thread):
   every range (no gathers), 6.3 / 6.7 / 6.7; two blocks per iteration of the block sums
   and the 2026-11-13 run, 4.5 / 5.1 / 6.8.
 
-## Calibration (Phase 14)
+## Calibration
 
 `bench/bcalibrate.nim`, built with the `nim bench` flags (`-d:danger --opt:speed
 --debuginfo:on --linedir:on -march=x86-64-v3`), one thread, a panel of 2000 traces × 2001

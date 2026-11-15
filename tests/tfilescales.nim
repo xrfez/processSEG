@@ -23,6 +23,11 @@ block segd_rev2:
   for t in 1 .. 3: doAssert closeTo(s[t].descale, pow(2.0, -10) * 1e-3)
   for t in 4 .. 5: doAssert closeTo(s[t].descale, pow(2.0, 3.5) * 1e-3)
   for t in 0 .. 5: doAssert s[t].sensitivity.isNaN and s[t].unit == auRecorded and not s[t].physical
+  # A view that reorders and repeats traces: each row gets its own trace's scale.
+  let order = @[5, 1, 1, 0]
+  var picked = newSeq[FileScale](order.len)
+  f.fileScalesInto(f.rowsOf(order), picked)
+  for i, t in order: doAssert picked[i].descale == s[t].descale, $i
   let rep = f.scaleReport()
   doAssert rep.len == 3, $rep.len
   doAssert rep[1].first == 1 and rep[1].count == 3 and rep[1].channelSet == 1

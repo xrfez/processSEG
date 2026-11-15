@@ -67,7 +67,9 @@
 ##
 ## **Rows.**
 ## - A **live** row that cannot reach the target (no descale; for
-##   `ctPhysical` no sensitivity) is filled with **NaN** over its live length
+##   `ctPhysical` no sensitivity; or a factor out of range, which only a
+##   broken header or extreme entries give: it, or its inverse, beyond a
+##   float32) is filled with **NaN** over its live length
 ##   (`csUnresolved`). A row of counts beside rows in m/s would be 10⁶ to 10⁹
 ##   times too large for everything after it (a panel normalization would be
 ##   set by it), while NaN is what panel statistics, spectra and stacks
@@ -94,7 +96,7 @@
 ## one. Resolving a row is a few hash lookups (one per criteria set used);
 ## nothing allocates once the plan is built.
 
-import std/[hashes, math, options, strutils, tables]
+import std/[fenv, hashes, math, options, strutils, tables]
 import parseSEG
 import basic, rows, types, units
 
@@ -159,7 +161,7 @@ type
   CalibrationStatus* = enum
     ## What happened to a row.
     csConverted = "converted"   ## Scaled into `RowCalibration.unit`.
-    csUnresolved = "unresolved" ## A live row without the factors the target needs: NaN.
+    csUnresolved = "unresolved" ## A live row without usable factors for the target: NaN.
     csKept = "kept"             ## Left as recorded: failed, or dead or auxiliary without its factors.
 
   RowCalibration* = object
@@ -185,7 +187,7 @@ type
     converted*, unresolved*, kept*: int ## Rows by status.
     noDescale*, noSensitivity*: int
       ## Live rows unresolved for want of a descale, or (`ctPhysical`) of a
-      ## sensitivity.
+      ## sensitivity; the other unresolved rows had a factor out of range.
     conflicts*, mismatches*: int ## Rows flagged so.
 
   RatioRange* = object
@@ -313,10 +315,11 @@ proc badRule(i: int, msg: string) {.noinline, noreturn.} =
 
 proc initCalibrationPlan*(cal: Calibration): CalibrationPlan =
   ## Validates `cal` and indexes its rules. Raises `ValueError`, naming the
-  ## rule, for a rule that gives no factor, a gain that is not finite, a
-  ## criterion out of range (sensor type or component above 255, a channel
-  ## set below -1, a channel or station that is not finite), or two rules
-  ## with the same criteria and values.
+  ## rule, for a rule that gives no factor, a gain that is not finite (or
+  ## whose linear factor, `10^(gainDb/20)`, is not), a criterion out of
+  ## range (sensor type or component above 255, a channel set below -1, a
+  ## channel or station that is not finite), or two rules with the same
+  ## criteria and values.
   result = CalibrationPlan(target: cal.target, fileFactors: cal.fileFactors,
     scaleAux: cal.scaleAuxiliary, catchAll: -1)
   let n = cal.rules.len
@@ -331,6 +334,10 @@ proc initCalibrationPlan*(cal: Calibration): CalibrationPlan =
       badRule(i, "gives no factor (set a descale, a sensitivity or gainDb)")
     if not r.gainDb.isNaN and not r.gainDb.finite:
       badRule(i, "gainDb must be finite, got " & $r.gainDb)
+    if not r.gainDb.isNaN:
+      let lin = pow(10.0, r.gainDb / 20)
+      if not (lin.finite and lin > 0):
+        badRule(i, "gainDb = " & $r.gainDb & " is out of range: 10^(gainDb/20) = " & $lin)
     if m.sensorType > 255 or m.sensorType < -1:
       badRule(i, "sensorType must be -1 (any) or 0 .. 255, got " & $m.sensorType)
     if m.component > 255 or m.component < -1:
@@ -412,6 +419,14 @@ func expectedUnit(sensorType: uint8): AmplitudeUnit {.inline.} =
 func differs(a, b: float64): bool {.inline.} =
   abs(a - b) > conflictTolerance * max(abs(a), abs(b))
 
+func usable(factor: float64): bool {.inline.} =
+  # A factor is applied only when it and its inverse fit a float32 (about
+  # 3e-39 .. 3e38; real factors lie near 1e-12 .. 1e3): beyond that it comes
+  # from a broken header or extreme entries, and would turn a row into ±Inf
+  # or zeros, a wrong scale. NaN is not usable either.
+  const top = float64(maximumPositiveValue(float32)) # high(float32) is Inf
+  factor > 0 and factor <= top and 1 / factor <= top
+
 func resolveRow(p: CalibrationPlan, meta: ChunkMeta, row: int): RowCalibration {.raises: [].} =
   result = RowCalibration(factor: 1, unit: auRecorded, status: csKept, descaleRule: -1,
     sensitivityRule: -1, gainRule: -1)
@@ -476,7 +491,7 @@ func resolveRow(p: CalibrationPlan, meta: ChunkMeta, row: int): RowCalibration {
         (factor, unit) = (d / g, auVolt)
       elif not s.isNaN:
         (factor, unit) = (d / (g * s), sUnit)
-  if not factor.isNaN:
+  if usable(factor):
     (result.factor, result.unit, result.status) = (factor, unit, csConverted)
   elif live:
     (result.factor, result.status) = (NaN, csUnresolved)
@@ -641,7 +656,9 @@ proc uncalibrate*[T: SampleType](p: CalibrationPlan, b: RowBlock[T],
   ## The inverse of `calibrate`: rows in the plan's units back to recorded
   ## values (counts), dividing by the factor `resolveInto` gives (to write
   ## an integer format with the input's descale). Unresolved live rows
-  ## become NaN, kept rows are untouched. Raises as `calibrate`.
+  ## become NaN, kept rows are untouched. In float32 the round trip holds to
+  ## a few parts in 10⁷ (24-bit counts come back within one count); float64
+  ## gives the counts back exactly. Raises as `calibrate`.
   calibrateImpl(p, b, b, meta, inverse = true)
 
 proc uncalibrate*[T: SampleType](p: CalibrationPlan, samples: var Tensor[T],

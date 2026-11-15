@@ -188,8 +188,9 @@ proc openCircuitSensitivity*(value: float64, unit: SensitivityUnit,
   ## it out when it is large against the shunt); `shuntOhms = Inf` means no
   ## shunt, so the input impedance alone loads the coil, and both `Inf` give
   ## the open-circuit value. Raises `ValueError` for a `value` as `sensitivity`
-  ## refuses, a negative or non-finite coil resistance, or a shunt or input
-  ## impedance that is not positive.
+  ## refuses, a negative or non-finite coil resistance, a shunt or input
+  ## impedance that is not positive, or a result that is not finite and
+  ## positive (an overflow, or an underflow to 0).
   runnableExamples:
     # 20 V/(m/s) open circuit, a 400 Ω coil, a 1600 Ω shunt: 20 · 1600 / 2000.
     let s = openCircuitSensitivity(20, suVPerMPerS, coilOhms = 400, shuntOhms = 1600)
@@ -210,7 +211,11 @@ proc openCircuitSensitivity*(value: float64, unit: SensitivityUnit,
     load = 1 / (1 / shuntOhms + 1 / inputOhms) # Inf when both are
     rc = n * coilOhms / m
     divider = (if load == Inf: 1.0 else: load / (rc + load))
-  Sensitivity(form: snOpenCircuit, unit: quantityOf(unit), voltsPerUnit: n * s0 * divider,
+    v = n * s0 * divider
+  if not v.finite or v <= 0:
+    raise newException(ValueError, "an open-circuit sensitivity of " & $value & " " & $unit &
+      " with these resistances is out of range: " & $v & " V per unit")
+  Sensitivity(form: snOpenCircuit, unit: quantityOf(unit), voltsPerUnit: v,
     entered: value, enteredUnit: unit, coilOhms: coilOhms, shuntOhms: shuntOhms,
     inputOhms: inputOhms, inSeries: inSeries, inParallel: inParallel)
 

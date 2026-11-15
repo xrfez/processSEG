@@ -84,7 +84,7 @@ station > channel > channel set > component > sensor type > a rule without crite
 catch-all default).
 
 A rule with more criteria of the same rank wins (a channel set and a component beat a
-channel set alone); two rules with exactly the same criteria are refused. `resolveInto`
+channel set alone); two rules with the same criteria and values are refused. `resolveInto`
 says, per row, the factor, the unit, where each factor came from and whether the row is
 converted, unresolved or kept, without touching a sample; `calibrate` applies it.
 
@@ -141,7 +141,10 @@ Rows without the factors their target needs are never given a wrong scale:
 - a **live** row is filled with NaN and counted as `unresolved` (`noDescale`,
   `noSensitivity`). A row of counts beside rows in m/s would be millions of times too large
   for every step after it; NaN is what panel statistics, spectra and stacks already leave
-  out, and it stays in its row. The raw data is kept by the `src → dst` forms;
+  out, and it stays in its row. The raw data is kept by the `src → dst` forms. A factor
+  that, or whose inverse, does not fit a float32 (about 3e-39 to 3e38; real factors lie
+  near 1e-12 to 1e3) comes from a broken header or extreme entries and is not applied
+  either;
 - a **dead** row is converted when it can be, else kept;
 - an **auxiliary** row (pilot, time break) is converted to volts when its descale is known
   (`scaleAuxiliary`, on by default), and never given a sensitivity;
@@ -271,7 +274,9 @@ doAssertRaises(ValueError): discard flow.compile(float32, 2, 200)
 ## Writing calibrated data
 
 `uncalibrate` (and `uncalibrateOp`) is the inverse: rows back to counts with the same
-factors, to write an integer format with the input's descale. Physical samples written to
+factors, to write an integer format with the input's descale. In float32 the round trip
+holds to a few parts in 10⁷, so 24-bit counts come back within one count; process in
+float64 when the counts must come back exactly. Physical samples written to
 SEG-Y carry their unit with `segyUnitOverrides(unit)` (trace bytes 203-204 set, N and the
 transduction constant zero), and `fileScalesInto` reads them back as physical, so a
 calibration does not scale them twice.

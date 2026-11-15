@@ -1,4 +1,4 @@
-## Calibration cost (Phase 14) on a viewer panel, 2000 traces × 2001 samples
+## Calibration cost on a viewer panel, 2000 traces × 2001 samples
 ## of float32, one thread: resolving every row's factor (`resolveInto`), and
 ## converting the panel in place and `src → dst`, with a table of four rules
 ## (sensor types, one per-station rule) and a file-scale column.

@@ -168,9 +168,10 @@ Per row, `factor = descale / (10^(gain/20) · sensitivity)` (`ctVolts`: without 
 sensitivity). Each factor comes from the most specific matching rule (station > channel >
 channel set > component > sensor type > the catch-all rule) or from the file's `FileScale`
 column, in the order `fileFactors` sets; disagreements are flagged, never silent. Live rows
-without the factors their target needs become NaN; dead rows are converted when they can be
-and kept otherwise; auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not
-touched. Guide: [calibration](guide/calibration.md). Guide: [calibration](guide/calibration.md).
+without the factors their target needs, or whose factor is out of range (it or its inverse
+beyond a float32), become NaN; dead rows are converted when they can be and kept otherwise;
+auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guide:
+[calibration](guide/calibration.md).
 
 | Proc | What |
 |---|---|
@@ -178,7 +179,7 @@ touched. Guide: [calibration](guide/calibration.md). Guide: [calibration](guide/
 | `RuleMatch` (`sensorType`, `component`, `channelSet`, `channel`, `station`: unset by default), `$m` | Which rows a rule applies to: SEG-D sensor type, component, 0-based channel set, channel, receiver station (`some stationKey(line, point, index)`, index 0: any). |
 | `CalibrationRule` (`match`, `descale`, `sensitivity`, `gainDb`), `$r` | Any of the three factors for the matched rows; `gainDb` (NaN: none) is a recorder gain the descale does not hold, divided out. |
 | `Calibration` (`rules`, `target`, `fileFactors`, `scaleAuxiliary`); `initCalibration(rules = [], target = ctPhysical, fileFactors = ffFallback, scaleAuxiliary = true)`, `$c` | Plain data: the rules and how to apply them. |
-| `CalibrationPlan`; `initCalibrationPlan(cal)`, `plan.target` | Validated and indexed. `ValueError` (naming the rule) for a rule without a factor, a non-finite gain, a criterion out of range, two rules with the same criteria, or two catch-alls. |
+| `CalibrationPlan`; `initCalibrationPlan(cal)`, `plan.target` | Validated and indexed. `ValueError` (naming the rule) for a rule without a factor, a gain that is not finite or whose linear factor is not, a criterion out of range, two rules with the same criteria and values, or two catch-alls. |
 | `FactorSource` (`fsNone`, `fsRule`, `fsFile`), `CalibrationStatus` (`csConverted`, `csUnresolved`, `csKept`), `RowCalibration` (`factor`, `unit`, `status`, `descaleFrom`, `sensitivityFrom`, `descaleRule`, `sensitivityRule`, `gainRule`, `conflict`, `mismatch`) | How one row is calibrated: its factor (1 when kept, NaN when unresolved), unit, where each factor came from, and the flags. |
 | `CalibrationSummary` (`units`, `converted`, `unresolved`, `kept`, `noDescale`, `noSensitivity`, `conflicts`, `mismatches`), `$s` | Counts over the rows of a call. |
 | `plan.resolveInto(meta, rows: var openArray[RowCalibration]): CalibrationSummary` | Per row, without touching a sample: for a viewer's labels, warnings, or a GPU uniform. |
@@ -498,7 +499,7 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 
 | Proc | What |
 |---|---|
-| `fileScalesInto(f, traces: openArray[int] \| Slice[int], dst)`, `fileScalesInto(f, rows: TraceRows, dst)` | One `FileScale` per trace from its headers (SEG-D MP factor, Rev 3 descale multiplier and Sensor Info STY with its physical unit; SEG-Y bytes 169-170, 203-212; SEG-2 DESCALING_FACTOR / STACK), for a meta's `scales`. SEG-Y headers that are all zero are unknown, not volts. Allocates a little scratch; `ValueError` for a wrong `dst` length or a trace outside the file. |
+| `fileScalesInto(f, traces: openArray[int] \| Slice[int], dst)`, `fileScalesInto(f, rows: TraceRows, dst)` | One `FileScale` per trace from its headers (SEG-D MP factor, Rev 3 descale multiplier and Sensor Info STY with its physical unit, STY read as mV per unit: an assumption, see the module; SEG-Y bytes 169-170, 203-212; SEG-2 DESCALING_FACTOR / STACK), for a meta's `scales`. SEG-Y headers that are all zero are unknown, not volts. Allocates a little scratch; `ValueError` for a wrong `dst` length or a trace outside the file. |
 | `ScaleGroup` (`first`, `count`, `channelSet`, `fields`, `scale`); `scaleReport(f[, traces: Slice[int]])`, `$g` | The raw scale headers of the traces, grouped by distinct values (with the gain fields: SEG-Y 119-124, SEG-2 FIXED_GAIN, the SEG-D format code), and the `FileScale` they give: to check a file before calibrating. |
 | `segyUnitOverrides(unit): seq[HeaderOverride]` | The SEG-Y trace header values stating samples in `unit` (203-204 set; 169-170 and 205-212 zero), for parseSEG's `writeTrace`; `fileScalesInto` reads them back as physical. |
 

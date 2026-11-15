@@ -113,5 +113,11 @@ block refusals:
     doAssertRaises(ValueError):
       discard openCircuitSensitivity(20, suVPerMPerS, 400, 1000, inputOhms = bad)
   doAssertRaises(ValueError): discard openCircuitSensitivity(0, suVPerMPerS, 400, 1000)
+  # Values and resistances valid one by one whose effective value overflows,
+  # or underflows to 0 (a zero sensitivity would divide by zero).
+  doAssertRaises(ValueError):
+    discard openCircuitSensitivity(1e300, suVPerMPerS, 0, 1000, inSeries = 1_000_000_000)
+  doAssertRaises(ValueError):
+    discard openCircuitSensitivity(1e-300, suVPerMPerS, coilOhms = 1e300, shuntOhms = 1e-10)
   doAssertRaises(ValueError): discard Sensitivity().valueIn(suVPerMPerS)
   doAssertRaises(ValueError): discard Descale().valueIn(duVPerCount)

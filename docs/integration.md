@@ -357,9 +357,10 @@ A calibration turns counts into volts or into ground motion and pressure, per ro
 
 For the viewer:
 
-- **On opening a file**, show `f.scaleReport()` (what the headers say, grouped per channel
-  set or per distinct header combination) so the user can check it against the recorder's
-  and the sensor's documentation before choosing a table.
+- **On opening a file**, show `f.scaleReport(traces)` for one record's traces (what the
+  headers say, grouped per channel set or per distinct header combination) so the user can
+  check it against the recorder's and the sensor's documentation before choosing a table.
+  It reads the headers of every trace it is given: a record, not the whole file.
 - **Per raw cache entry**, fill the column once, when the chunk arrives:
   `f.fileScalesInto(c.rows, entry.scales)`, and build metas with `chunkMeta(c, scales =
   entry.scales)`. Keep the column with the entry, like `failedRows`; refill it after a

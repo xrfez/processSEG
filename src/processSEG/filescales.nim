@@ -20,17 +20,21 @@
 ## - **SEG-D Rev 3:** the channel set's descale multiplier (DSM, mV per count;
 ##   0 or NaN is unknown here, where parseSEG's `descaleFactor` gives 1), and
 ##   the trace's Sensor Info block (0x41) sensor sensitivity STY, 0 =
-##   unknown, in mV per physical unit, as SEG-D 3.0 defines the physical
-##   value `sample · DSM / STY`; the unit is THE#1 byte 31, else the channel
-##   set's byte 62 (millibar, bar, mm/s, m/s, mm/s², m/s², Pa, µPa; others
-##   are unknown). A unit without a sensitivity is kept in `FileScale.unit`,
-##   so a rule giving a sensitivity of another quantity is flagged. The block is read through parseSEG's `traceHeaders`
-##   listing, which allocates: about microseconds per trace, only for traces
-##   with extension blocks after THE#1.
+##   unknown, taken as mV per physical unit: SEG-D 3.0 gives the physical
+##   value as `sample · DSM / STY`, but its Sensor Info table says only
+##   `sample / STY`. This reading is an **assumption**, not yet checked
+##   against a recorder's file that has the block. The unit is THE#1 byte
+##   31, else the channel set's byte 62 (millibar, bar, mm/s, m/s, mm/s²,
+##   m/s², Pa, µPa; others are unknown). A unit without a sensitivity is
+##   kept in `FileScale.unit`, so a rule giving a sensitivity of another
+##   quantity is flagged. The block is read through parseSEG's
+##   `traceHeaders` listing, which allocates: about microseconds per trace,
+##   only for traces with extension blocks after THE#1.
 ## - **SEG-Y:** trace bytes 169-170 (N, the trace weighting factor: one count
 ##   is 2^−N), 203-204 (the trace value unit), 205-212 (the transduction
 ##   constant `C`, mantissa × 10^exponent, and its units): the physical value
-##   is `sample · 2^−N · C`. A count is `2^−N` of the value unit (V or mV); a
+##   is taken as `sample · 2^−N · C` (N applied before C: the standard does
+##   not say, and N is 0 in most files). A count is `2^−N` of the value unit (V or mV); a
 ##   value unit of Pa, m/s or m/s² makes the samples already physical
 ##   (`FileScale.physical`). A value unit of 0 (unknown) is volts only when
 ##   N ≠ 0 (Rev 1 defines N as the LSB in volts); the standard reads headers

@@ -63,6 +63,16 @@ block precedence_ladder:
     doAssert rc[0].status == csUnresolved and s.unresolved == 1 and s.noDescale == 1
     doAssert rc[0].sensitivityRule == 0, $first & ": " & $rc[0].sensitivityRule
     doAssert rc[0].sensitivityFrom == fsRule
+  # The order of the list does not matter: the same rules, least specific
+  # first, give the station and channel rule (now the last but one).
+  var reversed: seq[CalibrationRule]
+  for i in countdown(matches.len - 1, 0):
+    reversed.add CalibrationRule(match: matches[i], sensitivity: sensitivity(sens[i], suVPerMPerS))
+  reversed.add CalibrationRule(match: RuleMatch(sensorType: 99), descale: d1)
+  block:
+    var rc = newSeq[RowCalibration](1)
+    discard initCalibrationPlan(initCalibration(reversed)).resolveInto(meta, rc)
+    doAssert rc[0].sensitivityRule == matches.len - 1, $rc[0].sensitivityRule
   # Independent factors: the descale from the catch-all, the sensitivity
   # from the station rule, the gain from the sensor-type rule.
   let plan = initCalibrationPlan(initCalibration([
@@ -249,6 +259,16 @@ block gain_and_mismatch:
   doAssert rc[0].mismatch and rc[0].status == csConverted
   discard initCalibrationPlan(initCalibration([CalibrationRule(sensitivity: hyd)])).resolveInto(m2, rc)
   doAssert not rc[0].mismatch
+  # An accelerometer (sensor type 7): a V/g figure fits it, a V/(m/s) one does not.
+  var k3: seq[TraceKeys]
+  var c3: seq[int]
+  let m3 = oneRow(stationKeys(7), c3, k3)
+  discard initCalibrationPlan(initCalibration([CalibrationRule(descale: d1,
+    sensitivity: sensitivity(1, suVPerG))])).resolveInto(m3, rc)
+  doAssert not rc[0].mismatch and rc[0].unit == auAcceleration
+  discard initCalibrationPlan(initCalibration([CalibrationRule(descale: d1,
+    sensitivity: geo)])).resolveInto(m3, rc)
+  doAssert rc[0].mismatch
   # A negative gain (attenuation the descale does not hold) multiplies.
   discard initCalibrationPlan(initCalibration([CalibrationRule(descale: d1, sensitivity: hyd,
     gainDb: -20)])).resolveInto(meta, rc)
@@ -365,6 +385,10 @@ block refusals:
       discard initCalibrationPlan(initCalibration([CalibrationRule(match: bad, descale: d1)]))
   doAssertRaises(ValueError):
     discard initCalibrationPlan(initCalibration([CalibrationRule(descale: d1, gainDb: Inf)]))
+  # A finite gain whose linear factor overflows (or underflows to 0) in float64.
+  for g in [1e4, -1e4]:
+    doAssertRaises(ValueError):
+      discard initCalibrationPlan(initCalibration([CalibrationRule(descale: d1, gainDb: g)]))
   # Different criteria sets that could match the same row are not a duplicate.
   discard initCalibrationPlan(initCalibration([
     CalibrationRule(match: RuleMatch(sensorType: 2), descale: d1),
@@ -400,6 +424,42 @@ block sub_meta_and_printing:
   doAssert $CalibrationSummary(converted: 2, units: [auRecorded: 0, auVolt: 0,
     auVelocity: 2, auAcceleration: 0, auPressure: 0]) ==
     "2 converted (2 m/s), 0 unresolved, 0 kept"
+
+block out_of_range_factors:
+  # A factor that does not fit a float32, or whose inverse does not, comes
+  # from a broken header or extreme entries: it is never applied, so no row
+  # becomes ±Inf. File columns whose factor overflows float64 (2^1023 V/count
+  # over 1e-307 V/(m/s), as SEG-Y N = −1023 with a transduction of 1e307
+  # gives), overflows float32 (3.4e35 over 1e-30), and is below float32's
+  # range (1e-30 over 1e10); then a dead row with one.
+  var keys = @[stationKeys(), stationKeys(), stationKeys(), stationKeys()]
+  keys[3].status = tsDead
+  let counts = @[cols, cols, cols, cols]
+  let scales = @[FileScale(descale: pow(2.0, 1023), sensitivity: 1e-307, unit: auVelocity),
+    FileScale(descale: 3.4e35, sensitivity: 1e-30, unit: auVelocity),
+    FileScale(descale: 1e-30, sensitivity: 1e10, unit: auVelocity),
+    FileScale(descale: 3.4e35, sensitivity: 1e-30, unit: auVelocity)]
+  let meta = initChunkMeta(rowsOf(keys, counts), dtMs = 2, scales = scales)
+  let plan = initCalibrationPlan(initCalibration())
+  var rc = newSeq[RowCalibration](4)
+  let s = plan.resolveInto(meta, rc)
+  doAssert s.unresolved == 3 and s.kept == 1 and s.converted == 0, $s
+  for r in 0 .. 2: doAssert rc[r].status == csUnresolved and rc[r].factor.isNaN, $r
+  doAssert rc[3].status == csKept and rc[3].factor == 1
+  var x32 = newTensor[float32](4, cols)
+  var x64 = block64(4)
+  for r in 0 ..< 4:
+    for c in 0 ..< cols: x32[r, c] = 1000
+  doAssert plan.calibrate(x32, meta) == s and plan.calibrate(x64, meta) == s
+  for c in 0 ..< cols:
+    for r in 0 .. 2: doAssert x32[r, c].isNaN and x64[r, c].isNaN
+    doAssert x32[3, c] == 1000 and x64[3, c] == 1000
+  # Entries valid one by one whose ratio overflows: the same.
+  let extreme = initCalibrationPlan(initCalibration([CalibrationRule(
+    descale: descale(1e300, duVPerCount), sensitivity: sensitivity(1e-300, suVPerMPerS))],
+    fileFactors = ffIgnore))
+  discard extreme.resolveInto(meta, rc)
+  doAssert rc[0].status == csUnresolved and rc[0].factor.isNaN
 
 block no_allocation:
   var keys = newSeq[TraceKeys](64)
