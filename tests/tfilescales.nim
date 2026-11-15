@@ -19,7 +19,7 @@ block segd_rev2:
   var f = openSeismic(rev2Path(), keys = true)
   doAssert f.len == 6
   let s = scalesOf(f)
-  doAssert closeTo(s[0].descale, 1e-3)                    # MP 0: 1 mV
+  doAssert closeTo(s[0].descale, 1e-3) # MP 0: 1 mV
   for t in 1 .. 3: doAssert closeTo(s[t].descale, pow(2.0, -10) * 1e-3)
   for t in 4 .. 5: doAssert closeTo(s[t].descale, pow(2.0, 3.5) * 1e-3)
   for t in 0 .. 5: doAssert s[t].sensitivity.isNaN and s[t].unit == auRecorded and not s[t].physical
@@ -38,12 +38,12 @@ block segd_rev3:
   var f = openSeismic(rev3Path(), keys = true)
   doAssert f.len == 5
   let s = scalesOf(f)
-  doAssert s[0].descale.isNaN                              # DSM 0: unknown, not 1
+  doAssert s[0].descale.isNaN # DSM 0: unknown, not 1
   for t in 1 .. 2:
-    doAssert closeTo(s[t].descale, 1.5e-7)                # 1.5e-4 mV
+    doAssert closeTo(s[t].descale, 1.5e-7) # 1.5e-4 mV
     doAssert closeTo(s[t].sensitivity, 20) and s[t].unit == auVelocity # 20 mV per mm/s
   doAssert closeTo(s[3].descale, 2e-7) and closeTo(s[3].sensitivity, 2e-4)
-  doAssert s[3].unit == auPressure                        # the channel set's unit
+  doAssert s[3].unit == auPressure # the channel set's unit
   doAssert closeTo(s[4].descale, 2e-7) and s[4].sensitivity.isNaN # STY 0
   doAssert s[4].unit == auPressure and s[0].unit == auRecorded # the unit without a sensitivity
   doAssert $s[4] == "2e-07 V/count, no sensitivity (the headers name Pa)", $s[4]
@@ -71,10 +71,10 @@ block segd_rev3:
       let t = c.rows.traceOf(r)
       let v = c.samples[r, 10]
       case t
-      of 0: doAssert v == rowValue(0)                     # auxiliary, no descale: kept
+      of 0: doAssert v == rowValue(0) # auxiliary, no descale: kept
       of 1, 2: doAssert closeTo(v, rowValue(t) * 1.5e-7 / 20)
       of 3: doAssert closeTo(v, rowValue(t) * 2e-7 / 2e-4)
-      else: doAssert v.isNaN                              # no sensitivity anywhere
+      else: doAssert v.isNaN # no sensitivity anywhere
       inc seen
   p.close()
   doAssert seen == 5
@@ -95,7 +95,7 @@ block segy:
   var f = openSeismic(segyPath(), keys = true)
   doAssert f.len == segyCases.len
   let s = scalesOf(f)
-  doAssert s[0].descale.isNaN and s[0].sensitivity.isNaN   # nothing set: unknown
+  doAssert s[0].descale.isNaN and s[0].sensitivity.isNaN # nothing set: unknown
   doAssert s[1].descale == pow(2.0, -20) and s[1].sensitivity.isNaN
   doAssert closeTo(s[2].descale, pow(2.0, -10) * 1e-3)
   doAssert s[3].descale == pow(2.0, -10) and closeTo(s[3].sensitivity, 0.02)
@@ -123,7 +123,7 @@ block seg2:
   doAssert closeTo(s[0].descale, 0.25e-3) and s[1].descale.isNaN and closeTo(s[2].descale, 1e-6)
   let rep = f.scaleReport()
   doAssert rep.len == 3 and ("trace.STACK", 2.0) in rep[0].fields
-  doAssert rep[1].fields[0][1].isNaN                       # no DESCALING_FACTOR
+  doAssert rep[1].fields[0][1].isNaN # no DESCALING_FACTOR
   f.close()
 
 block write_physical_and_read_back:

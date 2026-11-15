@@ -12,18 +12,26 @@
 ## (`ctPhysical`, in m/s, m/s² or Pa; `ctVolts` leaves out the sensitivity),
 ## where `gain` is a recorder gain in dB that the descale does not include.
 ##
+## The case it was built for is a marine node whose recorder writes counts:
+## a hydrophone and three geophones per unit, so a table by component:
+##
 ## ```nim
 ## let cal = initCalibration([
-##   CalibrationRule(match: RuleMatch(sensorType: 1),          # hydrophones
-##                   sensitivity: sensitivity(20, suVPerBar)),
-##   CalibrationRule(match: RuleMatch(sensorType: 2),          # vertical geophones
-##                   sensitivity: sensitivity(22.5, suVPerMPerS)),
-##   CalibrationRule(descale: descale(0.5, duMicroVPerCount))]) # every row
+##   CalibrationRule(match: RuleMatch(component: 1),           # the hydrophone
+##                   sensitivity: sensitivity(-192, suDbReVPerMicroPa)),
+##   CalibrationRule(match: RuleMatch(component: 2),           # vertical geophone
+##                   sensitivity: sensitivity(28.8, suVPerMPerS)),
+##   CalibrationRule(match: RuleMatch(component: 3), sensitivity: sensitivity(28.5, suVPerMPerS)),
+##   CalibrationRule(match: RuleMatch(component: 4), sensitivity: sensitivity(28.6, suVPerMPerS)),
+##   CalibrationRule(descale: descale(0.298, duMicroVPerCount))]) # every row
 ## let plan = initCalibrationPlan(cal)          # validates; ValueError
 ## var rows = newSeq[RowCalibration](meta.len)
 ## let summary = plan.resolveInto(meta, rows)   # per row: factor, unit, where from
 ## plan.calibrate(samples, meta)                # in place
 ## ```
+##
+## Nothing here costs a caller who does not calibrate: the meta's `scales`
+## are optional, and a pipeline without `calibrateOp` has no calibration step.
 ##
 ## **Where the factors come from.** A `Calibration` holds the caller's rules;
 ## each `CalibrationRule` matches rows by any of SEG-D sensor type,
@@ -125,7 +133,7 @@ type
     ## unset `descale` or `sensitivity` (the default) and a NaN `gainDb` give
     ## none, and that factor comes from elsewhere.
     match*: RuleMatch
-    descale*: Descale         ## Volts per count (`descale(value, unit)`).
+    descale*: Descale ## Volts per count (`descale(value, unit)`).
     sensitivity*: Sensitivity ## As wired (`sensitivity`, `openCircuitSensitivity`).
     gainDb*: float64 = NaN
       ## A recorder gain the descale does not include, in dB: the samples are
@@ -173,7 +181,7 @@ type
 
   CalibrationSummary* = object
     ## Counts over the rows of one `resolveInto` (or `calibrate`) call.
-    units*: array[AmplitudeUnit, int] ## Rows by unit after calibration (kept rows: `auRecorded`).
+    units*: array[AmplitudeUnit, int]   ## Rows by unit after calibration (kept rows: `auRecorded`).
     converted*, unresolved*, kept*: int ## Rows by status.
     noDescale*, noSensitivity*: int
       ## Live rows unresolved for want of a descale, or (`ctPhysical`) of a
@@ -182,7 +190,7 @@ type
 
   RatioRange* = object
     ## The range of `ratioDbInto`'s per-row ratios.
-    rows*: int            ## Rows converted, to the same unit, by both plans.
+    rows*: int              ## Rows converted, to the same unit, by both plans.
     minDb*, maxDb*: float64 ## NaN when `rows` is 0.
 
   MatchKey = object
@@ -199,7 +207,7 @@ type
     fileFactors: FileFactors
     scaleAux: bool
     classes: seq[uint8] # criteria sets of the specific rules, most specific first
-    catchAll: int       # the rule without criteria, -1 when there is none
+    catchAll: int # the rule without criteria, -1 when there is none
     index: Table[MatchKey, int]
     descale, sens, gain: seq[float64] # per rule; NaN when it gives none (gain: linear)
     sensUnit: seq[AmplitudeUnit]
@@ -449,8 +457,8 @@ func resolveRow(p: CalibrationPlan, meta: ChunkMeta, row: int): RowCalibration {
       pick(fileS, fs.sensitivity, spec.s, rs, sens, s, result.sensitivityFrom,
         result.sensitivityRule)
       sUnit = (if result.sensitivityFrom == fsFile: fs.unit
-               elif result.sensitivityRule >= 0: p.sensUnit[result.sensitivityRule]
-               else: auRecorded)
+        elif result.sensitivityRule >= 0: p.sensUnit[result.sensitivityRule]
+        else: auRecorded)
     # A conflict: the file and a rule both give a factor, and they differ.
     if fileD and rd >= 0 and differs(fs.descale, p.descale[rd]): result.conflict = true
     if wantS and fileS and rs >= 0 and

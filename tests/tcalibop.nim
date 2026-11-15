@@ -203,18 +203,29 @@ block uncalibrate_in_a_flow:
 
 block pool_with_file_scales:
   # The pool splits the rows; each worker's meta must keep its rows' scales.
-  let raw = rawPanel()
-  let plan = initPipeline([calibrateOp(cal), demeanOp()]).compile(float32, dt, cols)
+  # Rows 8000 samples wide (live for 300) make runs of 8 rows (256 KB), so
+  # the workers get rows 8 .. 15 and 16 .. 23, whose file descales differ.
+  const wide = 8000
+  var raw = newTensor[float32](rows, wide)
+  let narrow = rawPanel()
+  for r in 0 ..< rows:
+    for j in 0 ..< cols: raw[r, j] = narrow[r, j]
+  let plan = initPipeline([calibrateOp(cal), demeanOp()]).compile(float32, dt, wide)
   var ws = initWorkspace()
   ws.reserve(plan)
-  var one = newTensor[float32](rows, cols)
+  var one = newTensor[float32](rows, wide)
   plan.apply(raw, one, meta, ws)
   var pool = newProcessPool(workers = 4)
-  var many = newTensor[float32](rows, cols)
+  var many = newTensor[float32](rows, wide)
   pool.apply(plan, raw, many, meta)
+  # The reference: the kernels on the whole block, with no sub-metas.
+  var hand = raw.clone
+  discard initCalibrationPlan(cal).calibrate(hand, meta)
+  hand.demean(meta)
   for r in 0 ..< rows:
-    for j in 0 ..< cols:
-      doAssert (one[r, j].isNaN and many[r, j].isNaN) or one[r, j] == many[r, j]
+    for j in 0 ..< wide:
+      doAssert (one[r, j].isNaN and many[r, j].isNaN) or one[r, j] == many[r, j], $r & " " & $j
+      doAssert (one[r, j].isNaN and hand[r, j].isNaN) or one[r, j] == hand[r, j], $r & " " & $j
 
 block no_allocation_per_apply:
   let raw = rawPanel()

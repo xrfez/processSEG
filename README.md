@@ -9,6 +9,10 @@ with no hidden allocation and no hidden threads.
   phase.
 - **Gain:** fixed dB, per-trace or per-panel normalization (max, RMS, percentile), AGC,
   time-variant curves (knots, tᵖ, exponential); statistics for GPU uniforms; spectra.
+- **Physical units:** recorded counts to volts, then to m/s, m/s² or Pa per row, from the
+  file's own descale and sensitivity headers and a sensor table entered with its units (by
+  sensor type, component, channel set, channel or unit), with a report of what a file's
+  headers say; the inverse for writing counts.
 - **Pipelines:** an editable list of ops compiled once to a plan, applied in place or
   src → dst, with the sample margin a zoom window needs; a persistent `ProcessPool`
   runs a plan across cores.
@@ -29,7 +33,8 @@ with no hidden allocation and no hidden threads.
   field records checked against the XPS by station (missing, unlisted, mismatched records),
   and amplitude QC per trace and record (dead, clipped, spiky, DC, weak, noisy traces).
 
-float32 and float64 throughout; units are ms, Hz, dB and distance units per second.
+float32 and float64 throughout; units are ms, Hz, dB and distance units per second, and
+amplitudes are as recorded until calibrated to V, m/s, m/s² or Pa.
 
 ## Quick start
 

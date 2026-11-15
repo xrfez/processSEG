@@ -54,9 +54,9 @@ import core/units
 type
   ScaleGroup* = object
     ## Traces whose scale headers hold the same values (`scaleReport`).
-    first*: int      ## The first of them.
-    count*: int      ## How many of the traces asked about.
-    channelSet*: int ## The 0-based SEG-D channel set; -1 for SEG-Y and SEG-2.
+    first*: int       ## The first of them.
+    count*: int       ## How many of the traces asked about.
+    channelSet*: int  ## The 0-based SEG-D channel set; -1 for SEG-Y and SEG-2.
     fields*: seq[(string, float64)]
       ## The header values as read, named as parseSEG names them
       ## (`trace.transductionMantissa`, `ext1.physicalUnit`; channel set
@@ -68,14 +68,14 @@ func physicalUnitOf(code: int): (AmplitudeUnit, float64) =
   # A SEG-D Rev 3 physical unit (CSD byte 62, THE#1 byte 31): the quantity and
   # SI units per unit.
   case code
-  of 0x01: (auPressure, 100.0)       # millibar
-  of 0x02: (auPressure, 1e5)         # bar
-  of 0x03: (auVelocity, 1e-3)        # mm/s
-  of 0x04: (auVelocity, 1.0)         # m/s
-  of 0x05: (auAcceleration, 1e-3)    # mm/s²
-  of 0x06: (auAcceleration, 1.0)     # m/s²
-  of 0x12: (auPressure, 1.0)         # Pa
-  of 0x13: (auPressure, 1e-6)        # µPa
+  of 0x01: (auPressure, 100.0) # millibar
+  of 0x02: (auPressure, 1e5) # bar
+  of 0x03: (auVelocity, 1e-3) # mm/s
+  of 0x04: (auVelocity, 1.0) # m/s
+  of 0x05: (auAcceleration, 1e-3) # mm/s²
+  of 0x06: (auAcceleration, 1.0) # m/s²
+  of 0x12: (auPressure, 1.0) # Pa
+  of 0x13: (auPressure, 1e-6) # µPa
   else: (auRecorded, NaN)
 
 func segyQuantity(code: int): AmplitudeUnit =

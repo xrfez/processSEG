@@ -50,21 +50,21 @@ import std/[math, strutils]
 type
   AmplitudeUnit* = enum
     ## The unit of a row's samples.
-    auRecorded = "recorded"   ## As decoded from the file: counts, or units its headers do not state.
-    auVolt = "V"              ## Volts at the recorder's input (the sensor's output).
-    auVelocity = "m/s"        ## Particle velocity (geophones).
-    auAcceleration = "m/s²"   ## Acceleration (accelerometers).
-    auPressure = "Pa"         ## Pressure (hydrophones).
+    auRecorded = "recorded"  ## As decoded from the file: counts, or units its headers do not state.
+    auVolt = "V"             ## Volts at the recorder's input (the sensor's output).
+    auVelocity = "m/s"       ## Particle velocity (geophones).
+    auAcceleration = "m/s²" ## Acceleration (accelerometers).
+    auPressure = "Pa"        ## Pressure (hydrophones).
 
   SensitivityUnit* = enum
     ## The unit a sensitivity is entered in. `$` gives its symbol.
-    suVPerMPerS = "V/(m/s)"            ## Volts per metre per second.
-    suVPerInPerS = "V/(in/s)"          ## Volts per inch per second.
-    suVPerMPerS2 = "V/(m/s²)"          ## Volts per metre per second squared.
-    suVPerG = "V/g"                    ## Volts per standard gravity (9.80665 m/s²).
-    suVPerBar = "V/bar"                ## Volts per bar (10⁵ Pa).
-    suVPerPa = "V/Pa"                  ## Volts per pascal.
-    suMicroVPerPa = "µV/Pa"            ## Microvolts per pascal.
+    suVPerMPerS = "V/(m/s)"              ## Volts per metre per second.
+    suVPerInPerS = "V/(in/s)"            ## Volts per inch per second.
+    suVPerMPerS2 = "V/(m/s²)"           ## Volts per metre per second squared.
+    suVPerG = "V/g"                      ## Volts per standard gravity (9.80665 m/s²).
+    suVPerBar = "V/bar"                  ## Volts per bar (10⁵ Pa).
+    suVPerPa = "V/Pa"                    ## Volts per pascal.
+    suMicroVPerPa = "µV/Pa"             ## Microvolts per pascal.
     suDbReVPerMicroPa = "dB re 1 V/µPa" ## Decibels relative to 1 V per micropascal.
 
   SensitivityForm* = enum
@@ -80,7 +80,7 @@ type
     form: SensitivityForm
     unit: AmplitudeUnit
     voltsPerUnit: float64 # the effective value, SI
-    entered: float64      # the value as entered, in `enteredUnit`
+    entered: float64 # the value as entered, in `enteredUnit`
     enteredUnit: SensitivityUnit
     coilOhms, shuntOhms, inputOhms: float64
     inSeries, inParallel: int

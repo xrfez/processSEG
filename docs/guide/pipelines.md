@@ -5,7 +5,8 @@ the flow as plain data (`Pipeline`), compiles it once per sample interval and wi
 (`PipelinePlan`), and applies the plan with no allocation, on one thread or across a
 `ProcessPool`. [integration.md](../integration.md#plans-and-buffers-the-interactive-loop)
 is the viewer contract (stale buffers, raw caches, what allocates); this page shows the
-calls.
+calls. To work in physical units, put `calibrateOp` first in the flow
+([calibration.md](calibration.md#in-a-pipeline)).
 
 ## Build, compile, apply
 

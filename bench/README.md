@@ -173,6 +173,32 @@ AGC and normalization (same run, 1 thread):
   every range (no gathers), 6.3 / 6.7 / 6.7; two blocks per iteration of the block sums
   and the 2026-11-13 run, 4.5 / 5.1 / 6.8.
 
+## Calibration (Phase 14)
+
+`bench/bcalibrate.nim`, built with the `nim bench` flags (`-d:danger --opt:speed
+--debuginfo:on --linedir:on -march=x86-64-v3`), one thread, a panel of 2000 traces × 2001
+samples of float32, four rules (two sensor types, a component, one station and channel) and
+a file-scale column, 2026-11-15, AMD Ryzen 9 3950X, Nim 2.4.2, gcc 12.2.0. **Measured on a
+shared machine** (other sessions compiling, load average 20 to 40), so these are upper
+bounds; the first run had the lighter load.
+
+| operation | panel (median), first run | second run |
+|---|---|---|
+| `resolveInto` (every row's factor, no sample touched) | 0.17 ms (83 ns a row) | 0.26 ms |
+| `calibrate` in place, per pass | 0.93 ms (34 GB/s) | 1.98 ms |
+| `calibrateInto` (`src → dst`) | 1.37 ms (23 GB/s) | 2.52 ms |
+| pipeline `calibrateOp` + `demeanOp`, `src → dst` | 2.97 ms | 3.86 ms |
+
+- The multiply is `scale` in place and `scaleInto` across buffers, both packed
+  (`tests/tvectorized.nim`); resolving a row is a hash lookup per criteria set the rules use
+  (here three), about a tenth of the conversion. Against `bmemory` (copy 0.59 ms, scale in
+  place 0.33 ms on a quiet machine) the conversion runs at about a third of the cache
+  bandwidth under this load; re-measure on a quiet machine before quoting it.
+- Filling a chunk's `FileScale` column (`fileScalesInto`, `tests/tfilescales.nim`, release):
+  SEG-Y, SEG-2 and SEG-D Rev 1/2 are column reads; SEG-D Rev 3 traces with extension blocks
+  go through parseSEG's header listing, 2.7 µs a trace on a synthetic record with one Sensor
+  Info block and 5 µs on the example files' 3957-trace shot (20 ms).
+
 ## Process pool (task 5.2)
 
 `nim bench` (bench/bpool.nim), same machine and flags. The pool is created once, outside

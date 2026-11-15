@@ -17,7 +17,7 @@ const
   kernels = ["sum64", "sumIndexed64", "demean", "detrend", "scale", "clip",
     "reversePolarity", "taperPads",
     # Calibration: a row times its factor into another buffer (in place it
-    # is `scale`).
+      # is `scale`).
     "scaleInto",
     # FFT (instances of the lanes path only: the one-trace path, L = 1, is
       # scalar by design). The butterflies are inlined into the passes, the

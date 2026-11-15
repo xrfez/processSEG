@@ -91,28 +91,28 @@ import gain/[curves, gain]
 type
   OpKind* = enum
     ## The kind of an `Op`.
-    opDemean     ## remove the mean (`demeanOp`)
-    opDetrend    ## remove a least-squares line (`detrendOp`)
-    opScale      ## multiply by a factor (`scaleOp`)
-    opGainDb     ## a fixed gain in dB (`gainDbOp`)
-    opClip       ## clip to `lo .. hi` (`clipOp`)
-    opPolarity   ## reverse the polarity (`polarityOp`)
-    opMuteTop    ## a top mute (`muteTopOp`)
-    opMuteBottom ## a bottom mute (`muteBottomOp`)
-    opFilter     ## a zero-phase FFT filter (`filterOp`, `bandPassOp`)
-    opIir        ## a Butterworth biquad filter (`iirOp`)
-    opAgc        ## automatic gain control (`agcOp`)
-    opNormalize  ## normalization per trace or panel (`normalizeOp`)
-    opGainCurve  ## a time-variant gain (`gainCurveOp`)
-    opCalibrate  ## recorded values to volts or physical units (`calibrateOp`)
+    opDemean      ## remove the mean (`demeanOp`)
+    opDetrend     ## remove a least-squares line (`detrendOp`)
+    opScale       ## multiply by a factor (`scaleOp`)
+    opGainDb      ## a fixed gain in dB (`gainDbOp`)
+    opClip        ## clip to `lo .. hi` (`clipOp`)
+    opPolarity    ## reverse the polarity (`polarityOp`)
+    opMuteTop     ## a top mute (`muteTopOp`)
+    opMuteBottom  ## a bottom mute (`muteBottomOp`)
+    opFilter      ## a zero-phase FFT filter (`filterOp`, `bandPassOp`)
+    opIir         ## a Butterworth biquad filter (`iirOp`)
+    opAgc         ## automatic gain control (`agcOp`)
+    opNormalize   ## normalization per trace or panel (`normalizeOp`)
+    opGainCurve   ## a time-variant gain (`gainCurveOp`)
+    opCalibrate   ## recorded values to volts or physical units (`calibrateOp`)
     opUncalibrate ## the inverse, back to recorded values (`uncalibrateOp`)
 
   PlanAmplitude* = enum
     ## What a plan's output amplitudes are (`amplitudeUnits`), for input in
     ## recorded values.
-    paRecorded = "recorded"     ## As recorded: no calibration op (or one undone).
+    paRecorded = "recorded" ## As recorded: no calibration op (or one undone).
     paCalibrated = "calibrated" ## In the per-row units of the calibration (`resolveInto`).
-    paRelative = "relative"     ## Calibrated, then changed by a gain, AGC, normalization, scale or clip.
+    paRelative = "relative" ## Calibrated, then changed by a gain, AGC, normalization, scale or clip.
 
   ClipParams* = object
     ## The limits of an `opClip`.

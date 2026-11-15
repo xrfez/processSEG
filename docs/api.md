@@ -52,7 +52,8 @@ These hold throughout; a row below only mentions what departs from them.
   be finite and positive.
 - **Units.** Time in ms, frequency in Hz, gain in dB, velocity in distance units per
   second, with distance in the file's coordinate units (`summary.coordinateUnits`); no
-  feet/metres conversion happens.
+  feet/metres conversion happens. Amplitudes are as recorded until a calibration converts
+  them, per row, to V, m/s, m/s² or Pa (`core/calibrate`).
 - **Time axis.** Sample `j` of row `r` is at `t0Ms[r] + (firstSample + j) · dtMs`
   (`ChunkMeta.sampleTimeMs`), where `firstSample` is the origin of a decoded sample window
   (0 for whole traces).
@@ -148,7 +149,7 @@ Each op has a row kernel `op(x: var openArray[T], ...)` and block forms
 
 Values are entered with their units and held in SI. Enter a sensor's sensitivity as it holds
 wired to the recorder (the damped figure for a shunted geophone); it holds in the flat band
-above the sensor's natural frequency only.
+above the sensor's natural frequency only. Guide: [calibration](guide/calibration.md).
 
 | Proc | What |
 |---|---|
@@ -169,7 +170,7 @@ channel set > component > sensor type > the catch-all rule) or from the file's `
 column, in the order `fileFactors` sets; disagreements are flagged, never silent. Live rows
 without the factors their target needs become NaN; dead rows are converted when they can be
 and kept otherwise; auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not
-touched. Guide: [calibration](guide/calibration.md).
+touched. Guide: [calibration](guide/calibration.md). Guide: [calibration](guide/calibration.md).
 
 | Proc | What |
 |---|---|

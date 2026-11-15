@@ -80,7 +80,9 @@ Every per-trace value is read from parseSEG's `TraceRows` view when it is needed
   with `uniformRuns`. The adapter checks that the rows' `intervalUs` agree and raises
   `ValueError` on a mixed chunk.
 - **`ChunkMeta`** is `{rows: TraceRows, dtMs, firstSample, failed}`, built and validated
-  once by `initChunkMeta(rows, dtMs, firstSample = 0, failed = [])` (the adapters call it).
+  once by `initChunkMeta(rows, dtMs, firstSample = 0, failed = [], scales = [])` (the
+  adapters call it), and may point at a caller's per-row `FileScale` column (`scales`, for
+  a calibration: "Physical units" below).
   Its fields are read through accessors (`rows`, `len`, `dtMs`, `firstSample`,
   `failedCount`, `failedRow(i)`), so a meta cannot be changed after it was checked, and
   `checkShape(meta, samples)` checks a tensor against it:
@@ -116,7 +118,9 @@ Every per-trace value is read from parseSEG's `TraceRows` view when it is needed
   default for an unknown key.
 - **Units:** time in ms, frequency in Hz, gain in dB, and velocity in distance units per
   second, with distance in the file's coordinate units (`summary.coordinateUnits`).
-  processSEG never converts feet and metres silently.
+  processSEG never converts feet and metres silently. Samples are as recorded (counts, or
+  what the file stores) until a calibration converts them; then they are SI: V, m/s,
+  m/s² or Pa, per row (`AmplitudeUnit`).
 - **Errors:** as in parseSEG. A bad argument (an empty band, a negative window) raises
   `ValueError` when the plan is built, not per chunk; a bad `ChunkMeta` raises when it is
   built. Applying a valid plan does not raise. NaN or Inf in the input stays local to its
@@ -178,9 +182,10 @@ plan.apply(samples, meta, ws)             # in place
 flow[2].agc.windowMs = 300                # a slider moved: edit the op, recompile
 ```
 
-- **Ops** are plain data: an `Op` variant built by `demeanOp`, `detrendOp`, `scaleOp`,
-  `gainDbOp`, `clipOp`, `polarityOp`, `muteTopOp`, `muteBottomOp`, `filterOp`
-  (`bandPassOp` for the common case), `iirOp`, `agcOp`, `normalizeOp` and `gainCurveOp`.
+- **Ops** are plain data: an `Op` variant built by `calibrateOp`, `uncalibrateOp`,
+  `demeanOp`, `detrendOp`, `scaleOp`, `gainDbOp`, `clipOp`, `polarityOp`, `muteTopOp`,
+  `muteBottomOp`, `filterOp` (`bandPassOp` for the common case), `iirOp`, `agcOp`,
+  `normalizeOp` and `gainCurveOp`.
   Their parameters are grouped per kind (`op.agc.windowMs`, `op.filter.spec`,
   `op.mute.taperMs`) and edited in place; asking an op for another kind's parameters
   raises `ValueError` (test `op.kind` when the user can reorder the flow). A `Pipeline`
@@ -212,8 +217,9 @@ flow[2].agc.windowMs = 300                # a slider moved: edit the op, recompi
   every plan the process compiles, so 0 can mean "never processed".
 - **What allocates:** `compile`, `newProcessPool`, `reserve` when it grows, and the first
   `pool.apply` after a plan needing more scratch than any before (each worker grows its
-  workspace). Every other `apply`, `pool.apply`, `chunkMeta(c)`, stats, spectrum and
-  moveout call allocates nothing.
+  workspace); for calibration, `fileScalesInto` (a few columns of scratch) and
+  `scaleReport`. Every other `apply`, `pool.apply`, `chunkMeta(c)`, stats, spectrum,
+  moveout, `resolveInto` and `calibrate` call allocates nothing.
 - **Threads.** processSEG offers three ways to run, from the simplest to the most control:
   1. **No threads.** `plan.apply(raw, processed, meta, ws)` on any thread. Kernels touch no
      globals, so several threads can each call `apply` with their own `Workspace`.
@@ -324,6 +330,68 @@ What the margin does and does not promise:
   ε) use the statistics of the decoded window, so they cannot match the whole trace
   whatever the margin. Use the filters' trend removal instead of `demean` before a
   low-cut.
+
+## Physical units: calibration
+
+Some recorders write counts and leave the sensor's sensitivity to be applied later. The
+case this was built for is a marine node: a hydrophone and three geophones per unit, so the
+factor differs by component within a unit, and one of them is a pressure sensor. Most files
+need none of it, and **nothing changes for a viewer that does not calibrate**: the `scales`
+arguments are optional, and a pipeline without `calibrateOp` has no calibration step and
+gives the same samples, bit for bit (`tests/tmarinenode.nim`).
+
+A calibration turns counts into volts or into ground motion and pressure, per row: `factor
+= descale / (10^(gain/20) · sensitivity)` ([guide](guide/calibration.md),
+`core/calibrate`). The factor is per row, resolved from:
+
+- the user's **table**, a `Calibration` of rules by sensor type, component, channel set,
+  channel or receiver station (one unit), the most specific winning, with a catch-all
+  default; for marine nodes, one rule per component. Values are entered with their units (`sensitivity(22.5, suVPerMPerS)`: the
+  figure as wired, which for a geophone is the damped one; `openCircuitSensitivity` from
+  the coil and shunt resistances). The table is plain data, edited like any op;
+- the **file's headers**: a `FileScale` per row (SEG-D MP factor or descale multiplier and
+  Rev 3 Sensor Info, SEG-Y weighting factor, value unit and transduction constant, SEG-2
+  DESCALING_FACTOR), which the meta points at. `fileFactors` ranks the two (`ffFallback`:
+  the table's specific rules, then the file, then the catch-all); a row where they disagree
+  is flagged, never silently resolved.
+
+For the viewer:
+
+- **On opening a file**, show `f.scaleReport()` (what the headers say, grouped per channel
+  set or per distinct header combination) so the user can check it against the recorder's
+  and the sensor's documentation before choosing a table.
+- **Per raw cache entry**, fill the column once, when the chunk arrives:
+  `f.fileScalesInto(c.rows, entry.scales)`, and build metas with `chunkMeta(c, scales =
+  entry.scales)`. Keep the column with the entry, like `failedRows`; refill it after a
+  header edit. It costs column reads (SEG-Y, SEG-2, SEG-D Rev 1/2: well under a µs per
+  trace) and, for SEG-D Rev 3 traces with extension blocks, parseSEG's header listing per
+  trace: 2-5 µs per trace in a release build (20 ms for the 3957-trace Rev 3 shot of the
+  example files, `tests/tfilescales.nim`). Fill it when a chunk enters the cache, not per
+  frame.
+- **Per panel**, put `calibrateOp(cal)` first in the panel's flow; `compile` refuses it after
+  any op that changes amplitudes, so gain, AGC, normalization, `polarityOp`, statistics and
+  QC on the output all see physical values. Only the panel's traces are processed, as for
+  any op. A table edit is a recompile (the rules are indexed in microseconds) and a
+  reprocess of the panel's processed buffers (a new `generation`); the raw cache and its
+  columns stay valid. Cost: a 2000 × 2001 float32 panel converts in about 1.4 ms `src →
+  dst` on one thread (0.9 ms in place), its rows' rules resolved included (bench/README,
+  "Calibration").
+- **Labels**: `plan.amplitudeUnits` is `paCalibrated` when nothing after the calibration
+  changes amplitudes, `paRelative` after a gain, `paRecorded` without one. For calibrated
+  output, `initCalibrationPlan(flow[0].calibration).resolveInto(meta, rows)` gives each row
+  its unit (V, m/s, m/s², Pa or recorded), its factor, where each factor came from, and the
+  counts of unresolved rows, conflicts and sensor-type mismatches to warn about. It touches
+  no sample (0.2 ms for 2000 rows), so a raw-amplitude readout can show `raw ·
+  rows[r].factor` without processing, and a GPU path can upload the factors as a per-row
+  uniform.
+- **Rows without a factor**: a live row whose target cannot be reached becomes NaN (and is
+  counted), never a row of counts among rows in m/s; panel statistics, spectra and stacks
+  leave NaN rows out. Auxiliary rows go to volts when their descale is known; failed rows
+  are untouched.
+- **Batch jobs** (`bruteStack`) build their metas from prefetch chunks without a column: a
+  calibration op in `opts.flow` uses the table alone.
+- One sensitivity holds in the sensor's flat band, above its natural frequency; no response
+  correction is made below it.
 
 ## Display gain: CPU or GPU
 
@@ -568,7 +636,9 @@ pass it through `user`, with the workspaces.
    `var seq[int]` to `readTracesInto` and build the meta with the same arguments,
    `chunkMeta(f, traces[, samples], failed)`.
 4. Edit a `Pipeline` and `compile` it, once per sample interval and row width in the
-   cache.
+   cache. To show physical units, fill each raw cache entry's `FileScale` column once
+   (`fileScalesInto`), pass it to its metas (`chunkMeta(c, scales = ...)`), put
+   `calibrateOp(cal)` first, and label rows from `resolveInto` ("Physical units").
 5. Create one `ProcessPool` at start-up (`newProcessPool(workers)`), then
    `pool.apply(plan, raw, processed, meta)` into a processed buffer allocated once per
    cached chunk, tag the result with `plan.generation`, and draw. (Or call `plan.apply` from your own threads,

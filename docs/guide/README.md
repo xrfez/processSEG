@@ -20,6 +20,7 @@ or a small SEG-Y written with parseSEG, so they need no files.
 | Build, edit and compile a processing flow; apply it in place or `src → dst` | [pipelines.md](pipelines.md#build-compile-apply) |
 | Process a zoom window with enough margin (`requiredMargin`, `decodeWindow`) | [pipelines.md](pipelines.md#zoom-windows) |
 | Spread the work over threads (`ProcessPool`, or your own threads with plan parts) | [pipelines.md](pipelines.md#the-process-pool) |
+| Convert recorded counts to volts or physical units; enter sensor sensitivities; check what a file says about its scale | [calibration.md](calibration.md) |
 | Apply fixed, normalized, AGC or time-variant gain | [gain.md](gain.md) |
 | Compute statistics for a GPU display gain (`traceStatsInto`, `panelStats`) | [gain.md](gain.md#statistics-for-a-shader-uniform) |
 | Show an amplitude spectrum of a selection | [gain.md](gain.md#amplitude-spectra) |

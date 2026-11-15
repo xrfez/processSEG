@@ -18,10 +18,10 @@ proc block64(rows: int, value = 1000.0): Tensor[float64] =
     for c in 0 ..< cols: result[r, c] = value
 
 let
-  d1 = descale(1, duMicroVPerCount)  # 1e-6 V/count
+  d1 = descale(1, duMicroVPerCount) # 1e-6 V/count
   d2 = descale(2, duMicroVPerCount)
   geo = sensitivity(20, suVPerMPerS)
-  hyd = sensitivity(20, suVPerBar)   # 2e-4 V/Pa
+  hyd = sensitivity(20, suVPerBar)  # 2e-4 V/Pa
 
 proc oneRow(k: TraceKeys, counts: var seq[int], keys: var seq[TraceKeys]): ChunkMeta =
   keys = @[k]
@@ -45,12 +45,12 @@ block precedence_ladder:
   let meta = oneRow(stationKeys(), counts, keys)
   let sens = [11.0, 12.0, 13.0, 14.0, 15.0, 16.0]
   let matches = [
-    RuleMatch(station: some stationKey(10, 201, 0), channel: 3), # station + channel
-    RuleMatch(station: some stationKey(10, 201, 1)),             # station (exact index)
+    RuleMatch(station: some stationKey(10, 201, 0), channel: 3),                 # station + channel
+    RuleMatch(station: some stationKey(10, 201, 1)),                             # station (exact index)
     RuleMatch(channel: 3),
     RuleMatch(component: 2),
     RuleMatch(sensorType: 2),
-    RuleMatch()]                                                 # catch-all
+    RuleMatch()]                                                                 # catch-all
   for first in 0 ..< matches.len:
     var rules: seq[CalibrationRule]
     for i in first ..< matches.len:
@@ -202,9 +202,9 @@ block rows_by_status:
     doAssert closeTo(x[0, c], k)
     doAssert x[1, c].isNaN
     doAssert x[2, c] == (if c < 10: k else: 1000.0) # past the live length: untouched
-    doAssert x[3, c] == 1000                       # dead, unresolved: kept
-    doAssert closeTo(x[4, c], 1e-6 * 1000)          # auxiliary: volts
-    doAssert x[5, c] == 1000                       # failed
+    doAssert x[3, c] == 1000 # dead, unresolved: kept
+    doAssert closeTo(x[4, c], 1e-6 * 1000) # auxiliary: volts
+    doAssert x[5, c] == 1000 # failed
   doAssert s.converted == 3 and s.unresolved == 1 and s.kept == 2 and s.noSensitivity == 1
   doAssert s.units[auVelocity] == 2 and s.units[auVolt] == 1 and s.units[auRecorded] == 2
   var rc = newSeq[RowCalibration](6)
@@ -300,7 +300,7 @@ block per_row_kernels:
   for c in 0 ..< cols:
     doAssert x[0, c] == 500
     doAssert x[1, c] == (if c < 4: 3000.0 else: 1000.0) # any status, up to its live length
-    doAssert x[2, c] == 1000                          # failed
+    doAssert x[2, c] == 1000 # failed
   let src = block64(3)
   var dst = newTensor[float64](3, cols)
   scaleRowsInto(src, dst, meta, [NaN, 2.0, 7.0])

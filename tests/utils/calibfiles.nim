@@ -136,12 +136,12 @@ type SegyCase* = object
   n*, valueUnit*, mantissa*, exponent*, units*: int
 
 const segyCases* = [
-  SegyCase(),                                   # 0: nothing set: unknown
-  SegyCase(n: 20),                              # 1: N only: 2⁻²⁰ V (Rev 1's definition)
-  SegyCase(n: 10, valueUnit: 3),                # 2: 2⁻¹⁰ mV
+  SegyCase(),                    # 0: nothing set: unknown
+  SegyCase(n: 20),               # 1: N only: 2⁻²⁰ V (Rev 1's definition)
+  SegyCase(n: 10, valueUnit: 3), # 2: 2⁻¹⁰ mV
   SegyCase(n: 10, valueUnit: 2, mantissa: 5, exponent: 1, units: 6),
     # 3: 2⁻¹⁰ V, transduction 50 (m/s per V): 0.02 V/(m/s)
-  SegyCase(n: 3, valueUnit: 1),                 # 4: already physical: 2⁻³ Pa
+  SegyCase(n: 3, valueUnit: 1),  # 4: already physical: 2⁻³ Pa
   SegyCase(valueUnit: 2, mantissa: 2, exponent: -3, units: 1),
     # 5: 1 V, transduction 0.002 Pa per V: 500 V/Pa
   SegyCase(mantissa: 1024),
@@ -187,3 +187,63 @@ proc writeSeg2*(path = seg2Path()) =
     w.writeTrace(t, x)
   w.close()
   doAssert w.log.len == 0, $w.log[0]
+
+proc marinePath*(): string = getTempDir() / "processseg_cal_marine.sgd"
+
+const
+  marineDsm* = [1.49012e-4, 2.98023e-4, 2.98023e-4, 2.98023e-4]
+    ## `writeMarineNodes`' descale multipliers by component (mV per count).
+
+proc writeMarineNodes*(path = marinePath(), units = 3) =
+  ## A record of `units` marine nodes as a recorder that writes counts gives
+  ## it: SEG-D Rev 3.0, 24-bit integers (8036), 100 samples at 1 ms, one
+  ## channel set per component, each node one hydrophone (component 1,
+  ## sensor type 1) and three geophones (components 2-4: vertical, inline,
+  ## crossline; sensor types 2-4), the receivers on line 10 at points 101 ...
+  ## Channel set `c` holds component `c + 1` of every node, with the
+  ## descale multiplier `marineDsm[c]` and no Sensor Info: the sensitivities
+  ## are applied later, from a table. Trace `t` is channel set `t div units`,
+  ## node `t mod units`, and holds `rowValue(t)` counts.
+  const fileNo = 11
+  let fmt = sd8036
+  var r = SegdRecord(layout: slRev3, format: some(fmt),
+    revision: SegdRevision(major: 3, minor: 0))
+  r.gh1 = SegdGeneralHeader1(fileNumber: fileNo, formatCode: ord(fmt), year: 26,
+    additionalGhBlocks: 2, julianDay: 319, hour: 10, minute: 0, second: 0,
+    manufacturerCode: 0, baseScanInterval16: 16, recordType: 8, recordLength: BcdAllF,
+    scanTypesPerRecord: 1, channelSetsPerScanType: 4, skewBlocks: 0,
+    extendedHeaderBlocks: 0, externalHeaderBlocks: 0)
+  r.gh2Rev3 = SegdGeneralHeader2Rev3(extFileNumber: fileNo, revisionMajor: 3,
+    extRecordLength: uint32(1000 * (ns - 1)), blockType: 2)
+  r.gh3 = SegdGeneralHeader3(timeZero: 1_478_000_000_000_000, blockType: 3)
+  var descs: seq[SegdChannelSetDescriptorRev3]
+  for c in 0 ..< 4:
+    descs.add SegdChannelSetDescriptorRev3(scanTypeNumber: 1, channelSetNumber: uint16(c + 1),
+      channelType: 0x10, endTime: int32(1000 * (ns - 1)), numSamples: ns,
+      descaleMultiplier: float32(marineDsm[c]), channelsInSet: uint32(units),
+      samplingInterval: 1000, traceHeaderExtensions: 1, verticalStack: 1, blockType1: 0x30,
+      blockType2: 0x31, blockType3: 0x32)
+  r.scanTypes = @[SegdScanType(layout: slRev3, descriptorsRev3: descs)]
+  var traces: seq[SegdTrace]
+  for c in 0 ..< 4:
+    for u in 0 ..< units:
+      let k = c * units + u
+      var t = SegdTrace(layout: slRev3, index: k, numSamples: ns)
+      t.header = SegdTraceHeader(fileNumber: fileNo, scanTypeNumber: 1, channelSetNumber: c + 1,
+        traceNumber: u + 1, traceHeaderExtensions: 1)
+      t.ext1Rev3 = some SegdTraceHeaderExt1Rev3(receiverLineNumber: 10,
+        receiverPointNumber: int32(101 + u), receiverPointIndex: 1, groupIndex: uint8(c + 1),
+        numSamples: ns, sensorType: uint8(c + 1), blockType: 0x40)
+      var v = newSeq[float64](ns)
+      for x in v.mitems: x = rowValue(k)
+      t.samples = newSeq[byte](dataBytes(fmt, ns))
+      encodeSamples(fmt, v, t.samples)
+      traces.add t
+  computeRev3Sizes(r, traces)
+  r.traceCount = traces.len
+  let sink = openDiskSink(path)
+  try:
+    let log = writeSegd(sink, SegdData(records: @[SegdRecordData(record: r, traces: traces)]))
+    doAssert log.len == 0, $log[0]
+  finally:
+    sink.close()
