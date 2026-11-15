@@ -205,22 +205,33 @@ machine before quoting them.
 `bench/bvibqc.nim`, built with the `nim bench` flags (`-d:danger --opt:speed
 --debuginfo:on --linedir:on -march=x86-64-v3`), one thread, float32: one unit of a wireline
 record (Ref, GF, M, B), an 8-80 Hz linear sweep of 8 s at 1 ms plus a 2 s listen time
-(10001 samples), 2026-11-15, AMD Ryzen 9 3950X, Nim 2.4.2, gcc 12.2.0. **Measured on a shared machine** (load average 10 to 12): upper bounds;
-re-measure on a quiet machine before quoting them.
+(10001 samples), 2026-11-15, AMD Ryzen 9 3950X, Nim 2.4.2, gcc 12.2.0. **Measured on a
+shared machine** (load average 58 to 67, twice: the calls whose code did not change read
+about 1.5 times what they read at load 10-12, e.g. the correlation 0.46 ms against 0.29):
+upper bounds; re-measure on a quiet machine before quoting them. The instruction counts
+(callgrind, one call, the same record) are exact.
 
-| call | median |
-|---|---|
-| `referenceInto` (the pilot: analytic signal, unwrapped phase, every point's windows) | 0.91 ms |
-| `trackInto`, harmonics 1-5 (8 lanes), 1001 points | 1.22 ms (122 ns a sample) |
-| `trackInto`, harmonics 1-12 (16 lanes) | 2.53 ms |
-| `analyzeVibrators`, one unit (the reference, its 4 rows and the GF from M and B) | 7.06 ms |
-| `crossCorrelateInto`, lags ±500 ms, with the envelope | 0.29 ms |
-| `lagSpectrumInto` (1001 lags, 1024 points) | 0.015 ms |
-| `compareInto` (two signals against frequency) | 0.37 ms |
-| `spectrogramInto`, 255-sample frames every 10 ms (1001 frames × 129 bins) | 1.32 ms |
-| `envelopeInto` (Hilbert transform, nfft 20250) | 0.13 ms |
+| call | median | instructions |
+|---|---|---|
+| `referenceInto` (the pilot: analytic signal, unwrapped phase, flat part, every point's windows), 4 periods and 100 ms | 1.49 ms | 10.0 M |
+| `referenceInto`, 4 periods everywhere (`minWindowMs = 0`) | 1.44 ms | 9.9 M |
+| `trackInto`, harmonics 1-5 (8 lanes), 1001 points, 4 periods and 100 ms (three window lengths: 4, 6, 8 periods) | 1.92 ms (192 ns a sample) | 11.2 M |
+| `trackInto`, harmonics 1-5, 4 periods everywhere | 1.90 ms | 11.0 M |
+| `trackInto`, harmonics 1-12 (16 lanes), 4 periods and 100 ms | 3.98 ms | 19.6 M |
+| `analyzeVibrators`, one unit (the reference, its 4 rows and the GF from M and B) | 11.5 ms | |
+| `analyzeVibrators`, one unit, automatic polarity of GF and of M and B | 11.5 ms | |
+| `crossCorrelateInto`, lags ±500 ms, with the envelope | 0.46 ms | |
+| `lagSpectrumInto` (1001 lags, 1024 points) | 0.023 ms | |
+| `compareInto` (two signals against frequency) | 0.60 ms | |
+| `spectrogramInto`, 255-sample frames every 10 ms (1001 frames × 129 bins) | 2.02 ms | |
+| `envelopeInto` (Hilbert transform, nfft 20250) | 0.21 ms | |
 
-- The tracking's cost is its scan: per sample, the phasor's powers (serial) and five
+- The minimum window costs a scan per window length the sweep passes through, each over
+  its own points' samples: 2 % more instructions than 4 periods everywhere. The scans compute
+  cos and sin of ψ/C per sample (the reference keeps ψ, not a table per window length): 13 %
+  of a scan's instructions (9.6 M for one stored window of 4 periods). Automatic polarity
+  adds nothing measurable: a reversal turns the phases of a track, without a second pass.
+- The tracking's cost is its scans: per sample, the phasor's powers (serial) and five
   running sums per harmonic, packed across the harmonics' lanes (`addSample`, 8 lanes for up
   to 8 harmonics, 16 beyond; `tests/tvectorized.nim`); its points cost O(1) each, whatever
   the window. `referenceInto` is two FFTs of `nextFastLen(2·samples)` and the per-sample

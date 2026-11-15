@@ -50,20 +50,33 @@ proc main() =
     tp.referenceInto(rows[0], reference, ws)
   a.report
   echo "    ", a.ms
-  let b = bench("trackInto, harmonics 1-5 (8 lanes), 1001 points", 0):
+  let b = bench("trackInto, harmonics 1-5 (8 lanes), 1001 points, 4 periods and 100 ms", 0):
     tp.trackInto(rows[1], reference, track, ws)
     sink += track.thdPct[400]
   b.report
   echo "    ", b.ms
+  # The window without a minimum time: 4 periods everywhere (one scan instead of three).
+  let tp4 = initSweepTrackPlan(float32, TrackParams(minWindowMs: 0), dt, n)
+  var r4 = initSweepReference(tp4)
+  var t4 = initSweepTrack(tp4)
+  let a4 = bench("referenceInto, 4 periods everywhere", 0):
+    tp4.referenceInto(rows[0], r4, ws)
+  a4.report
+  echo "    ", a4.ms
+  let b4 = bench("trackInto, harmonics 1-5, 4 periods everywhere", 0):
+    tp4.trackInto(rows[1], r4, t4, ws)
+    sink += t4.thdPct[400]
+  b4.report
+  echo "    ", b4.ms
   let tp12 = initSweepTrackPlan(float32, TrackParams(harmonics: 12), dt, n)
   var ws12 = initWorkspace()
   ws12.reserve(tp12.workspaceSize)
   var r12 = initSweepReference(tp12)
   var t12 = initSweepTrack(tp12)
   tp12.referenceInto(rows[0], r12, ws12)
-  let c = bench("trackInto, harmonics 1-12 (16 lanes)", 0):
+  let c = bench("trackInto, harmonics 1-12 (16 lanes), 4 periods and 100 ms", 0):
     tp12.trackInto(rows[1], r12, t12, ws12)
-    sink += t12.thdPct[400]
+    sink += t12.amplitude[1][400] # (THD over 2-12 is NaN where the 12th is past the limit)
   c.report
   echo "    ", c.ms
   var units = vibUnitsInOrder(1, reactionMass = mass(2450, muKilogram),
@@ -75,6 +88,13 @@ proc main() =
     sink += results[0].summaries[vsGroundForce].meanForce
   d.report
   echo "    ", d.ms
+  for u in units.mitems:
+    u.polarity = [poAsRecorded, poAutomatic, poAutomatic, poAutomatic]
+  let d2 = bench("analyzeVibrators, one unit, automatic polarity of GF and of M and B", 0):
+    tp.analyzeVibrators(data, meta, units, VibLimits(phaseDeg: 5), results, ws)
+    sink += results[0].summaries[vsGroundForce].meanForce
+  d2.report
+  echo "    ", d2.ms
 
   let cp = initCrossCorrelationPlan(float32, maxLagMs = 500, dtMs = dt, samples = n)
   var cws = initWorkspace()
