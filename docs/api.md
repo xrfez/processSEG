@@ -250,8 +250,8 @@ auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guid
 
 | Proc | What |
 |---|---|
-| `TimeShiftPlan[T]`; `initTimeShiftPlan(T, dtMs, samples)`, `plan.samples`, `plan.dtMs`, `plan.nfft`, `plan.workspaceSize` | A shift by milliseconds of traces up to `samples` long. FFT is `nextFastLen(2·samples)`, so a shift inside the trace does not wrap. |
-| `plan.shiftMsInto(src, dst, shiftMs, ws)`, `plan.shiftMs(x, shiftMs, ws)` | `dst[j]` is the old sample at `j + shiftMs/dtMs` (positive: earlier, as `shiftSamples`). Length kept. Zeros shift in, samples shift out. A whole number of samples (within 1e-6) is a pure move. A fraction is a zero-padded FFT phase ramp: sinc ringing at an end that is not zero; Nyquist is not shifted fractionally. A NaN shift leaves the samples. `|shift|` of a whole trace zeroes it. |
+| `TimeShiftPlan[T]`; `initTimeShiftPlan(T, dtMs, samples)`, `plan.samples`, `plan.dtMs`, `plan.nfft`, `plan.workspaceSize` | A shift by milliseconds of traces up to `samples` long. The FFT is `nextFastLen(3·samples)` and only a remainder of at most half a sample uses it. |
+| `plan.shiftMsInto(src, dst, shiftMs, ws)`, `plan.shiftMs(x, shiftMs, ws)` | `dst[j]` is the old sample at `j + shiftMs/dtMs` (positive: earlier, as `shiftSamples`). Length kept. What leaves one end is clipped; the other end is zeros; nothing that left comes back. A whole number of samples (within 1e-6) is a pure move, no FFT, NaN kept. A fraction is that move after a half-sample phase ramp on a zero-padded copy. A trace whose ends are not zero rings there (the sinc of the jump to the pad); that ringing is not a wrap. Nyquist is not shifted fractionally. A NaN shift leaves the samples. `|shift|` of a whole trace zeroes it. |
 
 ## fft/tracecorr: `TraceCorrelationPlan`
 
