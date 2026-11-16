@@ -180,8 +180,11 @@ block live_columns_checked_first:
 block first_sample_no_overflow:
   # An absurd firstSample puts the window far past the event: nothing is added
   # and no integer overflow is raised (the sample time is summed in float64).
+  # The centre is where the wrapped index would put a wavelet: with the integer
+  # add `firstSample + j` (j = 1 wraps to low(int)), sample 1 sits at 0 ms, so
+  # it is 1 under -d:danger and the block fails; the float sum keeps it 0.
   var x = newSeq[float64](4)
-  x.addRicker(dtMs = 2, centreMs = 10, freqHz = 30, firstSample = high(int))
+  x.addRicker(dtMs = 2, centreMs = float64(low(int)) * 2, freqHz = 30, firstSample = high(int))
   doAssert x == @[0.0, 0.0, 0.0, 0.0], "ricker: " & $x
   var g = zeros[float64](1, 4)
   g.addLinear([0.0], 2, 0, 1500, 30, firstSample = high(int))
