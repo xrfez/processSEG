@@ -39,7 +39,7 @@
 
 import std/math
 import parseSEG
-import ../core/workspace
+import ../core/[rows, types, workspace]
 import plan
 
 type
@@ -163,3 +163,72 @@ proc spectrogramInto*[T: SampleType](sg: SpectrogramPlan[T], x: openArray[T],
         amp[row + k] = hypot(float64(re[k * fftLanes + l]), float64(im[k * fftLanes + l])) *
           side / sw[l]
     first += used
+
+func averageWorkspace*[T](sg: SpectrogramPlan[T]): WorkspaceSize {.raises: [].} =
+  ## The scratch `averageSpectrogramInto` needs: the plan's, plus one frame
+  ## of amplitudes.
+  result = sg.workspaceSize
+  result.f64 += sg.frames * sg.fft.bins
+
+proc averageSpectrogramInto*[T: SampleType](sg: SpectrogramPlan[T], b: RowBlock[T],
+    meta: ChunkMeta, amp: var openArray[float64], ws: var Workspace,
+    rows = 0 .. int.high): int =
+  ## The power average of `spectrogramInto` over the live rows of `b` in
+  ## `rows` (clipped to the block), into `amp` (`frames·bins` values, the
+  ## same layout). A sinusoid of amplitude A on a bin reads A, as one trace
+  ## does. A row whose spectrogram holds a NaN or an infinity is left out, as
+  ## is a row that is not live or has no live sample. Returns the rows used;
+  ## with none, `amp` is all zero. Raises `ValueError` when `b` does not
+  ## match `meta` or the interval is not the plan's. An `amp` of another
+  ## length, or a workspace that does not hold `averageWorkspace`, is an
+  ## `AssertionDefect` / `IndexDefect`. Nothing allocates.
+  ##
+  ## The proposal took `openArray[openArray[T]]`. Nim does not allow a nested
+  ## `openArray`, and a block of traces is a `RowBlock` with a `ChunkMeta`
+  ## everywhere else, so dead rows and the padding past a short trace stay
+  ## out.
+  meta.checkShape(b)
+  if not sameInterval(meta.dtMs, sg.dtMs):
+    badPlan("the rows' interval " & $meta.dtMs & " ms is not the plan's " &
+      $(sg.dtMs) & " ms")
+  let nb = sg.frames * sg.fft.bins
+  doAssert amp.len == nb, "amp needs frames·bins values"
+  doAssert ws.fits(sg.averageWorkspace), "reserve averageWorkspace first"
+  let at = sg.workspaceSize.elems(T)
+  # The plan's scratch is T; the frame amplitudes are float64, from element 0
+  # of that region when T is float32, and after the plan's own float64 when
+  # T is float64 (workspaceSize puts the FFT scratch in the sample type).
+  let tmpAt = when T is float32: 0 else: sg.workspaceSize.f64
+  let tmp = ws.scratch(float64, nb, tmpAt)
+  for k in 0 ..< nb: amp[k] = 0
+  let lo = max(rows.a, 0)
+  let hi = min(rows.b, b.len - 1)
+  var used = 0
+  for r in lo .. hi:
+    if not meta.isLive(r): continue
+    let live = meta.liveSamples(r, b.cols)
+    if live <= 0: continue
+    if live > sg.samples:
+      badPlan("a live row of " & $live & " samples is longer than the plan's " &
+        $sg.samples)
+    let src = b.rowPtr(r)
+    sg.spectrogramInto(src.toOpenArray(0, live - 1), tmp.toOpenArray(0, nb - 1), ws)
+    var finite = true
+    for k in 0 ..< nb:
+      if tmp[k].classify in {fcNan, fcInf, fcNegInf}:
+        finite = false
+        break
+    if not finite: continue
+    for k in 0 ..< nb: amp[k] += tmp[k] * tmp[k]
+    inc used
+  if used == 0: return 0
+  let u = float64(used)
+  for k in 0 ..< nb: amp[k] = sqrt(amp[k] / u)
+  used
+
+proc averageSpectrogramInto*[T: SampleType](sg: SpectrogramPlan[T],
+    samples: Tensor[T], meta: ChunkMeta, amp: var openArray[float64],
+    ws: var Workspace, rows = 0 .. int.high): int =
+  ## `averageSpectrogramInto` on a `[rows, cols]` tensor.
+  meta.checkShape(samples)
+  sg.averageSpectrogramInto(rowBlock(samples), meta, amp, ws, rows)

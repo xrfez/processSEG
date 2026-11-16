@@ -5,7 +5,7 @@
 
 import std/[assertions, math, random]
 import processSEG
-import utils/allocs
+import utils/[allocs, synth]
 
 block frames_equal_a_direct_dft:
   # Random data; the frames at both ends are cut by the trace's ends.
@@ -136,3 +136,25 @@ block no_allocation:
   let count = allocsIn:
     sg.spectrogramInto(x, amp, ws)
   doAssert count == 0, $count & " allocations"
+
+block average_spectrogram:
+  # Fail-first: a NaN frame was not dropped, so 3 rows were used.
+  let sg = initSpectrogramPlan(float64, windowLen = 32, hop = 16, dtMs = 2, samples = 128,
+    nfft = 32)
+  var g = cmpGather[float64](0, newSeq[float64](3), 128, 2)
+  let f = sg.binHz(4)
+  for r in 0 ..< 3:
+    for j in 0 ..< 128:
+      g.data[r, j] = cos(2 * PI * f * float64(j) * 2 / 1000) * 2
+  g.data[2, 10] = NaN
+  let meta = initChunkMeta(g.rows, dtMs = 2)
+  var ws = initWorkspace()
+  ws.reserve(sg.averageWorkspace)
+  var amp = newSeq[float64](sg.frames * sg.bins)
+  let used = sg.averageSpectrogramInto(g.data, meta, amp, ws)
+  doAssert used == 2, "a NaN frame drops the trace, got " & $used
+  let mid = sg.frames div 2
+  doAssert abs(amp[mid * sg.bins + 4] - 2.0) < 1e-3, $amp[mid * sg.bins + 4]
+  let quiet = allocsIn:
+    discard sg.averageSpectrogramInto(g.data, meta, amp, ws)
+  doAssert quiet == 0
