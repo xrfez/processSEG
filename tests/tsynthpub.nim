@@ -12,7 +12,9 @@
 ##   Nyquist (the last sample went to 0);
 ## - live_columns_checked_first: a bad `liveCols` entry raised after the rows
 ##   before it were written;
-## - first_sample_no_overflow: `firstSample + j` overflowed int at high(int).
+## - first_sample_no_overflow: `firstSample + j` overflowed int at high(int);
+## - noise_default_seed: `addNoise` had no default seed (no call without one
+##   compiled).
 
 import std/[assertions, math]
 import parseSEG, processSEG
@@ -184,3 +186,19 @@ block first_sample_no_overflow:
   var g = zeros[float64](1, 4)
   g.addLinear([0.0], 2, 0, 1500, 30, firstSample = high(int))
   doAssert g == zeros[float64](1, 4), "linear"
+
+block noise_default_seed:
+  # Without a seed, addNoise uses DefaultNoiseSeed. One trace given no seed
+  # gets the same noise as that seed; a gather given no seed gets rows that
+  # differ, since row r is seeded with the default plus r.
+  var a = newSeq[float64](64)
+  var b = newSeq[float64](64)
+  a.addNoise(1.5)
+  b.addNoise(1.5, DefaultNoiseSeed)
+  doAssert a == b, "no seed is DefaultNoiseSeed"
+  var t = zeros[float64](2, 64)
+  t.addNoise(1.0)
+  var same = true
+  for j in 0 ..< 64:
+    if t[0, j] != t[1, j]: same = false
+  doAssert not same, "rows of a gather with no seed must differ"

@@ -12,7 +12,9 @@ Offsets are distances, signed the way a split spread is (`rcvX − srcX`). A lin
 event is a direct wave, a refraction or ground roll, depending on the velocity and
 the frequency; a reflection is a hyperbola. `addNoise` uses `std/random`: the same
 seed gives the same samples on one machine and one Nim version, and is not a
-promise across Nim versions or platforms.
+promise across Nim versions or platforms. A left-out seed is `DefaultNoiseSeed`, so
+it repeats too. Two traces with the same seed, or none, get the same noise: give
+each trace its own seed. Seed 0 draws the same noise as 2147483647, so avoid 0.
 
 ```nim
 import parseSEG, processSEG

@@ -28,7 +28,11 @@
 ## **Noise** (`addNoise`) is white Gaussian noise of standard deviation
 ## `sigma`, drawn with `std/random` (`initRand(seed)` and `gauss`). The same
 ## seed, length and `sigma` give the same samples on every run on one
-## machine, with one Nim version. That is the guarantee. It is not a file
+## machine, with one Nim version. That is the guarantee. A left-out seed is
+## `DefaultNoiseSeed`, so it repeats too. Two traces given the same seed, or
+## both no seed, get the same noise; pass a different seed per trace (the
+## tensor form seeds row `r` with `seed + r`). Seed 0 and seed 2147483647
+## draw the same noise, so avoid 0. It is not a file
 ## format: `std/random` can change between Nim versions, and `gauss` uses
 ## `libm` (`log`, `sqrt`, `sin`), so the last bits can differ across
 ## platforms and C libraries. A comparison of written samples is valid for
@@ -90,16 +94,23 @@ proc addRicker*[T: SampleType](x: var openArray[T], dtMs, centreMs,
 
 # -------------------------------------------------------------------- noise --
 
+const DefaultNoiseSeed*: int64 = 1 ## The seed `addNoise` uses when none is given.
+
 func rowSeed(seed: int64, row: int): int64 {.inline.} =
   ## `seed + row`, wrapping in int64, so a row can be drawn on its own.
   cast[int64](uint64(seed) + uint64(row))
 
-proc addNoise*[T: SampleType](x: var openArray[T], sigma: float64, seed: int64) =
+proc addNoise*[T: SampleType](x: var openArray[T], sigma: float64,
+    seed: int64 = DefaultNoiseSeed) =
   ## Adds white Gaussian noise of standard deviation `sigma` (`std/random`,
   ## `initRand(seed)` then `gauss`; 0 leaves `x` unchanged). The same seed
   ## gives the same samples on one machine and one Nim version; see the
-  ## module documentation for what is not guaranteed. Raises `ValueError`
-  ## when `sigma` is not finite and ≥ 0.
+  ## module documentation for what is not guaranteed. A left-out seed is
+  ## `DefaultNoiseSeed`, so it gives the same noise on every run, and two
+  ## traces given no seed (or the same seed) get the same noise: give each
+  ## trace its own seed. Seed 0 draws the same noise as 2147483647 (`initRand`
+  ## replaces 0), so avoid 0. Raises `ValueError` when `sigma` is not finite
+  ## and ≥ 0.
   if not (sigma >= 0 and sigma < Inf):
     badSynth("sigma must be finite and ≥ 0, got " & $sigma)
   if sigma == 0 or x.len == 0: return
@@ -107,11 +118,13 @@ proc addNoise*[T: SampleType](x: var openArray[T], sigma: float64, seed: int64) 
   for j in 0 ..< x.len:
     x[j] += T(rng.gauss(0, sigma))
 
-proc addNoise*[T: SampleType](samples: var Tensor[T], sigma: float64, seed: int64) =
+proc addNoise*[T: SampleType](samples: var Tensor[T], sigma: float64,
+    seed: int64 = DefaultNoiseSeed) =
   ## Adds `addNoise` to every row. Row `r` is seeded with `seed + r`
   ## (wrapping in int64), so the rows differ and one row can be regenerated
-  ## without the others. Raises `ValueError` as `addNoise`, and as `rowBlock`
-  ## when `samples` is not a rank-2 C-contiguous tensor.
+  ## without the others; with no seed, rows `r` use `DefaultNoiseSeed + r`.
+  ## Raises `ValueError` as `addNoise`, and as `rowBlock` when `samples` is
+  ## not a rank-2 C-contiguous tensor.
   let b = rowBlock(samples)
   for r in 0 ..< b.len:
     b.row(r).addNoise(sigma, rowSeed(seed, r))
