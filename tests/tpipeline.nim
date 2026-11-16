@@ -398,3 +398,47 @@ block overlapping_blocks_and_part_preconditions:
     for rows in [0 .. 4, 5 .. 9]: # as two threads would
       p2.runPart(RowBlock[float32](), blk.sub(rows), meta.sub(rows), part, f, ws)
   doAssert maxDiff(got, want) == 0
+
+block applied_response:
+  # Fail-first: FFT ops kept trLinear, so the low-cut matched the detrended
+  # impulse instead of trNone.
+  var flow = initPipeline([bandPassOp(Corners(f1: 8, f2: 12, f3: 40, f4: 50), trend = trLinear)])
+  var ws = initWorkspace()
+  var gain = newSeq[float64](3)
+  let hz = [5.0, 25.0, 80.0]
+  flow.appliedResponseInto(float64, dtMs = 2, samples = 256, hz, gain, ws)
+  doAssert gain[1] > 0.5, "pass band, got " & $gain[1]
+  doAssert gain[0] < 0.05 and gain[2] < 0.05, "stop band " & $gain[0] & " " & $gain[2]
+  doAssert flow[0].kind == opFilter and flow[0].filter.trend == trLinear
+  var low = initPipeline([filterOp(lowCut(4, 8), trLinear)])
+  let fh = [2.0, 20.0]
+  var applied, byHand = newSeq[float64](2)
+  low.appliedResponseInto(float64, 2, 256, fh, applied, ws)
+  var copy = low
+  copy[0].filter.trend = trLinear
+  let kept = copy.compile(float64, 2, 256)
+  ws.reserve(kept)
+  var impulse = newSeq[float64](256)
+  impulse[128] = 1
+  var keys = [initTraceKeys()]
+  keys[0].status = tsLive
+  keys[0].t0Ms = 0
+  keys[0].offset = 0
+  var counts = [256]
+  let meta = initChunkMeta(rowsOf(keys, counts), dtMs = 2)
+  kept.apply(rowBlock(impulse, 1, 256), meta, ws)
+  for i, f in fh:
+    var re, im = 0.0
+    for j in 0 ..< 256:
+      let p = -2 * PI * f * float64(j) * 0.002
+      re += impulse[j] * cos(p)
+      im += impulse[j] * sin(p)
+    byHand[i] = hypot(re, im)
+  doAssert abs(applied[0] - byHand[0]) > 1e-4, $applied[0] & " vs " & $byHand[0]
+  var scale = initPipeline([scaleOp(3)])
+  var g2 = newSeq[float64](1)
+  scale.appliedResponseInto(float64, 2, 64, [10.0], g2, ws)
+  doAssert abs(g2[0] - 3) < 1e-9, $g2[0]
+  doAssertRaises ValueError:
+    var bad = initPipeline([scaleOp(Inf)])
+    bad.appliedResponseInto(float64, 2, 32, [1.0], g2, ws)

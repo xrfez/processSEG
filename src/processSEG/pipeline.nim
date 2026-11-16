@@ -770,3 +770,50 @@ proc apply*[T: SampleType](plan: PipelinePlan[T], src: Tensor[T],
   meta.checkShape(src)
   meta.checkShape(dst)
   plan.apply(rowBlock(src), rowBlock(dst), meta, ws)
+
+proc appliedResponseInto*(flow: Pipeline, T: typedesc[SampleType],
+    dtMs: float64, samples: int, hz: openArray[float64],
+    gain: var openArray[float64], ws: var Workspace) =
+  ## The response of `flow` as applied, not the design response: a unit
+  ## impulse at sample `samples div 2` is run through `compile` and `apply`,
+  ## and `gain[i]` is the modulus of that output's DFT at `hz[i]` Hz,
+  ## `|Σ x[j] exp(−2πi·f·j·dt)|`. FFT and IIR ops are applied with `trNone`,
+  ## so a trend removal does not bend the impulse; the caller's flow is not
+  ## changed. Edges are in the result (a short trace's stop band is not
+  ## `response()`).
+  ##
+  ## The impulse row is live, at `t0Ms = 0` and offset 0, with no file
+  ## scales: a calibration uses the table alone, a mute sees offset 0, a gain
+  ## curve sees time from 0. Raises `ValueError` when the flow will not
+  ## compile (`dtMs`, `samples`, or an op). `hz` and `gain` have the same
+  ## length (an `AssertionDefect` otherwise).
+  ##
+  ## This compiles a plan on every call, so it allocates the plan and the
+  ## impulse trace. `ws` is grown to the plan when it does not already hold
+  ## it; a second call with a workspace that fits does not grow it, but the
+  ## plan is still built.
+  doAssert gain.len == hz.len, "hz and gain need the same length"
+  var copy = flow
+  for i in 0 ..< copy.len:
+    if copy[i].kind == opFilter: copy[i].filter.trend = trNone
+    elif copy[i].kind == opIir: copy[i].iir.trend = trNone
+  let plan = copy.compile(T, dtMs, samples)
+  ws.reserve(plan)
+  var x = newSeq[T](samples)
+  x[samples div 2] = 1
+  var keys = [initTraceKeys()]
+  keys[0].status = tsLive
+  keys[0].t0Ms = 0
+  keys[0].offset = 0
+  var counts = [samples]
+  let meta = initChunkMeta(rowsOf(keys, counts), dtMs)
+  plan.apply(rowBlock(x, 1, samples), meta, ws)
+  let dt = dtMs / 1000
+  for i, f in hz:
+    var re, im = 0.0
+    for j in 0 ..< samples:
+      let p = -2 * PI * f * float64(j) * dt
+      let s = float64(x[j])
+      re += s * cos(p)
+      im += s * sin(p)
+    gain[i] = hypot(re, im)
