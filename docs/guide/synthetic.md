@@ -36,7 +36,8 @@ doAssert abs(shot[2, col] - 1.0) < 0.15                     # the same seed, nex
 ## A distorted ground force
 
 `sweepHarmonics` is the pilot's sweep plus harmonics. Harmonic k is
-`amp·sin(k·φ + phase)`, with `φ` the fundamental's phase, so a phase error against
+`amp·sin(k·φ + rad(phaseDeg))`, with `φ` the fundamental's phase in radians and `rad`
+converting degrees to radians, so a phase error against
 the pilot is the fundamental's own phase and does not multiply into the harmonics.
 A term whose instantaneous frequency would pass Nyquist is cut at that sample, not
 folded back. The vibrator QC reads the phase and the distortion back; the

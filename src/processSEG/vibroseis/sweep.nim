@@ -19,9 +19,9 @@
 ## zero, as a taper wants.
 ##
 ## **Harmonics** (`sweepHarmonics`). The same sweep, plus terms
-## `amp · sin(order·φ + phase)`, where `φ` is the fundamental's phase
-## (`φ₀` included, the phase `sweepSamples` is built from) and `phase` is
-## that term's own. Order 1 with amplitude 1 and phase 0 is the fundamental;
+## `amp · sin(order·φ + rad(phaseDeg))`, where `φ` is the fundamental's phase
+## (`φ₀` included, the phase `sweepSamples` is built from), `phaseDeg` is
+## that term's own in degrees, and `rad` converts degrees to radians. Order 1 with amplitude 1 and phase 0 is the fundamental;
 ## an empty list is that term alone, so it matches `sweepSamples`. A phase
 ## error of the ground force against its pilot is the fundamental's phase.
 ## Where `order·f(t)` is at or above Nyquist the term is left out of that
@@ -91,8 +91,9 @@ type
     maxNyquistFraction*: float64 = 0.8 ## Highest frequency allowed, as a fraction of Nyquist (≤ 1).
 
   SweepHarmonic* = object
-    ## One term of a distorted sweep: `amp · sin(order·φ + phaseDeg)`, with
-    ## `φ` the fundamental's phase. Order 1, amplitude 1, phase 0 is the
+    ## One term of a distorted sweep: `amp · sin(order·φ + rad(phaseDeg))`,
+    ## with `φ` the fundamental's phase in radians and `rad` converting
+    ## degrees to radians. Order 1, amplitude 1, phase 0 is the
     ## fundamental.
     order*: float64 = 1 ## Harmonic order (1: the fundamental). Must be > 0.
     amp*: float64 = 1 ## Amplitude relative to `SweepSpec.amplitude`.

@@ -33,11 +33,14 @@
 ## both no seed, get the same noise; pass a different seed per trace (the
 ## tensor form seeds row `r` with `seed + r`). Seed 0 and seed 2147483647
 ## draw the same noise, so avoid 0. It is not a file
-## format: `std/random` can change between Nim versions, and `gauss` uses
-## `libm` (`log`, `sqrt`, `sin`), so the last bits can differ across
-## platforms and C libraries. A comparison of written samples is valid for
-## the same machine and the same Nim version only. `float32` stores each
-## sample rounded to float32.
+## format: `std/random` can change between Nim versions, and `gauss` calls
+## `ln` at run time (in its rejection test), which C libraries may round
+## differently; a different result there changes the rest of the stream, so
+## it can differ across platforms, C libraries and Nim versions. A file of
+## noise that must be identical everywhere is generated once and stored, not
+## regenerated. A comparison of written samples is valid for the same machine
+## and the same Nim version only. `float32` stores each sample rounded to
+## float32.
 
 import std/[math, random]
 import parseSEG
