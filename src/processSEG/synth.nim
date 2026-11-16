@@ -84,7 +84,7 @@ proc addRicker*[T: SampleType](x: var openArray[T], dtMs, centreMs,
     badSynth("firstSample must be ≥ 0, got " & $firstSample)
   let halfMs = 3000.0 / freqHz
   for j in 0 ..< x.len:
-    let tau = t0Ms + float64(firstSample + j) * dtMs - centreMs
+    let tau = t0Ms + (float64(firstSample) + float64(j)) * dtMs - centreMs
     if abs(tau) <= halfMs:
       x[j] += T(amp * ricker(tau, freqHz))
 

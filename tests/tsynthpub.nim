@@ -11,7 +11,8 @@
 ## - harmonics_fundamental_nyquist: `sweepHarmonics` cut an order-1 term at
 ##   Nyquist (the last sample went to 0);
 ## - live_columns_checked_first: a bad `liveCols` entry raised after the rows
-##   before it were written.
+##   before it were written;
+## - first_sample_no_overflow: `firstSample + j` overflowed int at high(int).
 
 import std/[assertions, math]
 import parseSEG, processSEG
@@ -173,3 +174,13 @@ block live_columns_checked_first:
   for r in 0 ..< 3:
     for j in 0 ..< 80:
       doAssert g[r, j] == 7, "row " & $r & " col " & $j & " was written"
+
+block first_sample_no_overflow:
+  # An absurd firstSample puts the window far past the event: nothing is added
+  # and no integer overflow is raised (the sample time is summed in float64).
+  var x = newSeq[float64](4)
+  x.addRicker(dtMs = 2, centreMs = 10, freqHz = 30, firstSample = high(int))
+  doAssert x == @[0.0, 0.0, 0.0, 0.0], "ricker: " & $x
+  var g = zeros[float64](1, 4)
+  g.addLinear([0.0], 2, 0, 1500, 30, firstSample = high(int))
+  doAssert g == zeros[float64](1, 4), "linear"
