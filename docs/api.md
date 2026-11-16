@@ -253,13 +253,6 @@ auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guid
 | `TimeShiftPlan[T]`; `initTimeShiftPlan(T, dtMs, samples)`, `plan.samples`, `plan.dtMs`, `plan.nfft`, `plan.workspaceSize` | A shift by milliseconds of traces up to `samples` long. The FFT is `nextFastLen(3·samples)` and only a remainder of at most half a sample uses it. |
 | `plan.shiftMsInto(src, dst, shiftMs, ws)`, `plan.shiftMs(x, shiftMs, ws)` | `dst[j]` is the old sample at `j + shiftMs/dtMs` (positive: earlier, as `shiftSamples`). Length kept. What leaves one end is clipped; the other end is zeros; nothing that left comes back. A whole number of samples (within 1e-6) is a pure move, no FFT, NaN kept. A fraction is that move after a half-sample phase ramp on a zero-padded copy. A trace whose ends are not zero rings there (the sinc of the jump to the pad); that ringing is not a wrap. Nyquist is not shifted fractionally. A NaN shift leaves the samples. `|shift|` of a whole trace zeroes it. |
 
-## fft/tracecorr: `TraceCorrelationPlan`
-
-| Proc | What |
-|---|---|
-| `CorrNorm` (`corrNone`, `corrCoefficient`); `TraceCorrelationPlan[T]`; `initTraceCorrelationPlan(T, dtMs, samples)`, `plan.samples`, `plan.dtMs`, `plan.nfft`, `plan.workspaceSize` | Both lags of a trace against a reference, placed at a caller time. Not `CorrelationPlan` or `CrossCorrelationPlan` (those results are unchanged). |
-| `plan.correlateAtInto(x, reference, dst, zeroLagMs, ws, norm = corrCoefficient)` | `dst` has `x.len` values. Sample `j` is lag `j − round(zeroLagMs/dtMs)`. Zeros only where that lag has no overlap. `corrCoefficient` divides by `√(E_x·E_ref)`, so identical traces read 1. `corrNone` is the raw sum. A positive lag is a delayed signal. |
-
 ## filter/design: `FilterSpec`
 
 | Proc | What |
