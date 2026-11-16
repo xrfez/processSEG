@@ -110,7 +110,7 @@ func sweepLen*(spec: SweepSpec): int {.raises: [].} =
   ## The number of samples, `lengthMs / dtMs + 1` (a valid spec's length is
   ## a whole number of samples); 0 for a spec `validate` rejects for its
   ## length or interval (an interval that is not finite and positive, a
-  ## length under one interval, not finite, or of 2³¹ samples and more).
+  ## length under one interval, not finite, or of more than 2³¹ samples).
   if not (spec.dtMs > 0 and spec.dtMs < Inf): return 0
   let steps = spec.lengthMs / spec.dtMs
   if steps >= 1 and steps <= float64(high(int32)): int(round(steps)) + 1 else: 0
