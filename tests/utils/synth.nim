@@ -1,5 +1,9 @@
 ## Synthetic signals and gathers for the processSEG tests.
 ##
+## The wavelet, sinusoid, noise, travel times and gather events are the
+## public helpers in `processSEG/synth` (re-exported here), so there is one
+## implementation. The gather type and the geometry stay here.
+##
 ## Units follow the library (D7): ms, Hz, metres, m/s. Sample `j` of a trace is
 ## at `t0Ms + j·dtMs`.
 ##
@@ -29,10 +33,13 @@
 ## - an elevation static is `((srcZ − datum) + (rcvZ − datum)) / vReplacement`:
 ##   a station above the datum delays the event.
 
-import std/[math, random]
+import std/math
 import parseSEG # re-exports the CPU tensor API (not `arraymancer`, whose datasets do not build)
+import processSEG/synth as signal
 
 export parseSEG
+export signal.ricker, signal.addSinusoid, signal.addRicker, signal.addNoise,
+  signal.hyperbolicMs, signal.linearMs
 
 # ------------------------------------------------------------------ signals --
 
@@ -40,32 +47,9 @@ func zeroSignal*[T: SampleType](n: int): seq[T] =
   ## `n` zero samples.
   newSeq[T](n)
 
-func ricker*(tauMs, freqHz: float64): float64 =
-  ## The Ricker wavelet of peak frequency `freqHz`, `tauMs` from its centre;
-  ## 1 at the centre.
-  let a = (PI * freqHz * tauMs / 1000) ^ 2
-  (1 - 2 * a) * exp(-a)
-
-proc addSinusoid*[T: SampleType](x: var openArray[T], dtMs, freqHz: float64,
-    amp = 1.0, phaseRad = 0.0, t0Ms = 0.0) =
-  ## Adds `amp·sin(2π·f·t + phase)`, `t` in seconds.
-  for j in 0..<x.len:
-    let t = (t0Ms + j.float64 * dtMs) / 1000
-    x[j] += T(amp * sin(2 * PI * freqHz * t + phaseRad))
-
 proc addSpike*[T: SampleType](x: var openArray[T], at: int, amp = 1.0) =
   ## Adds `amp` at sample `at`.
   x[at] += T(amp)
-
-proc addRicker*[T: SampleType](x: var openArray[T], dtMs, centreMs,
-    freqHz: float64, amp = 1.0, t0Ms = 0.0) =
-  ## Adds a Ricker wavelet centred at `centreMs` (absolute time, like `t0Ms`).
-  ## Samples further than 3 periods from the centre are left alone.
-  let halfMs = 3000 / freqHz
-  for j in 0..<x.len:
-    let tau = t0Ms + j.float64 * dtMs - centreMs
-    if abs(tau) <= halfMs:
-      x[j] += T(amp * ricker(tau, freqHz))
 
 proc addOnset*[T: SampleType](x: var openArray[T], dtMs, onsetMs, freqHz: float64,
     amp = 1.0, decayMs = 30.0) =
@@ -86,13 +70,6 @@ proc addDrift*[T: SampleType](x: var openArray[T], dtMs, slopePerS: float64,
   ## Adds the linear drift `start + slopePerS·t`, `t` in seconds from sample 0.
   for j in 0..<x.len:
     x[j] += T(start + slopePerS * j.float64 * dtMs / 1000)
-
-proc addNoise*[T: SampleType](x: var openArray[T], sigma: float64, seed: int64) =
-  ## Adds white Gaussian noise of standard deviation `sigma`. The same seed gives
-  ## the same noise.
-  var rng = initRand(seed)
-  for j in 0..<x.len:
-    x[j] += T(rng.gauss(0, sigma))
 
 # ----------------------------------------------------------------- geometry --
 
@@ -224,48 +201,39 @@ proc window*[T](g: SynthGather[T], firstSample, cols: int): SynthGather[T] =
 
 # ------------------------------------------------------------------- events --
 
-func hyperbolicMs*(t0Ms, velocity, offset: float64): float64 =
-  ## NMO time `sqrt(t0² + x²/v²)`, in ms, for |offset| `x`.
-  sqrt(t0Ms ^ 2 + (abs(offset) / velocity * 1000) ^ 2)
-
-func linearMs*(t0Ms, velocity, offset: float64): float64 =
-  ## LMO time `t0 + |x|/v`, in ms.
-  t0Ms + abs(offset) / velocity * 1000
-
 func elevationShiftMs*(k: TraceKeys, datumZ, vReplacement: float64): float64 =
   ## The elevation static of a trace: positive when the stations are above the
   ## datum (see the module conventions).
   ((k.srcZ - datumZ) + (k.rcvZ - datumZ)) / vReplacement * 1000
 
-proc addWavelet[T](g: var SynthGather[T], row: int, centreMs, freqHz,
-    amp: float64) =
-  # Adds a Ricker wavelet to the live part of one row.
-  let
-    t0 = g.keys[row].t0Ms
-    halfMs = 3000 / freqHz
-  for j in 0..<g.liveCols(row):
-    let tau = t0 + float64(g.firstSample + j) * g.dtMs - centreMs
-    if abs(tau) <= halfMs:
-      g.data[row, j] = g.data[row, j] + T(amp * ricker(tau, freqHz))
+proc offsetsOf[T](g: SynthGather[T]): seq[float64] =
+  result = newSeq[float64](g.len)
+  for r in 0 ..< g.len:
+    result[r] = g.keys[r].offset
+
+proc traceT0Of[T](g: SynthGather[T]): seq[float64] =
+  result = newSeq[float64](g.len)
+  for r in 0 ..< g.len:
+    result[r] = g.keys[r].t0Ms
+
+proc liveOf[T](g: SynthGather[T]): seq[int] =
+  result = newSeq[int](g.len)
+  for r in 0 ..< g.len:
+    result[r] = g.liveCols(r)
 
 proc addHyperbola*[T](g: var SynthGather[T], t0Ms, velocity, freqHz: float64,
     amp = 1.0, shiftsMs: openArray[float64] = []) =
   ## Adds a reflection at `hyperbolicMs(t0Ms, velocity, offset)` on every row,
   ## plus `shiftsMs[row]` when given (statics).
-  doAssert shiftsMs.len in [0, g.len]
-  for r in 0..<g.len:
-    let shift = if shiftsMs.len > 0: shiftsMs[r] else: 0.0
-    g.addWavelet(r, hyperbolicMs(t0Ms, velocity, g.keys[r].offset) + shift,
-        freqHz, amp)
+  signal.addHyperbola(g.data, g.offsetsOf, g.dtMs, t0Ms, velocity, freqHz, amp,
+    shiftsMs, g.traceT0Of, g.firstSample, g.liveOf)
 
 proc addLinear*[T](g: var SynthGather[T], t0Ms, velocity, freqHz: float64,
     amp = 1.0, shiftsMs: openArray[float64] = []) =
   ## Adds a linear event (direct wave, refraction) at `linearMs(t0Ms, velocity,
   ## offset)` on every row, plus `shiftsMs[row]` when given.
-  doAssert shiftsMs.len in [0, g.len]
-  for r in 0..<g.len:
-    let shift = if shiftsMs.len > 0: shiftsMs[r] else: 0.0
-    g.addWavelet(r, linearMs(t0Ms, velocity, g.keys[r].offset) + shift, freqHz, amp)
+  signal.addLinear(g.data, g.offsetsOf, g.dtMs, t0Ms, velocity, freqHz, amp,
+    shiftsMs, g.traceT0Of, g.firstSample, g.liveOf)
 
 proc elevationShiftsMs*[T](g: SynthGather[T], datumZ,
     vReplacement: float64): seq[float64] =

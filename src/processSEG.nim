@@ -58,7 +58,9 @@
 ##   (`describePatches`, `receiverLayout`);
 ## - `processSEG/qc/fold`: fold maps of a survey: its bin grid (`surveyGrid`), pre-plot and actual fold (`preplotFold`, `addFold`, `foldDifference`);
 ## - `processSEG/qc/record`: field records against the XPS (`recordCompleteness`, `summarize`);
-## - `processSEG/qc/amplitude`: amplitude QC per trace and per record (`traceAmplitudeInto`, `recordAmplitude`).
+## - `processSEG/qc/amplitude`: amplitude QC per trace and per record (`traceAmplitudeInto`, `recordAmplitude`);
+## - `processSEG/synth`: synthetic traces and gathers (`ricker`, `addSinusoid`, `addRicker`,
+##   `addNoise`, `linearMs`, `hyperbolicMs`, `addLinear`, `addHyperbola`).
 
 import processSEG/core/[types, rows, workspace, basic, mute, shift, units, calibrate]
 import processSEG/fft/[plan, spectrum, hilbert, spectrogram]
@@ -74,9 +76,10 @@ import processSEG/vibroseis/[taper, sweep, pilot, correlate, vstack, sweeptrack]
 import processSEG/vibroseis/[crosscorrelate, vibqc]
 import processSEG/continuous/slice
 import processSEG/survey/patch
+import processSEG/synth
 export types, rows, workspace, basic, mute, plan, spectrum, hilbert, spectrogram, design,
     apply, iir, gain, curves, stats, pipeline, adapters, pool, shift, model,
     formats, moveout, elevation, nmo, binning, stack, batch, geometry, firstbreak, snr,
     shotfit, filescales
 export taper, sweep, pilot, correlate, vstack, slice, patch, fold, record, amplitude, units,
-    calibrate, sweeptrack, crosscorrelate, vibqc
+    calibrate, sweeptrack, crosscorrelate, vibqc, synth
