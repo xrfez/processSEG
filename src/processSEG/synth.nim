@@ -65,7 +65,7 @@ proc addSinusoid*[T: SampleType](x: var openArray[T], dtMs, freqHz: float64,
     amp = 1.0, phaseRad = 0.0, t0Ms = 0.0) =
   ## Adds `amp·sin(2π·f·t + phaseRad)`, `t` in seconds from sample 0 at
   ## `t0Ms`. Raises `ValueError` when `dtMs` is not finite and positive or
-  ## `freqHz`, `amp` or `phaseRad` is not finite.
+  ## `freqHz`, `amp`, `phaseRad` or `t0Ms` is not finite.
   if not (dtMs > 0 and dtMs < Inf):
     badSynth("dtMs must be finite and positive, got " & $dtMs)
   if not (finite(freqHz) and finite(amp) and finite(phaseRad) and finite(t0Ms)):
@@ -80,7 +80,7 @@ proc addRicker*[T: SampleType](x: var openArray[T], dtMs, centreMs,
   ## `t0Ms`). Column `j` is at `t0Ms + (firstSample + j)·dtMs`. Samples
   ## further than 3 periods from the centre are left alone. Raises
   ## `ValueError` when `dtMs` or `freqHz` is not finite and positive, or
-  ## `amp` or `t0Ms` is not finite, or `firstSample < 0`.
+  ## `amp`, `t0Ms` or `centreMs` is not finite, or `firstSample < 0`.
   if not (dtMs > 0 and dtMs < Inf):
     badSynth("dtMs must be finite and positive, got " & $dtMs)
   if not (freqHz > 0 and freqHz < Inf):
@@ -204,7 +204,8 @@ proc addLinear*[T: SampleType](samples: var Tensor[T], offsets: openArray[float6
   ## Only the first `liveCols[row]` columns are written (`liveCols` empty:
   ## the whole row); columns past that, and a row whose time is not finite,
   ## are left as they are. Raises `ValueError` for a bad `dtMs`, `freqHz`,
-  ## `velocity` or `amp`, a gather that is not rank 2 and C-contiguous, an
+  ## `velocity` or `amp`, a `t0Ms` that is not finite, `firstSample < 0`, a
+  ## gather that is not rank 2 and C-contiguous, an
   ## array whose length is neither empty nor one per row, or a `liveCols`
   ## entry outside `0 ..` the row width (checked before any row is written).
   addEvent(samples, offsets, dtMs, t0Ms, velocity, freqHz, amp, shiftsMs,
