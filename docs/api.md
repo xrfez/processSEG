@@ -543,6 +543,8 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 | `validate(spec)` | `ValueError`: frequencies ≤ 0, above `maxNyquistFraction`·Nyquist or Nyquist, a length under one sample, a bad table, boost or taper. |
 | `sweepLen(spec)` | Samples: `lengthMs / dtMs + 1` (both ends); 0 for a spec whose interval or length `validate` rejects. |
 | `sweepSamples(spec, T = float64): seq[T]`, `sweepInto(spec, x: var openArray[T])` | The sweep, `amplitude·taper·sin(φ₀ + 2π∫f)`. |
+| `SweepHarmonic` (`order`, `amp`, `phaseDeg`) | One term of a distorted sweep: `amp·sin(order·φ + phaseDeg)`, `φ` the fundamental's phase (`startPhaseDeg` included). Order 1, `amp` 1, phase 0 is the fundamental. |
+| `sweepHarmonics(spec, T = float64, harmonics = [], samples = 0): seq[T]`, `sweepHarmonicsInto(spec, x, harmonics = [])` | The sweep plus `harmonics` (empty: `sweepSamples`). `samples` 0 is `sweepLen`; a longer buffer is the sweep and then zeros. A term whose instantaneous frequency `order·f(t)` is at or above Nyquist is left out of that sample (cut, not folded, and not a reason to refuse the call). `ValueError` for an invalid spec, an empty buffer, or a harmonic whose `order` is not finite and > 0 or whose `amp` or `phaseDeg` is not finite. |
 | `frequencyAt(spec, tMs)`, `phaseAt(spec, tMs)` | The instantaneous frequency (`f1Hz` and `f2Hz` exactly at the two ends, never outside them for the laws that run one way); the phase in radians (closed-form laws; NaN for the dB laws). |
 | `segySweepType(spec)` | SEG-Y sweep type: 1 linear, 3 exponential, 4 other. |
 
@@ -682,3 +684,17 @@ record's source, in grid units.
 | `generateRelations(g, [layout,] shots, template): seq[SpsRelation]` | X records: per shot the template lines nearest the source (not short), on each the station slots around it (one slot per `pointStep`; a slot missing from R is a hole), plus short-line stations inside the patch; channels 1..n by ascending line and point, one record per run of consecutive stations. Distance limits alone take every R station inside (short lines too); with a template, its receivers inside. A shot whose source has no coordinates gets none (`ppCoordinates`, or distance limits), nor does one whose source line or point is not a finite number (any mode). `peShift` moves a distance box inside the receivers' extent (bounding box in the box frame); it takes a template or distance limits, not both. `ValueError` for neither (roll, shift), an empty template, shift with both, a non-finite offset or map, a negative or NaN limit. Write with parseSEG `writeSps`; O records with `receiverRelations`. |
 | `RecordAgreement` (`record`, `listed`, `generated`, `common`, `missing`, `extra`), `jaccard(a)`, `listedFraction(a)` | One record in two relation sets, by distinct receiver stations; `missing`: listed, not generated; `extra`: generated, not listed (receivers dropped in the field). |
 | `compareRelations(listed, generated: SurveyGeometry): seq[RecordAgreement]` | Per X record of either, ascending (index 0 and 1 alike). |
+
+## synth: synthetic traces and gathers
+
+In-memory samples only: this module never opens a file. A direct wave, a refraction
+and ground roll are linear events at different velocities and frequencies; a reflection
+is a hyperbola. Guide: [synthetic records](guide/synthetic.md).
+
+| Proc | What |
+|---|---|
+| `ricker(tauMs, freqHz)` | The Ricker wavelet, 1 at its centre, peak frequency `freqHz` (the amplitude spectrum peaks there). |
+| `addRicker(x, dtMs, centreMs, freqHz, amp = 1, t0Ms = 0, firstSample = 0)`, `addSinusoid(x, dtMs, freqHz, amp = 1, phaseRad = 0, t0Ms = 0)` | Add a wavelet or `amp·sin(2π·f·t + phaseRad)` into a trace. Column `j` is at `t0Ms + (firstSample + j)·dtMs`. The Ricker is not added more than 3 periods from its centre. `ValueError` for a bad `dtMs` or `freqHz`. |
+| `addNoise(x, sigma, seed)`, `addNoise(samples, sigma, seed)` | White Gaussian noise of standard deviation `sigma` (`std/random`: `initRand(seed)`, then `gauss`). The same seed, length and `sigma` give the same samples on one machine and one Nim version. Not guaranteed across Nim versions (`std/random` can change) or platforms (`gauss` uses `libm`). `sigma` 0 leaves the samples unchanged. The tensor form seeds row `r` with `seed + r` (wrapping in int64). `ValueError` when `sigma` is not finite and ≥ 0. |
+| `linearMs(t0Ms, velocity, offset)`, `hyperbolicMs(t0Ms, velocity, offset)` | Travel time in ms: `t0 + 1000·\|offset\| / velocity`, and `sqrt(t0² + (1000·\|offset\| / velocity)²)`. The same values as `lmoTime` and `nmoTime`. |
+| `addLinear(samples, offsets, dtMs, t0Ms, velocity, freqHz, amp = 1, shiftsMs = [], traceT0Ms = [], firstSample = 0, liveCols = [])`, `addHyperbola(...)` | A Ricker at that travel time on every row, plus `shiftsMs[row]` when given. Column `j` is at `traceT0Ms[row] + (firstSample + j)·dtMs` (empty `traceT0Ms`: 0). Only the first `liveCols[row]` columns are written (empty: the whole row). A NaN offset or time adds nothing on that row. `ValueError` for a bad interval, frequency, velocity or amplitude, a gather that is not rank 2 and C-contiguous, or an array whose length is neither empty nor one per row. |

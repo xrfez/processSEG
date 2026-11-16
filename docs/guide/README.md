@@ -42,6 +42,7 @@ or a small SEG-Y written with parseSEG, so they need no files.
 | Bin a survey automatically; pre-plot and actual fold maps, their difference | [survey-qc.md](survey-qc.md#binning-and-fold-maps) |
 | Check field records against the XPS (missing, unlisted, mismatched records) | [survey-qc.md](survey-qc.md#record-completeness) |
 | Flag dead, clipped, spiky, noisy traces by their amplitudes | [survey-qc.md](survey-qc.md#amplitude-qc) |
+| Build a small synthetic shot gather, or a ground force with a known phase error and harmonic distortion | [synthetic.md](synthetic.md) |
 
 ## Related documents
 
