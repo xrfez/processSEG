@@ -202,3 +202,11 @@ block noise_default_seed:
   for j in 0 ..< 64:
     if t[0, j] != t[1, j]: same = false
   doAssert not same, "rows of a gather with no seed must differ"
+
+block tensor_noise_sigma_no_rows:
+  # sigma is checked before the rows: a tensor with no rows has no row call
+  # to check it, and a NaN or negative sigma must still raise, as for a trace.
+  var empty = zeros[float64](0, 4)
+  doAssertRaises(ValueError): empty.addNoise(NaN)
+  doAssertRaises(ValueError): empty.addNoise(-1.0)
+  empty.addNoise(0.0)

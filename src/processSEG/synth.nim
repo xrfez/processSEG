@@ -103,6 +103,10 @@ func rowSeed(seed: int64, row: int): int64 {.inline.} =
   ## `seed + row`, wrapping in int64, so a row can be drawn on its own.
   cast[int64](uint64(seed) + uint64(row))
 
+proc checkSigma(sigma: float64) =
+  if not (sigma >= 0 and sigma < Inf):
+    badSynth("sigma must be finite and ≥ 0, got " & $sigma)
+
 proc addNoise*[T: SampleType](x: var openArray[T], sigma: float64,
     seed: int64 = DefaultNoiseSeed) =
   ## Adds white Gaussian noise of standard deviation `sigma` (`std/random`,
@@ -114,8 +118,7 @@ proc addNoise*[T: SampleType](x: var openArray[T], sigma: float64,
   ## trace its own seed. Seed 0 draws the same noise as 2147483647 (`initRand`
   ## replaces 0), so avoid 0. Raises `ValueError` when `sigma` is not finite
   ## and ≥ 0.
-  if not (sigma >= 0 and sigma < Inf):
-    badSynth("sigma must be finite and ≥ 0, got " & $sigma)
+  checkSigma(sigma)
   if sigma == 0 or x.len == 0: return
   var rng = initRand(seed)
   for j in 0 ..< x.len:
@@ -128,6 +131,7 @@ proc addNoise*[T: SampleType](samples: var Tensor[T], sigma: float64,
   ## without the others; with no seed, rows `r` use `DefaultNoiseSeed + r`.
   ## Raises `ValueError` as `addNoise`, and as `rowBlock` when `samples` is
   ## not a rank-2 C-contiguous tensor.
+  checkSigma(sigma)
   let b = rowBlock(samples)
   for r in 0 ..< b.len:
     b.row(r).addNoise(sigma, rowSeed(seed, r))
