@@ -154,6 +154,9 @@ proc checkEvent[T: SampleType](samples: Tensor[T], offsets: openArray[float64],
     badSynth("traceT0Ms must be empty or one per row, got " & $traceT0Ms.len)
   if liveCols.len notin [0, result.len]:
     badSynth("liveCols must be empty or one per row, got " & $liveCols.len)
+  for r, live in liveCols:
+    if live < 0 or live > result.cols:
+      badSynth("liveCols[" & $r & "] = " & $live & " is outside 0 .. " & $result.cols)
 
 proc addEvent[T: SampleType](samples: var Tensor[T], offsets: openArray[float64],
     dtMs, t0Ms, velocity, freqHz, amp: float64, shiftsMs, traceT0Ms: openArray[float64],
@@ -162,8 +165,6 @@ proc addEvent[T: SampleType](samples: var Tensor[T], offsets: openArray[float64]
     traceT0Ms, firstSample, liveCols)
   for r in 0 ..< b.len:
     let live = if liveCols.len == 0: b.cols else: liveCols[r]
-    if live < 0 or live > b.cols:
-      badSynth("liveCols[" & $r & "] = " & $live & " is outside 0 .. " & $b.cols)
     if live > 0:
       let shift = if shiftsMs.len == 0: 0.0 else: shiftsMs[r]
       let t0 = if traceT0Ms.len == 0: 0.0 else: traceT0Ms[r]
@@ -183,8 +184,9 @@ proc addLinear*[T: SampleType](samples: var Tensor[T], offsets: openArray[float6
   ## Only the first `liveCols[row]` columns are written (`liveCols` empty:
   ## the whole row); columns past that, and a row whose time is not finite,
   ## are left as they are. Raises `ValueError` for a bad `dtMs`, `freqHz`,
-  ## `velocity` or `amp`, a gather that is not rank 2 and C-contiguous, or an
-  ## array whose length is neither empty nor one per row.
+  ## `velocity` or `amp`, a gather that is not rank 2 and C-contiguous, an
+  ## array whose length is neither empty nor one per row, or a `liveCols`
+  ## entry outside `0 ..` the row width (checked before any row is written).
   addEvent(samples, offsets, dtMs, t0Ms, velocity, freqHz, amp, shiftsMs,
     traceT0Ms, firstSample, liveCols, linear = true)
 

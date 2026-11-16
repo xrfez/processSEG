@@ -9,7 +9,9 @@
 ## - harmonics_qc: `sweepHarmonicsInto` dropped each term's phase (the QC
 ##   read 0° instead of the 4° that was put in);
 ## - harmonics_fundamental_nyquist: `sweepHarmonics` cut an order-1 term at
-##   Nyquist (the last sample went to 0).
+##   Nyquist (the last sample went to 0);
+## - live_columns_checked_first: a bad `liveCols` entry raised after the rows
+##   before it were written.
 
 import std/[assertions, math]
 import parseSEG, processSEG
@@ -160,3 +162,14 @@ block harmonics_fundamental_nyquist:
   let got = spec.sweepHarmonics(float64, [SweepHarmonic()])
   doAssert got == want, "order 1 equals the sweep"
   doAssert got[^1] == want[^1], "last sample " & $got[^1]
+
+block live_columns_checked_first:
+  # A live count outside 0 .. cols is refused before any row is written: row 0
+  # (valid) must keep its prefilled samples when row 1 is refused.
+  var g = zeros[float64](3, 80)
+  for j in 0 ..< 3 * 80: g[j div 80, j mod 80] = 7
+  doAssertRaises(ValueError):
+    g.addLinear([0.0, 100.0, 200.0], 2, 0, 1500, 30, liveCols = [80, 81, 80])
+  for r in 0 ..< 3:
+    for j in 0 ..< 80:
+      doAssert g[r, j] == 7, "row " & $r & " col " & $j & " was written"
