@@ -3,7 +3,7 @@
     "parseSEG": {
       "dir": "$deps/parseSEG",
       "url": "https://github.com/xrfez/parseSEG",
-      "commit": "be1a2af2667b7861ff02a692970431f24225afe4",
+      "commit": "f2b1856efa52cd32629799a821391e984ebe45f9",
       "version": ""
     },
     "Arraymancer": {
@@ -89,7 +89,7 @@
     "content": [
       "# Package",
       "",
-      "version       = \"0.5.0\"",
+      "version       = \"0.6.0\"",
       "author        = \"Joshua Fenner\"",
       "description   = \"Seismic SEG-Y / SEG-D processing built on parseSEG\"",
       "license       = \"MIT\"",
@@ -99,7 +99,7 @@
       "# Dependencies",
       "",
       "requires \"nim >= 2.4.0\"",
-      "requires \"https://github.com/xrfez/parseSEG >= 0.12.0\"",
+      "requires \"https://github.com/xrfez/parseSEG >= 0.14.0\"",
       "",
       ""
     ]
