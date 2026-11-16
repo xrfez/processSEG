@@ -17,6 +17,7 @@
 ## - `processSEG/fft/hilbert`: `HilbertPlan`, the Hilbert transform and the envelope of a trace;
 ## - `processSEG/fft/spectrogram`: `SpectrogramPlan`, short-time Fourier amplitudes (time-frequency);
 ## - `processSEG/fft/fk`: `FkPlan`, the f-k amplitude of a gather;
+## - `processSEG/fft/timeshift`: `TimeShiftPlan`, a band-limited shift by milliseconds;
 ## - `processSEG/filter/design`: `FilterSpec`, cos² trapezoid, Butterworth and notch responses;
 ## - `processSEG/filter/apply`: `FilterPlan`, zero-phase FFT filtering with edge handling;
 ## - `processSEG/filter/iir`: `IirPlan`, Butterworth biquads, zero and minimum phase;
@@ -65,7 +66,7 @@
 ##   `addNoise`, `linearMs`, `hyperbolicMs`, `addLinear`, `addHyperbola`).
 
 import processSEG/core/[types, rows, workspace, basic, mute, shift, units, calibrate]
-import processSEG/fft/[plan, spectrum, hilbert, spectrogram, fk]
+import processSEG/fft/[plan, spectrum, hilbert, spectrogram, fk, timeshift]
 import processSEG/filter/[design, apply, iir]
 import processSEG/gain/[gain, curves, stats]
 import processSEG/[pipeline, adapters, batch, filescales]
@@ -79,7 +80,8 @@ import processSEG/vibroseis/[crosscorrelate, vibqc]
 import processSEG/continuous/slice
 import processSEG/survey/patch
 import processSEG/synth
-export types, rows, workspace, basic, mute, plan, spectrum, hilbert, spectrogram, fk, design,
+export types, rows, workspace, basic, mute, plan, spectrum, hilbert, spectrogram, fk,
+    timeshift, design,
     apply, iir, gain, curves, stats, pipeline, adapters, pool, shift, model,
     formats, moveout, elevation, nmo, binning, stack, batch, geometry, firstbreak, snr,
     shotfit, filescales
