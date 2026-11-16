@@ -2,6 +2,9 @@
 ## in dB, flat extrapolation, the power and exponential curves, each row's
 ## t0 (on and off the grid, before and beyond the table), NaN t0, liveness,
 ## and no allocation.
+##
+## Fail-first: `held_flat_after` failed while `heldGain` kept the exponential
+## slope past `untilMs` (the second knot was not the hold).
 
 import std/[assertions, math]
 import processSEG
@@ -236,3 +239,31 @@ block overflowing_gain_is_refused:
   var y = newSeq[float32](100)
   p32.applyGainCurve(y, 1e9)
   for v in y: doAssert v == 0
+
+block held_flat_after:
+  let expc = exponentialGain(6) # 6 dB/s
+  let held = heldGain(expc, untilMs = 2000)
+  doAssert held.kind == gcKnots
+  doAssert held.gainDbAt(0) == 0
+  doAssert near(held.gainDbAt(2000), 12, 1e-12), "6 dB/s over 2 s"
+  doAssert held.gainDbAt(4000) == held.gainDbAt(2000), "flat after the hold"
+  doAssert near(held.gainDbAt(1000), expc.gainDbAt(1000), 1e-12)
+  let p = powerGain(2, refMs = 1000, minMs = 10)
+  let hp = heldGain(p, untilMs = 3000)
+  var worst = 0.0
+  var t = 10.0
+  while t <= 3000:
+    worst = max(worst, abs(hp.gainDbAt(t) - p.gainDbAt(t)))
+    t *= 1.005
+  doAssert worst <= 0.001, $worst
+  doAssert hp.gainDbAt(5000) == hp.gainDbAt(3000)
+  let kg = knotGain([GainKnot(tMs: 0, dB: 0), GainKnot(tMs: 1000, dB: 12),
+    GainKnot(tMs: 4000, dB: 24)])
+  let hk = heldGain(kg, untilMs = 2000)
+  doAssert hk.gainDbAt(0) == 0 and near(hk.gainDbAt(1000), 12, 1e-12)
+  doAssert near(hk.gainDbAt(2000), kg.gainDbAt(2000), 1e-12)
+  doAssert hk.gainDbAt(3000) == hk.gainDbAt(2000)
+  doAssertRaises ValueError: discard heldGain(expc, untilMs = 0)
+  doAssertRaises ValueError: discard heldGain(expc, untilMs = NaN)
+  doAssertRaises ValueError: discard heldGain(expc, 100, step = 1.0)
+  doAssertRaises ValueError: discard heldGain(GainCurve(), 100)

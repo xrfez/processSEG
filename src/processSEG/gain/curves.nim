@@ -159,6 +159,56 @@ func factorAt*(c: GainCurve, tMs: float64): float64 {.raises: [].} =
   of gcPower: pow(max(tMs, c.minMs) / c.refMs, c.power)
   else: pow(10.0, c.gainDbAt(tMs) / 20)
 
+proc heldGain*(curve: GainCurve, untilMs: float64, step = 1.02): GainCurve =
+  ## `curve` held flat after `untilMs`: the same gain on `0 .. untilMs`, and
+  ## the gain at `untilMs` at every later time. Before 0 it holds the gain at
+  ## 0 (a knot curve is flat before its first knot).
+  ##
+  ## An exponential curve is exactly two knots (it is linear in dB). A power
+  ## curve is knots from its `minMs` (where it stops falling) every `step` in
+  ## time — 1.02 is 2 %, and a chord of `powerGain` over 2 % of time is within
+  ## 0.001 dB for a power of 2 — plus a knot at `untilMs`. A knot curve keeps
+  ## its knots before `untilMs` and adds the gain at `untilMs`.
+  ##
+  ## Raises `ValueError` when `untilMs` is not finite and positive, `step` is
+  ## not finite and greater than 1, the curve was not built, or a power curve
+  ## would need more than 100_000 knots.
+  if not (untilMs.finite and untilMs > 0):
+    badCurve("untilMs must be finite and > 0, got " & $untilMs)
+  if not (step.finite and step > 1):
+    badCurve("step must be finite and > 1, got " & $step)
+  if curve.kind == gcKnots and curve.knots.len == 0:
+    badCurve("an unbuilt curve cannot be held")
+  var knots: seq[GainKnot] = @[]
+  case curve.kind
+  of gcExponential:
+    knots.add GainKnot(tMs: 0, dB: curve.gainDbAt(0))
+    knots.add GainKnot(tMs: untilMs, dB: curve.gainDbAt(untilMs))
+  of gcPower:
+    let start = curve.minMs
+    if untilMs <= start:
+      knots.add GainKnot(tMs: untilMs, dB: curve.gainDbAt(untilMs))
+    else:
+      let count = int(ln(untilMs / start) / ln(step)) + 2
+      if count > 100_000:
+        badCurve("holding this power curve would take " & $count &
+          " knots; widen step or shorten untilMs")
+      var t = start
+      while t < untilMs:
+        knots.add GainKnot(tMs: t, dB: curve.gainDbAt(t))
+        let nxt = t * step
+        if not (nxt > t): break
+        t = nxt
+      if knots.len == 0 or knots[^1].tMs < untilMs:
+        knots.add GainKnot(tMs: untilMs, dB: curve.gainDbAt(untilMs))
+  of gcKnots:
+    for k in curve.knots:
+      if k.tMs < untilMs: knots.add k
+      else: break
+    if knots.len == 0 or knots[^1].tMs < untilMs:
+      knots.add GainKnot(tMs: untilMs, dB: curve.gainDbAt(untilMs))
+  knotGain(knots)
+
 proc initGainCurvePlan*(T: typedesc[SampleType], curve: GainCurve,
     dtMs: float64, samples: int, tMinMs = 0.0, tMaxMs = NaN): GainCurvePlan[T] =
   ## A plan applying `curve` to traces of up to `samples` samples at `dtMs`,
