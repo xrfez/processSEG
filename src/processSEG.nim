@@ -18,6 +18,7 @@
 ## - `processSEG/fft/spectrogram`: `SpectrogramPlan`, short-time Fourier amplitudes (time-frequency);
 ## - `processSEG/fft/fk`: `FkPlan`, the f-k amplitude of a gather;
 ## - `processSEG/fft/timeshift`: `TimeShiftPlan`, a band-limited shift by milliseconds;
+## - `processSEG/fft/tracecorr`: `TraceCorrelationPlan`, both lags of a trace correlation;
 ## - `processSEG/filter/design`: `FilterSpec`, cos² trapezoid, Butterworth and notch responses;
 ## - `processSEG/filter/apply`: `FilterPlan`, zero-phase FFT filtering with edge handling;
 ## - `processSEG/filter/iir`: `IirPlan`, Butterworth biquads, zero and minimum phase;
@@ -67,6 +68,7 @@
 
 import processSEG/core/[types, rows, workspace, basic, mute, shift, units, calibrate]
 import processSEG/fft/[plan, spectrum, hilbert, spectrogram, fk, timeshift]
+import processSEG/fft/tracecorr
 import processSEG/filter/[design, apply, iir]
 import processSEG/gain/[gain, curves, stats]
 import processSEG/[pipeline, adapters, batch, filescales]
@@ -81,7 +83,7 @@ import processSEG/continuous/slice
 import processSEG/survey/patch
 import processSEG/synth
 export types, rows, workspace, basic, mute, plan, spectrum, hilbert, spectrogram, fk,
-    timeshift, design,
+    timeshift, tracecorr, design,
     apply, iir, gain, curves, stats, pipeline, adapters, pool, shift, model,
     formats, moveout, elevation, nmo, binning, stack, batch, geometry, firstbreak, snr,
     shotfit, filescales
