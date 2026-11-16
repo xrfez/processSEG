@@ -1,6 +1,12 @@
 ## Spectra (fft/spectrum): peak frequency of a sinusoid within one bin, the
 ## amplitude and dB scales, the power average over live rows, and no
 ## allocation in a steady state.
+##
+## Fail-first: `ref_amplitude` failed while `toDbInto` ignored `refAmplitude`
+## (0 dB stayed at 1). `unwrap_does_not_cross_a_gap` failed while the ±360
+## step was not applied (a jump stayed at −170 instead of 190).
+## `delay_of_a_ramp` failed while `removeDelayInto` returned `b·1000/360`
+## instead of `−b·1000/360` (−4 ms).
 
 import std/[assertions, math]
 import processSEG
@@ -254,3 +260,80 @@ block sixty_second_record_at_1_ms:
   let n = allocsIn:
     discard sp.averageAmplitudeInto(g.data, meta, 0, avg, ws)
   doAssert n == 0, $n & " allocations"
+
+block ref_amplitude:
+  # 0 dB at a reference amplitude, not at 1. Present callers (no argument)
+  # still put 0 dB at 1.
+  let amp = @[0.0, 0.5, 2.0, 20.0]
+  var db = newSeq[float64](4)
+  toDbInto(amp, db, dbAbsolute, refAmplitude = 2.0)
+  doAssert db[2] == 0, "amplitude 2 at reference 2 is 0 dB"
+  doAssert near(db[3], 20, 1e-12) and near(db[1], 20 * log10(0.5 / 2), 1e-12)
+  doAssert db[0] == -120
+  toDbInto(amp, db, dbAbsolute, floorDb = -30)
+  doAssert db[0] == -30 and near(db[2], 20 * log10(2.0), 1e-12), "default reference is 1"
+  toDbInto(amp, db, dbPeak, refAmplitude = 2.0)
+  doAssert db[3] == 0, "dbPeak ignores the reference amplitude"
+  toDbInto(amp, db, dbAbsolute, refAmplitude = 0.0)
+  doAssert db[2] == -120, "a non-positive reference clamps"
+
+block unwrap_does_not_cross_a_gap:
+  # Bins 0, 1 drawn; 2 hidden; 3 drawn at a wrapped jump from bin 1, not from
+  # the hidden bin. A gap restarts from the last drawn value.
+  let phase = @[10.0, 20.0, 170.0, -150.0, 40.0]
+  let shown = @[true, true, false, true, false]
+  var dst = newSeq[float64](5)
+  unwrapPhaseInto(phase, shown, dst)
+  doAssert dst[0] == 10 and dst[1] == 20
+  doAssert dst[2].isNaN and dst[4].isNaN
+  # −150 is 170° below 20, within 180, so it is not wrapped up to 210.
+  doAssert dst[3] == -150, $dst[3]
+  # A jump of more than 180° from the last drawn value is ±360.
+  let jump = @[0.0, 170.0, -170.0]
+  let all = @[true, true, true]
+  unwrapPhaseInto(jump, all, dst.toOpenArray(0, 2))
+  doAssert jump[2] - jump[1] < -180
+  doAssert dst[2] == 190, $dst[2]
+  var bad = newSeq[float64](2)
+  doAssertRaises(AssertionDefect): unwrapPhaseInto(jump, all, bad)
+
+block delay_of_a_ramp:
+  # phase = −360·f·τ with τ = 4 ms: the fit returns 4, and the residual is 0
+  # on the drawn bins. A hidden bin stays NaN and is not in the fit.
+  let hz = @[10.0, 20.0, 30.0, 40.0, 50.0]
+  var phase = newSeq[float64](5)
+  for i, f in hz: phase[i] = -360 * f * 0.004
+  let shown = @[true, true, false, true, true]
+  var dst = newSeq[float64](5)
+  let delay = removeDelayInto(phase, hz, shown, dst)
+  doAssert near(delay, 4.0, 1e-9), $delay
+  doAssert dst[2].isNaN
+  for i in [0, 1, 3, 4]: doAssert abs(dst[i]) < 1e-9, $dst[i]
+  # Fewer than two drawn bins: NaN, nothing written as a delay.
+  let one = @[true, false, false, false, false]
+  doAssert removeDelayInto(phase, hz, one, dst).isNaN
+  for v in dst: doAssert v.isNaN
+
+block spectrum_accumulator:
+  # Fail-first: add summed amplitudes instead of amp²·rows, so two blocks
+  # did not match one averageAmplitudeInto.
+  var g = cmpGather[float64](0, newSeq[float64](4), 400, 2)
+  for r in 0 ..< 4:
+    for j in 0 ..< 400:
+      g.data[r, j] = cos(2 * PI * 25 * float64(j) * 2 / 1000) * float64(r + 1)
+  let meta = initChunkMeta(g.rows, dtMs = 2)
+  let sp = initSpectrumPlan(float64, dtMs = 2, windowLen = 200, taperFraction = 0, nfft = 200)
+  var acc = initSpectrumAccumulator(float64, dtMs = 2, windowLen = 200, nfft = 200,
+    taperFraction = 0)
+  var ws = initWorkspace()
+  ws.reserve(acc)
+  doAssert acc.add(g.data, meta, 0, ws, rows = 0 .. 1) == 2
+  doAssert acc.add(g.data, meta, 0, ws, rows = 2 .. 3) == 2
+  var got, one = newSeq[float64](acc.bins)
+  acc.amplitudesInto(got)
+  doAssert sp.averageAmplitudeInto(g.data, meta, 0, one, ws) == 4
+  for k in 0 ..< got.len:
+    doAssert near(got[k], one[k], 1e-9), $k & " " & $got[k] & " " & $one[k]
+  let quiet = allocsIn:
+    discard acc.add(g.data, meta, 0, ws, rows = 0 .. 1)
+  doAssert quiet == 0

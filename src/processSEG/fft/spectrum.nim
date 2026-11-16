@@ -34,9 +34,9 @@
 ##
 ## **dB scale** (`toDbInto`): `20·log10(amplitude / ref)`, where `ref` is the
 ## largest amplitude of the spectrum (`dbPeak`, the default: the peak is 0 dB
-## and everything else negative) or 1 sample unit (`dbAbsolute`: a sinusoid of
-## amplitude 1 on a bin is 0 dB). Values below `floorDb` are clamped to it, so
-## a zero amplitude is never −∞.
+## and everything else negative) or `refAmplitude` sample units (`dbAbsolute`,
+## `refAmplitude = 1` by default: a sinusoid of amplitude 1 on a bin is 0 dB).
+## Values below `floorDb` are clamped to it, so a zero amplitude is never −∞.
 ##
 ## **Averaging** (`averageAmplitudeInto`) is over power: the result is
 ## `sqrt(mean over traces of amplitude²)`, the RMS amplitude, so the dB of
@@ -156,13 +156,17 @@ proc amplitudePhaseInto*[T: SampleType](re, im: openArray[T],
     phase[k] = T(arctan2(float64(im[k]), float64(re[k])))
 
 proc toDbInto*(amp: openArray[float64], db: var openArray[float64],
-    reference = dbPeak, floorDb = -120.0) {.raises: [].} =
+    reference = dbPeak, floorDb = -120.0, refAmplitude = 1.0) {.raises: [].} =
   ## `20·log10(amp / ref)` per bin (module documentation), clamped below at
-  ## `floorDb`. With `dbPeak` and an all-zero spectrum, every bin is
-  ## `floorDb`. `amp` and `db` have the same length (an `AssertionDefect`
-  ## otherwise).
+  ## `floorDb`. With `dbAbsolute`, 0 dB is an amplitude of `refAmplitude`
+  ## (1 by default, so a call that does not pass it is unchanged). With
+  ## `dbPeak` the peak is still 0 dB and `refAmplitude` is not used. A
+  ## `refAmplitude` that is not finite and positive clamps every bin to
+  ## `floorDb`, as a zero reference would. With `dbPeak` and an all-zero
+  ## spectrum, every bin is `floorDb`. `amp` and `db` have the same length
+  ## (an `AssertionDefect` otherwise).
   doAssert db.len == amp.len, "amp and db need the same length"
-  var r = 1.0
+  var r = refAmplitude
   if reference == dbPeak:
     r = 0.0
     for a in amp:
@@ -171,6 +175,74 @@ proc toDbInto*(amp: openArray[float64], db: var openArray[float64],
     let a = amp[k]
     let v = if r > 0 and a > 0: 20 * log10(a / r) else: -Inf # NaN: the floor
     db[k] = max(v, floorDb)
+
+proc wrapStep(d: float64): float64 {.inline.} =
+  ## `d` brought into (−180, 180] by steps of 360.
+  result = d
+  while result > 180: result -= 360
+  while result <= -180: result += 360
+
+proc unwrapPhaseInto*(phaseDeg: openArray[float64], shown: openArray[bool],
+    dst: var openArray[float64]) {.raises: [].} =
+  ## Unwraps `phaseDeg` along the bins `shown` marks, into `dst` (all three
+  ## the same length; an `AssertionDefect` otherwise). A bin that is not
+  ## shown, or whose phase is not finite, is a gap: `dst` is NaN there, and
+  ## the gap is not crossed — the next shown finite bin is unwrapped from the
+  ## last drawn value, not from the bins in between. A step of more than 180°
+  ## from that value is brought back by ±360° until it is in (−180, 180]. The
+  ## first drawn bin is copied as it is. Nothing allocates.
+  let n = phaseDeg.len
+  doAssert shown.len == n and dst.len == n, "phase, shown and dst need the same length"
+  var last = NaN
+  for i in 0 ..< n:
+    if not shown[i] or phaseDeg[i].classify in {fcNan, fcInf, fcNegInf}:
+      dst[i] = NaN
+    elif last.isNaN:
+      dst[i] = phaseDeg[i]
+      last = dst[i]
+    else:
+      dst[i] = last + wrapStep(phaseDeg[i] - last)
+      last = dst[i]
+
+proc removeDelayInto*(unwrapped, hz: openArray[float64], shown: openArray[bool],
+    dst: var openArray[float64]): float64 {.raises: [].} =
+  ## Removes the least-squares line `p = a + b·f` from the drawn finite bins
+  ## of an unwrapped phase (`unwrapped` degrees, `hz` the frequency of each
+  ## bin), into `dst`: `dst = p − (a + b·f)` there and NaN elsewhere. Returns
+  ## the delay in ms, `−b·1000/360` (a delay of τ ms is a slope of
+  ## `−360·τ/1000` degrees per Hz). NaN, and `dst` all NaN, when fewer than
+  ## two bins are drawn and finite, or the normal-equation denominator is
+  ## below `1e-12·max(1, Σf²)` (a fit the frequencies do not determine). All
+  ## four have the same length (an `AssertionDefect` otherwise). Nothing
+  ## allocates.
+  let n = unwrapped.len
+  doAssert hz.len == n and shown.len == n and dst.len == n,
+    "phase, hz, shown and dst need the same length"
+  var count = 0
+  var sumF, sumF2, sumP, sumPF = 0.0
+  for i in 0 ..< n:
+    if shown[i] and unwrapped[i].classify notin {fcNan, fcInf, fcNegInf} and
+        hz[i].classify notin {fcNan, fcInf, fcNegInf}:
+      let f = hz[i]
+      let p = unwrapped[i]
+      sumF += f
+      sumF2 += f * f
+      sumP += p
+      sumPF += p * f
+      inc count
+  let den = float64(count) * sumF2 - sumF * sumF
+  if count < 2 or abs(den) < 1e-12 * max(1.0, sumF2):
+    for i in 0 ..< n: dst[i] = NaN
+    return NaN
+  let a = (sumP * sumF2 - sumF * sumPF) / den
+  let b = (float64(count) * sumPF - sumF * sumP) / den
+  for i in 0 ..< n:
+    if shown[i] and unwrapped[i].classify notin {fcNan, fcInf, fcNegInf} and
+        hz[i].classify notin {fcNan, fcInf, fcNegInf}:
+      dst[i] = unwrapped[i] - (a + b * hz[i])
+    else:
+      dst[i] = NaN
+  -b * 1000 / 360
 
 # -------------------------------------------------------------- one trace --
 
@@ -292,3 +364,89 @@ proc averageAmplitudeInto*[T: SampleType](sp: SpectrumPlan[T],
   ## `ValueError` otherwise).
   meta.checkShape(samples)
   sp.averageAmplitudeInto(rowBlock(samples), meta, firstCol, amp, ws, rows)
+
+# ---------------------------------------------------- several windows summed --
+
+type
+  SpectrumAccumulator*[T: SampleType] = object
+    ## A power sum of `averageAmplitudeInto` over several calls, so a spectrum
+    ## panel can average windows the caller feeds one block at a time. Build
+    ## it with `initSpectrumAccumulator`.
+    plan: SpectrumPlan[T]
+    power: seq[float64]
+    tmp: seq[float64]
+    used: int
+
+proc initSpectrumAccumulator*(T: typedesc[SampleType], dtMs: float64, windowLen: int,
+    nfft = 0, taperFraction = 0.1, demean = true): SpectrumAccumulator[T] =
+  ## An accumulator of windows of `windowLen` samples at `dtMs`, with the
+  ## same taper, padding and demean as `initSpectrumPlan`. Raises `ValueError`
+  ## as that does. Allocates the power sum; `add` does not.
+  result.plan = initSpectrumPlan(T, dtMs, windowLen, taperFraction, nfft, demean)
+  result.power = newSeq[float64](result.plan.bins)
+  result.tmp = newSeq[float64](result.plan.bins)
+
+func bins*[T](acc: SpectrumAccumulator[T]): int {.inline, raises: [].} =
+  ## The number of frequency bins.
+  acc.plan.bins
+
+func windowLen*[T](acc: SpectrumAccumulator[T]): int {.inline, raises: [].} =
+  ## The window length in samples.
+  acc.plan.windowLen
+
+func nfft*[T](acc: SpectrumAccumulator[T]): int {.inline, raises: [].} =
+  ## The FFT length.
+  acc.plan.nfft
+
+func dtMs*[T](acc: SpectrumAccumulator[T]): float64 {.inline, raises: [].} =
+  ## The sample interval.
+  acc.plan.dtMs
+
+func binHz*[T](acc: SpectrumAccumulator[T], k: int): float64 {.inline, raises: [].} =
+  ## The frequency of bin `k`, in Hz.
+  acc.plan.binHz(k)
+
+func used*[T](acc: SpectrumAccumulator[T]): int {.inline, raises: [].} =
+  ## The rows added so far.
+  acc.used
+
+func workspaceSize*[T](acc: SpectrumAccumulator[T]): WorkspaceSize {.raises: [].} =
+  ## The scratch `add` needs (the plan's).
+  acc.plan.workspaceSize
+
+proc clear*[T](acc: var SpectrumAccumulator[T]) {.raises: [].} =
+  ## Zeros the power sum. The plan stays.
+  for k in 0 ..< acc.power.len: acc.power[k] = 0
+  acc.used = 0
+
+proc add*[T: SampleType](acc: var SpectrumAccumulator[T], b: RowBlock[T],
+    meta: ChunkMeta, firstCol: int, ws: var Workspace, rows = 0 .. int.high): int =
+  ## Adds the window `averageAmplitudeInto` would average, as `amp²·rows`, to
+  ## the power sum. Returns the rows added (0 when the window has none). The
+  ## same `ValueError`s as `averageAmplitudeInto`. `ws` must hold
+  ## `acc.workspaceSize`. Nothing allocates.
+  let n = acc.plan.averageAmplitudeInto(b, meta, firstCol, acc.tmp, ws, rows)
+  if n > 0:
+    for k in 0 ..< acc.power.len:
+      acc.power[k] += acc.tmp[k] * acc.tmp[k] * float64(n)
+    acc.used += n
+  n
+
+proc add*[T: SampleType](acc: var SpectrumAccumulator[T], samples: Tensor[T],
+    meta: ChunkMeta, firstCol: int, ws: var Workspace, rows = 0 .. int.high): int =
+  ## `add` on a `[rows, cols]` tensor.
+  meta.checkShape(samples)
+  acc.add(rowBlock(samples), meta, firstCol, ws, rows)
+
+proc amplitudesInto*[T](acc: SpectrumAccumulator[T], dst: var openArray[float64]) {.
+    raises: [].} =
+  ## `sqrt(power / used)` into `dst` (`bins` values; an `AssertionDefect`
+  ## otherwise): the power-averaged amplitude, on the same scale as
+  ## `averageAmplitudeInto` (a sinusoid of amplitude A on a bin reads A).
+  ## All zero when nothing has been added.
+  doAssert dst.len == acc.power.len, "dst needs bins values"
+  if acc.used == 0:
+    for k in 0 ..< dst.len: dst[k] = 0
+  else:
+    let u = float64(acc.used)
+    for k in 0 ..< dst.len: dst[k] = sqrt(acc.power[k] / u)
