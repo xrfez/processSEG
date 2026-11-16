@@ -136,7 +136,7 @@ proc validate*(spec: SweepSpec) =
   if steps > float64(high(int32)):
     badSweep("a sweep of " & $spec.lengthMs & " ms at " & $spec.dtMs &
       " ms is over 2³¹ samples")
-  if abs(steps - round(steps)) > 1e-6 * max(1.0, steps):
+  if abs(steps - round(steps)) > 1e-4: # a whole sample to float rounding, at any length
     badSweep("lengthMs = " & $spec.lengthMs & " must be a whole number of samples of " &
       $spec.dtMs & " ms")
   if not (spec.maxNyquistFraction > 0 and spec.maxNyquistFraction <= 1):

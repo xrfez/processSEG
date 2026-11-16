@@ -257,3 +257,13 @@ block steep_boosts_stay_finite:
       last = f
     for v in spec.sweepSamples(float64):
       doAssert v.classify in {fcNormal, fcSubnormal, fcZero, fcNegZero}, what
+
+block whole_samples_long_sweep:
+  # A half-sample error must be refused at any length: a relative tolerance
+  # accepted 600000.5 samples (0.5 < 1e-6 · 600000) but refused 1000.5.
+  doAssertRaises(ValueError): discard linearSweep(5, 10, 1000.5, 1)
+  doAssertRaises(ValueError): discard linearSweep(5, 10, 600000.5, 1, maxNyquistFraction = 1)
+  discard linearSweep(5, 10, 600000, 1, maxNyquistFraction = 1)
+  # Whole to float rounding (0.1 ms steps) still passes, short and long.
+  doAssert linearSweep(5, 10, 1000 * 0.1, 0.1).sweepLen == 1001
+  doAssert linearSweep(5, 10, 60000 * 0.1, 0.1).sweepLen == 60001
