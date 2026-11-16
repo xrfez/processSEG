@@ -1,9 +1,11 @@
-## Synthetic vibrator signals generated apart from the library (no
-## `SweepSpec`, taper or synth helper): a sweep law's analytic phase, tapers
-## of their own, harmonics at given levels and phases. Tests compare what the
-## library measures with what is put in here.
+## Synthetic vibrator signals for the tests: a sweep law's phase (the
+## library's `phaseAt`, so the linear and exponential laws are not a second
+## formula), tapers of their own, harmonics at given levels and phases.
+## A viewer builds a distorted sweep with `sweepHarmonics`; this stays for
+## the cosine, delay, tilt and Nyquist fade the tests were written against.
 
 import std/[math, random]
+import processSEG/vibroseis/sweep
 
 type
   ChirpLaw* = enum clLinear, clExponential
@@ -29,14 +31,9 @@ func freqAt*(c: Chirp, tMs: float64): float64 =
   of clExponential: c.f0 * exp(ln(c.f1 / c.f0) * u)
 
 func phaseAt*(c: Chirp, tMs: float64): float64 =
-  ## 2π∫₀ᵗ f, radians (closed form).
-  let t = tMs / 1000
-  let T = c.lengthMs / 1000
-  case c.law
-  of clLinear: 2 * PI * (c.f0 * t + (c.f1 - c.f0) * t * t / (2 * T))
-  of clExponential:
-    let k = ln(c.f1 / c.f0) / T
-    2 * PI * c.f0 * (exp(k * t) - 1) / k
+  ## 2π∫₀ᵗ f, radians: the library's `phaseAt` for this law, start phase 0.
+  let law = if c.law == clLinear: slLinear else: slExponential
+  SweepSpec(law: law, f1Hz: c.f0, f2Hz: c.f1, lengthMs: c.lengthMs).phaseAt(tMs)
 
 func rampAt(r: Ramp, u: float64): float64 =
   case r

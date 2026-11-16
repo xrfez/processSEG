@@ -41,7 +41,8 @@
 ## - `processSEG/filescales`: what a file's headers say about its scale (`fileScalesInto`,
 ##   `scaleReport`, `segyUnitOverrides`);
 ## - `processSEG/vibroseis/taper`: sweep-end tapers (`SweepTaper`);
-## - `processSEG/vibroseis/sweep`: sweep generation (`SweepSpec`, `sweepSamples`);
+## - `processSEG/vibroseis/sweep`: sweep generation (`SweepSpec`, `sweepSamples`,
+##   `sweepHarmonics`);
 ## - `processSEG/vibroseis/pilot`: generated and recorded pilots (`Pilot`), resampling,
 ##   instrument filters, SEG-Y sweep headers;
 ## - `processSEG/vibroseis/correlate`: correlation and sweep deconvolution (`CorrelationPlan`);

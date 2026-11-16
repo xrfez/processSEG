@@ -18,6 +18,18 @@
 ## 1e-9 rad over a sweep). `φ₀` is `startPhaseDeg`; at 0 a sweep starts at
 ## zero, as a taper wants.
 ##
+## **Harmonics** (`sweepHarmonics`). The same sweep, plus terms
+## `amp · sin(order·φ + phase)`, where `φ` is the fundamental's phase
+## (`φ₀` included, the phase `sweepSamples` is built from) and `phase` is
+## that term's own. Order 1 with amplitude 1 and phase 0 is the fundamental;
+## an empty list is that term alone, so it matches `sweepSamples`. A phase
+## error of the ground force against its pilot is the fundamental's phase.
+## Where `order·f(t)` is at or above Nyquist the term is left out of that
+## sample: cut, not folded back, and not a reason to refuse the call (an
+## upsweep's high harmonics are real at the start and would alias later).
+## The cut is a hard zero, so the waveform can step where a harmonic leaves
+## the band.
+##
 ## **Laws** (`SweepLaw`), from `f1Hz` at `t = 0` to `f2Hz` at `T = lengthMs`
 ## (`f2Hz < f1Hz` is a down-sweep):
 ## - `slLinear`: `f = f1 + (f2 − f1)·t/T`; a flat amplitude spectrum;
@@ -76,6 +88,14 @@ type
     amplitude*: float64 = 1 ## Peak amplitude.
     taper*: SweepTaper ## Start and end ramps.
     maxNyquistFraction*: float64 = 0.8 ## Highest frequency allowed, as a fraction of Nyquist (≤ 1).
+
+  SweepHarmonic* = object
+    ## One term of a distorted sweep: `amp · sin(order·φ + phaseDeg)`, with
+    ## `φ` the fundamental's phase. Order 1, amplitude 1, phase 0 is the
+    ## fundamental.
+    order*: float64 = 1 ## Harmonic order (1: the fundamental). Must be > 0.
+    amp*: float64 = 1 ## Amplitude relative to `SweepSpec.amplitude`.
+    phaseDeg*: float64 ## Added phase, degrees.
 
 const
   maxDbPerOctaveTotal = 300.0 # the largest |boostDb| · octaves of a dB/octave sweep
@@ -322,6 +342,91 @@ proc sweepSamples*(spec: SweepSpec, T: typedesc[SampleType] = float64): seq[T] =
   spec.validate
   result = newSeq[T](spec.sweepLen)
   spec.sweepInto(result)
+
+proc checkHarmonic(h: SweepHarmonic) =
+  if not (h.order > 0 and h.order < Inf):
+    badSweep("a harmonic order must be finite and > 0, got " & $h.order)
+  if h.amp.classify notin {fcNormal, fcSubnormal, fcZero, fcNegZero}:
+    badSweep("a harmonic amplitude must be finite, got " & $h.amp)
+  if h.phaseDeg.classify notin {fcNormal, fcSubnormal, fcZero, fcNegZero}:
+    badSweep("a harmonic phase must be finite, got " & $h.phaseDeg)
+
+proc taperPrefix[T: SampleType](x: var openArray[T], dtMs, sweepMs: float64, t: SweepTaper) =
+  ## The start and end ramps of `t` on a prefix of a sweep of `sweepMs`, the
+  ## same multiplies as `applyTaper` when the buffer is the whole sweep.
+  let s = if t.startMs.isNaN: 0.0 else: t.startMs
+  let e = if t.endMs.isNaN: 0.0 else: t.endMs
+  if s > 0:
+    var j = 0
+    while j < x.len and float64(j) * dtMs < s:
+      x[j] = T(float64(x[j]) * taperWeight(t.shape, float64(j) * dtMs / s, t.param))
+      inc j
+  if e > 0:
+    var j = x.len - 1
+    while j >= 0 and sweepMs - float64(j) * dtMs < e:
+      x[j] = T(float64(x[j]) * taperWeight(t.shape, (sweepMs - float64(j) * dtMs) / e, t.param))
+      dec j
+
+proc sweepHarmonicsInto*[T: SampleType](spec: SweepSpec, x: var openArray[T],
+    harmonics: openArray[SweepHarmonic] = []) =
+  ## Fills `x` with the sweep plus `harmonics` (module documentation). Sample
+  ## `j` is at `j·dtMs`; samples past `lengthMs` are 0. An empty `harmonics`
+  ## on a buffer of `sweepLen` samples is `sweepInto`. Raises `ValueError`
+  ## for an invalid spec, an empty buffer, or a harmonic whose order is not
+  ## finite and positive or whose amplitude or phase is not finite.
+  spec.validate
+  if x.len < 1:
+    badSweep("a sweep buffer needs at least one sample, got " & $x.len)
+  for h in harmonics:
+    checkHarmonic(h)
+  if harmonics.len == 0 and x.len == spec.sweepLen:
+    spec.sweepInto(x)
+    return
+  let nSweep = spec.sweepLen
+  let n = min(x.len, nSweep)
+  var phase = newSeq[float64](n)
+  spec.phasesInto(phase)
+  let p0 = degToRad(spec.startPhaseDeg)
+  let nyq = 500.0 / spec.dtMs
+  for j in 0 ..< x.len:
+    if j >= n:
+      x[j] = T(0)
+    else:
+      let f = spec.frequencyAt(float64(j) * spec.dtMs)
+      let p = p0 + phase[j]
+      var s = 0.0
+      if harmonics.len == 0:
+        s = sin(p)
+      else:
+        for h in harmonics:
+          if h.order * f < nyq:
+            s += h.amp * sin(h.order * p + degToRad(h.phaseDeg))
+      x[j] = T(spec.amplitude * s)
+  if x.len == nSweep:
+    x.applyTaper(spec.dtMs, spec.taper)
+  elif x.len > nSweep:
+    var head = newSeq[T](nSweep)
+    for j in 0 ..< nSweep:
+      head[j] = x[j]
+    head.applyTaper(spec.dtMs, spec.taper)
+    for j in 0 ..< nSweep:
+      x[j] = head[j]
+  else:
+    taperPrefix(x, spec.dtMs, spec.lengthMs, spec.taper)
+
+proc sweepHarmonics*(spec: SweepSpec, T: typedesc[SampleType] = float64,
+    harmonics: openArray[SweepHarmonic] = [], samples = 0): seq[T] =
+  ## The sweep plus `harmonics`. `samples` 0 is `sweepLen`; a longer buffer
+  ## is the sweep followed by zeros (a record with listen time). Raises
+  ## `ValueError` as `sweepHarmonicsInto`, before anything is allocated.
+  spec.validate
+  for h in harmonics:
+    checkHarmonic(h)
+  let n = if samples == 0: spec.sweepLen else: samples
+  if n < 1:
+    badSweep("samples must be ≥ 1, got " & $n)
+  result = newSeq[T](n)
+  spec.sweepHarmonicsInto(result, harmonics)
 
 func phaseAt*(spec: SweepSpec, tMs: float64): float64 {.raises: [].} =
   ## The sweep's phase at `tMs` in radians, `φ₀ + 2π·∫₀ᵗ f`, for the laws
