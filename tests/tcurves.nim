@@ -4,7 +4,9 @@
 ## and no allocation.
 ##
 ## Fail-first: `held_flat_after` failed while `heldGain` kept the exponential
-## slope past `untilMs` (the second knot was not the hold).
+## slope past `untilMs` (the second knot was not the hold). `held_before_zero`
+## failed while knots before 0 were replaced by the gain at 0, so −50 ms read
+## 5 dB instead of 2.5.
 
 import std/[assertions, math]
 import processSEG
@@ -267,3 +269,17 @@ block held_flat_after:
   doAssertRaises ValueError: discard heldGain(expc, untilMs = NaN)
   doAssertRaises ValueError: discard heldGain(expc, 100, step = 1.0)
   doAssertRaises ValueError: discard heldGain(GainCurve(), 100)
+
+block held_before_zero:
+  # A knot before 0 is kept. Only a first knot at or after 0 holds the gain
+  # at 0 before 0.
+  let kg = knotGain([GainKnot(tMs: -100, dB: 0), GainKnot(tMs: 100, dB: 10)])
+  let held = heldGain(kg, untilMs = 300)
+  doAssert near(held.gainDbAt(-50), 2.5, 1e-12), $held.gainDbAt(-50)
+  doAssert near(held.gainDbAt(0), 5, 1e-12), $held.gainDbAt(0)
+  doAssert near(held.gainDbAt(100), 10, 1e-12)
+  doAssert near(held.gainDbAt(300), kg.gainDbAt(300), 1e-12)
+  doAssert held.gainDbAt(400) == held.gainDbAt(300)
+  let he = heldGain(exponentialGain(6), untilMs = 1000)
+  doAssert he.gainDbAt(-50) == he.gainDbAt(0)
+  doAssert he.gainDbAt(0) == 0

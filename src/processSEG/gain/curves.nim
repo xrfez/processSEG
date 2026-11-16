@@ -162,7 +162,9 @@ func factorAt*(c: GainCurve, tMs: float64): float64 {.raises: [].} =
 proc heldGain*(curve: GainCurve, untilMs: float64, step = 1.02): GainCurve =
   ## `curve` held flat after `untilMs`: the same gain on `0 .. untilMs`, and
   ## the gain at `untilMs` at every later time. Before 0 it holds the gain at
-  ## 0 (a knot curve is flat before its first knot).
+  ## 0 only when the first knot is at or after 0. A knot curve is otherwise
+  ## flat before its first knot, which may be before 0. An exponential is two
+  ## knots starting at 0, so it is flat at the gain at 0 before 0.
   ##
   ## An exponential curve is exactly two knots (it is linear in dB). A power
   ## curve is knots from its `minMs` (where it stops falling) every `step` in
