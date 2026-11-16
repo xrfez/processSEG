@@ -211,7 +211,13 @@ auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guid
 | `sp.averageAmplitudeInto(b \| samples, meta, firstCol, amp: var openArray[float64], ws, rows = 0 .. high(int)): int` | The power-averaged amplitude spectrum of the window `firstCol ..< firstCol + windowLen` over the live rows in `rows`; returns the rows used (rows with NaN or Inf are left out). A sinusoid of amplitude A on a bin reads A. |
 | `sp.amplitudeInto(x, amp, phase, ws)` | One window of one trace: amplitude and phase (radians). |
 | `amplitudePhaseInto(re, im, amp, phase)` | Modulus and phase of a raw `forward` spectrum, unscaled. |
-| `DbReference` (`dbPeak`, `dbAbsolute`); `toDbInto(amp, db, reference = dbPeak, floorDb = -120)` | 20·log10 of the amplitudes, 0 dB at the peak or at 1, clamped at `floorDb`. |
+| `DbReference` (`dbPeak`, `dbAbsolute`); `toDbInto(amp, db, reference = dbPeak, floorDb = -120, refAmplitude = 1)` | 20·log10 of the amplitudes, 0 dB at the peak or at `refAmplitude` (`dbAbsolute`; 1 by default, so present callers are unchanged), clamped at `floorDb`. `dbPeak` ignores `refAmplitude`. |
+| `unwrapPhaseInto(phaseDeg, shown, dst)` | Unwrap along shown finite bins. A gap is not crossed: the next drawn bin restarts from the last drawn value, and a step over 180° is ±360. NaN where not drawn. Same length or `AssertionDefect`. |
+| `removeDelayInto(unwrapped, hz, shown, dst): float64` | Least squares `p = a + b·f` on drawn finite bins; `dst = p − (a + b·f)`, NaN elsewhere. Returns the delay in ms, `−b·1000/360`; NaN if fewer than 2 bins or the denominator is below `1e-12·max(1, Σf²)`. |
+| `SpectrumAccumulator[T]`; `initSpectrumAccumulator(T, dtMs, windowLen, nfft = 0, taperFraction = 0.1, demean = true)` | A power sum of `averageAmplitudeInto` over several calls. Same window as `initSpectrumPlan`. |
+| `acc.bins`, `acc.windowLen`, `acc.nfft`, `acc.dtMs`, `acc.binHz(k)`, `acc.used`, `acc.workspaceSize`, `acc.clear` | Its axes, the rows added, its scratch, and a reset of the sum. |
+| `acc.add(b \| samples, meta, firstCol, ws, rows = 0 .. high(int)): int` | Adds `amp²·rows` of that window. The same `ValueError`s as `averageAmplitudeInto`. Returns the rows added. Nothing allocates after init. |
+| `acc.amplitudesInto(dst)` | `sqrt(power/used)`, 0 if none. A sinusoid of amplitude A on a bin reads A. |
 
 ## fft/hilbert: `HilbertPlan`
 
@@ -220,6 +226,7 @@ auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guid
 | `HilbertPlan[T]`; `initHilbertPlan(T, samples, nfft = 0)`, `hp.samples`, `hp.nfft`, `hp.workspaceSize` | The Hilbert transform of traces of up to `samples` samples, zero padded to `nfft` (0: `nextFastLen(2·samples)`, so nothing wraps). `ValueError` for `samples < 1` or an `nfft` below `2·samples` or not smooth. |
 | `hp.hilbertInto(x, h, ws)` | `H[x]`, the imaginary part of the analytic signal (`H[cos] = sin`; 0 Hz and Nyquist to zero), `x.len` values. |
 | `hp.envelopeInto(x, env, ws)` | The envelope `\|x + i·H[x]\|`. |
+| `hp.analyticInto(x, dtMs, env, phaseDeg, hz, ws, floorDb = -60)` | Envelope, phase in (−180, 180] and instantaneous Hz from one Hilbert. Phase is NaN where the envelope is 0. Hz is a central difference, NaN at the ends and where that sample or a neighbour is 0 or below `peak·10^(floorDb/20)`. Outputs are float64, length `x.len`. `dtMs` is required (a plan has no interval). |
 
 ## fft/spectrogram: `SpectrogramPlan`
 
@@ -228,7 +235,30 @@ auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guid
 | `SpectrogramPlan[T]`; `initSpectrogramPlan(T, windowLen, hop, dtMs, samples, nfft = 0)` | The short-time Fourier amplitudes of traces of up to `samples` samples: Hann frames of `windowLen` samples centred on columns `0, hop, 2·hop, ...`, zero padded to `nfft` (0: the next power of two of the window). `ValueError` for `windowLen < 2`, `hop < 1`, `samples < 1`, a bad `dtMs` or `nfft`. |
 | `sg.frames`, `sg.bins`, `sg.windowLen`, `sg.hop`, `sg.nfft`, `sg.samples`, `sg.dtMs`, `sg.frameCol(frame)`, `sg.binHz(k)`, `sg.workspaceSize` | Its axes: frame `i` centred on column `i·hop`, bin `k` at `k / (nfft·dt)`. |
 | `sg.spectrogramInto(x, amp, ws)` | Every frame's amplitudes into `amp` (`frames·bins`, frame after frame), scaled so that a sinusoid of amplitude A on a bin reads A (a frame cut by the trace's ends by its own Σw). |
+| `sg.averageWorkspace`; `sg.averageSpectrogramInto(b \| samples, meta, amp, ws, rows = 0 .. high(int)): int` | Power average of `spectrogramInto` over the live rows, same scale. A frame with a NaN or infinity drops that trace. Returns the rows used. `openArray[openArray]` is not a Nim parameter, so this takes a `RowBlock` and a `ChunkMeta`, as every other block form does. |
 
+## fft/fk: `FkPlan`
+
+| Proc | What |
+|---|---|
+| `FkAxes` (`nFreq`, `nK`, `dfHz`, `dkPerTrace`); `FkPlan[T]`; `initFkPlan(T, dtMs, traces, samples, taperFraction = 0.1)` | f-k of `traces` live rows by `samples` columns. Tukey both axes. Time padded to `nextFastLen(samples)`, traces to `nextFastLen(2·traces)`. `ValueError` for fewer than 4 traces, fewer than 8 samples, a bad `dtMs` or taper. |
+| `plan.axes`, `plan.nFreq`, `plan.nK`, `plan.dfHz`, `plan.dkPerTrace`, `plan.traces`, `plan.samples`, `plan.dtMs`, `plan.workspaceSize` | Axes (zero k at `nK div 2`, positive k is later on later traces) and scratch. `dkPerTrace` is cycles per trace; cycles/km stay in the viewer. |
+| `fkRows(meta, cols, firstCol, nCols, rows = 0 .. high(int)): int` | Live rows that enter the window: the `traces` to build the plan for. |
+| `plan.fkAmplitudeInto(b \| samples, meta, firstCol, amp, ws, rows = 0 .. high(int)): int` | Unscaled modulus, `nK·nFreq`, frequency fastest. `ValueError` when the live count is not the plan's. A wrong `amp` length is an `AssertionDefect` (every other Into kernel), not the `ValueError` the audit suggested. |
+
+## fft/timeshift: `TimeShiftPlan`
+
+| Proc | What |
+|---|---|
+| `TimeShiftPlan[T]`; `initTimeShiftPlan(T, dtMs, samples)`, `plan.samples`, `plan.dtMs`, `plan.nfft`, `plan.workspaceSize` | A shift by milliseconds of traces up to `samples` long. FFT is `nextFastLen(2·samples)`, so a shift inside the trace does not wrap. |
+| `plan.shiftMsInto(src, dst, shiftMs, ws)`, `plan.shiftMs(x, shiftMs, ws)` | `dst[j]` is the old sample at `j + shiftMs/dtMs` (positive: earlier, as `shiftSamples`). Length kept. Zeros shift in, samples shift out. A whole number of samples (within 1e-6) is a pure move. A fraction is a zero-padded FFT phase ramp: sinc ringing at an end that is not zero; Nyquist is not shifted fractionally. A NaN shift leaves the samples. `|shift|` of a whole trace zeroes it. |
+
+## fft/tracecorr: `TraceCorrelationPlan`
+
+| Proc | What |
+|---|---|
+| `CorrNorm` (`corrNone`, `corrCoefficient`); `TraceCorrelationPlan[T]`; `initTraceCorrelationPlan(T, dtMs, samples)`, `plan.samples`, `plan.dtMs`, `plan.nfft`, `plan.workspaceSize` | Both lags of a trace against a reference, placed at a caller time. Not `CorrelationPlan` or `CrossCorrelationPlan` (those results are unchanged). |
+| `plan.correlateAtInto(x, reference, dst, zeroLagMs, ws, norm = corrCoefficient)` | `dst` has `x.len` values. Sample `j` is lag `j − round(zeroLagMs/dtMs)`. Zeros only where that lag has no overlap. `corrCoefficient` divides by `√(E_x·E_ref)`, so identical traces read 1. `corrNone` is the raw sum. A positive lag is a delayed signal. |
 
 ## filter/design: `FilterSpec`
 
@@ -283,6 +313,7 @@ auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guid
 | `GainKnot` (`tMs`, `dB`), `GainCurveKind` (`gcKnots`, `gcPower`, `gcExponential`), `GainCurve`, `c.kind` | A gain against time. |
 | `knotGain(knots)`, `powerGain(power, refMs = 1000, minMs = 1)`, `exponentialGain(dbPerS)` | Linear in dB between knots; `(t/refMs)^power` (2: spherical divergence); dB per second. Validated. |
 | `c.gainDbAt(tMs)`, `c.factorAt(tMs)` | The gain at a time, in dB and as a factor. |
+| `heldGain(curve, untilMs, step = 1.02): GainCurve` | The curve on `0 .. untilMs`, flat after (and flat at the gain at 0 before 0). Exponential: two knots. Power: knots from `minMs` every `step` in time (1.02 is within 0.001 dB of `powerGain(2)`). Knots: the knots before `untilMs`, plus the gain there. `ValueError` if `untilMs` is not finite and > 0, `step` is not finite and > 1, the curve is unbuilt, or a power curve would take more than 100_000 knots. |
 | `GainCurvePlan[T]`; `initGainCurvePlan(T, curve, dtMs, samples, tMinMs = 0, tMaxMs = NaN)` | The curve tabulated over `tMinMs .. tMaxMs` (NaN: the record length); times outside the table are exact but slower. `p.samples`, `p.dtMs`, `p.curve`, `p.tableLen`, `p.tableMs`. |
 | `applyGainCurve(plan, x, startMs)`, `applyGainCurve(plan, b \| samples, meta)` | Multiply each live row by the curve at its own times (`t0Ms`, `firstSample`). |
 | `applyGainCurve(plan, b \| samples, meta, ws)`, `p.workspaceSize` | The same for blocks that may lie off the table (a zoom window, a recording delay): the factors off it are computed once per run of rows with one time axis, not per sample (the pipeline uses this form). Results off the table differ from the other form by a rounding. |
@@ -492,6 +523,7 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 | `PlanAmplitude` (`paRecorded`, `paCalibrated`, `paRelative`); `plan.amplitudeUnits` | What the output amplitudes are for recorded input: as recorded, in the calibration's per-row units (`resolveInto`), or relative (a gain op follows the calibration). |
 | `p.requiredMargin(dtMs)`, `decodeWindow(shown, margin, traceLen)` | The margin without compiling; the samples to decode for a zoom (shown ± margin, clamped). |
 | `plan.apply(b \| samples, meta, ws)`, `plan.apply(src, dst, meta, ws)` (blocks or tensors) | Run in place, or `src → dst` with the copy fused into the first op; tiles of about 256 KB. Never grows `ws`; `dst` is not resized. |
+| `appliedResponseInto(flow, T, dtMs, samples, hz, gain, ws)` | The response as applied: a unit impulse at `samples div 2` through `compile` and `apply`, FFT and IIR ops forced to `trNone` (the caller's flow is not edited). `gain[i] = \|Σ x[j] exp(−2πi·f·j·dt)\|`. Not `response()` (design, no edges). The impulse row is live, `t0Ms` 0, offset 0, no file scales. `ValueError` if the flow will not compile. Compiles every call, so it allocates the plan and the impulse; `ws` is grown if it does not hold the plan. |
 | `checkApply(plan, src, dst, meta)`, `plan.partCount`, `plan.partNeedsPanel(part)`, `plan.panelFactorOf(b, meta, part, ws)`, `plan.runPart(src, dst, meta, part, factor, ws)` | The pieces of `apply`, for a caller's own threads: a per-panel normalization splits the plan into parts. |
 
 ## core/pool: `ProcessPool`

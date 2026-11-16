@@ -702,6 +702,24 @@ missing. The `transform` hook is not given the prefetcher's `firstSample`;
 `bruteStack` decodes whole traces (`firstSample = 0`), and a windowed batch driver would
 pass it through `user`, with the workspaces.
 
+## What the viewer calls for signal maths
+
+The viewer does not build these itself. Each call fills a buffer the viewer already holds; axis units that depend on the display (cycles/km, which traces are on screen) stay in the viewer.
+
+| Picture | Call |
+|---|---|
+| dB of an amplitude, 0 dB at a reference | `toDbInto(amp, db, dbAbsolute, refAmplitude = reference)` (peak-relative stays `toDbInto(amp, db)`; the reference argument is ignored then) |
+| f-k of a gather | `fkRows` to size it, `initFkPlan`, `plan.fkAmplitudeInto`; then `toDbInto`. Positive k is later on later traces. `dkPerTrace` is cycles per live trace that entered |
+| Envelope, phase and instantaneous Hz | `hp.analyticInto(x, dtMs, env, phaseDeg, hz, ws)` — one Hilbert, not `envelopeInto` beside `hilbertInto` |
+| Phase unwrapped along the bins on screen | `unwrapPhaseInto(phaseDeg, shown, dst)`. A hidden bin is not crossed |
+| Linear phase taken off, delay in ms | `removeDelayInto(unwrapped, hz, shown, dst)` |
+| Spectrum averaged over several blocks | `initSpectrumAccumulator`, `acc.add` per block, `acc.amplitudesInto`. Same scale as `averageAmplitudeInto` |
+| Spectrogram averaged over traces | `sg.averageSpectrogramInto` (`averageWorkspace`). A NaN frame drops that trace |
+| Response of the flow as applied, edges included | `appliedResponseInto(flow, float32, dtMs, samples, hz, gain, ws)`. Not `response()` |
+| Gain held flat after a time | `heldGain(curve, untilMs)` then `gainCurveOp` |
+| Shift a trace by milliseconds, length kept | `initTimeShiftPlan`, `plan.shiftMs` or `shiftMsInto`. Whole samples are a move; a fraction is band-limited and rings at an end that is not zero. `shiftSamples` remains the interpolator statics and LMO use |
+| Correlation, both lags, peak at N ms | `initTraceCorrelationPlan`, `plan.correlateAtInto(x, reference, dst, zeroLagMs = N, ws)`. `corrCoefficient` (the default) peaks at 1 for identical traces. This is not the vibrator correlation |
+
 ## Viewer checklist
 
 1. Open with `openSeismic`, using an index cache and a `progress` hook, with `keys = true`
