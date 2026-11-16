@@ -3,6 +3,10 @@
 ## than the carrier passes through), the envelope of an amplitude-modulated
 ## sinusoid and of a tapered sweep, float32 and float64, short inputs, NaN,
 ## refusals and no allocation.
+##
+## Fail-first: `analytic_sinusoid` failed while the central difference was
+## scaled as one sample instead of two, so the frequency read about twice
+## the carrier (19.8 Hz).
 
 import std/[assertions, math]
 import processSEG
@@ -150,3 +154,41 @@ block no_allocation:
     hp.hilbertInto(x, h, ws)
     hp.envelopeInto(x, h, ws)
   doAssert n == 0, $n & " allocations"
+
+block analytic_sinusoid:
+  # A sinusoid on a bin, Gaussian-tapered so the ends are quiet: envelope,
+  # phase and instantaneous frequency from one Hilbert. The middle of an
+  # untapered sinusoid still reads the carrier frequency.
+  let n = 2001
+  let dtMs = 2.0
+  let hp = initHilbertPlan(float64, n)
+  var ws = initWorkspace()
+  ws.reserve(hp.workspaceSize)
+  let f = 1000 / (float64(hp.nfft) * dtMs) * 80 # on a bin, Hz
+  var x = newSeq[float64](n)
+  for j in 0 ..< n:
+    x[j] = gauss(j, n) * cos(2 * PI * f * float64(j) * dtMs / 1000)
+  var env, phase, hz = newSeq[float64](n)
+  let alloc = allocsIn:
+    hp.analyticInto(x, dtMs, env, phase, hz, ws)
+  doAssert alloc == 0, $alloc & " allocations"
+  doAssert hz[0].isNaN and hz[^1].isNaN
+  doAssert hz[10].isNaN, "a tail 60 dB down is not a frequency"
+  for j in n div 3 ..< 2 * n div 3:
+    doAssert abs(env[j] - gauss(j, n)) < 1e-9, $j
+    doAssert abs(hz[j] - f) < 1e-4, $j & " " & $hz[j]
+    let p = 2 * PI * f * float64(j) * dtMs / 1000
+    var want = arctan2(sin(p), cos(p)) * 180 / PI
+    if want <= -180: want += 360
+    var got = phase[j]
+    if got <= -180: got += 360
+    doAssert abs(got - want) < 1e-6, $j & " " & $got & " " & $want
+  var bare = newSeq[float64](n)
+  for j in 0 ..< n: bare[j] = cos(2 * PI * f * float64(j) * dtMs / 1000)
+  hp.analyticInto(bare, dtMs, env, phase, hz, ws)
+  var worstF = 0.0
+  for j in n div 3 ..< 2 * n div 3: worstF = max(worstF, abs(hz[j] - f))
+  doAssert worstF < 0.01, $worstF
+  for j in 0 ..< n: bare[j] = 0
+  hp.analyticInto(bare, dtMs, env, phase, hz, ws)
+  doAssert phase[n div 2].isNaN and hz[n div 2].isNaN and env[n div 2] == 0

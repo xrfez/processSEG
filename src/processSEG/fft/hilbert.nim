@@ -149,3 +149,54 @@ proc envelopeInto*[T: SampleType](hp: HilbertPlan[T], x: openArray[T],
   let buf = hp.transform(x, ws)
   if env.len > 0:
     envelopeKernel(cast[Buf[T]](addr x[0]), buf, cast[Buf[T]](addr env[0]), env.len)
+
+proc wrapPi(d: float64): float64 {.inline.} =
+  ## `d` brought into (−π, π].
+  const two = 2 * PI
+  result = d - two * floor((d + PI) / two)
+  if result <= -PI: result += two
+  elif result > PI: result -= two
+
+proc analyticInto*[T: SampleType](hp: HilbertPlan[T], x: openArray[T],
+    dtMs: float64, env, phaseDeg, hz: var openArray[float64],
+    ws: var Workspace, floorDb = -60.0) {.raises: [].} =
+  ## The envelope, the instantaneous phase and the instantaneous frequency
+  ## of `x` from one Hilbert transform. `env[j] = |x + i·H[x]|`. `phaseDeg`
+  ## is `arg(x + i·H[x])` in (−180, 180], NaN where the envelope is 0.
+  ## `hz` is the central difference of that phase, unwrapped to a step in
+  ## (−π, π] and converted to Hz (`dtMs` is the sample interval); NaN at the
+  ## two ends, and where that sample or either neighbour is 0 or below
+  ## `peak·10^(floorDb/20)` (`peak` the largest envelope). All three outputs
+  ## have `x.len` values. `ws` must hold `hp.workspaceSize`. A `dtMs` that is
+  ## not finite and positive, or another length, is an `AssertionDefect`.
+  ## Nothing allocates.
+  hp.checkCall(x, env.len, ws)
+  doAssert phaseDeg.len == x.len and hz.len == x.len, "env, phase and hz need x.len values"
+  doAssert dtMs > 0 and dtMs < Inf, "dtMs must be finite and > 0"
+  let n = x.len
+  if n == 0: return
+  let h = hp.transform(x, ws)
+  var peak = 0.0
+  for j in 0 ..< n:
+    let e = hypot(float64(x[j]), float64(h[j]))
+    env[j] = e
+    if e > peak: peak = e
+    if e > 0:
+      var deg = arctan2(float64(h[j]), float64(x[j])) * (180 / PI)
+      if deg <= -180: deg += 360
+      phaseDeg[j] = deg
+    else:
+      phaseDeg[j] = NaN
+  let thr = peak * pow(10.0, floorDb / 20.0)
+  let scale = 1000 / (4 * PI * dtMs) # radians over two samples, to Hz
+  hz[0] = NaN
+  if n > 1: hz[n - 1] = NaN
+  for j in 1 ..< n - 1:
+    let e0 = env[j - 1]
+    let e1 = env[j]
+    let e2 = env[j + 1]
+    if e0 <= 0 or e1 <= 0 or e2 <= 0 or e0 < thr or e1 < thr or e2 < thr:
+      hz[j] = NaN
+    else:
+      let dDeg = phaseDeg[j + 1] - phaseDeg[j - 1]
+      hz[j] = wrapPi(dDeg * PI / 180) * scale
