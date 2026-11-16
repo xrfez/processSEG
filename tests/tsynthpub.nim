@@ -7,7 +7,9 @@
 ## - gather_arrivals: `hyperbolicMs` dropped the offset term (arrivals went flat);
 ## - noise_seed: `addNoise` ignored the seed (same seed no longer matched);
 ## - harmonics_qc: `sweepHarmonicsInto` dropped each term's phase (the QC
-##   read 0° instead of the 4° that was put in).
+##   read 0° instead of the 4° that was put in);
+## - harmonics_fundamental_nyquist: `sweepHarmonics` cut an order-1 term at
+##   Nyquist (the last sample went to 0).
 
 import std/[assertions, math]
 import parseSEG, processSEG
@@ -148,3 +150,13 @@ block harmonics_qc:
   doAssert heard > 100
   doAssertRaises(ValueError):
     discard up.sweepHarmonics(float64, [SweepHarmonic(order: 0)])
+
+block harmonics_fundamental_nyquist:
+  # An explicit order-1 term is the fundamental, which a valid spec keeps at or
+  # below Nyquist, so it is not cut there (only orders above 1 are). Up to
+  # Nyquist exactly, it equals the empty list sample for sample.
+  let spec = linearSweep(10, 250, 1002, 2, noTaper(), maxNyquistFraction = 1)
+  let want = spec.sweepSamples(float64)
+  let got = spec.sweepHarmonics(float64, [SweepHarmonic()])
+  doAssert got == want, "order 1 equals the sweep"
+  doAssert got[^1] == want[^1], "last sample " & $got[^1]

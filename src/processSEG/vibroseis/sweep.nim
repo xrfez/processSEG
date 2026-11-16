@@ -27,6 +27,7 @@
 ## Where `order·f(t)` is at or above Nyquist the term is left out of that
 ## sample: cut, not folded back, and not a reason to refuse the call (an
 ## upsweep's high harmonics are real at the start and would alias later).
+## Order 1 is never cut: `validate` keeps the fundamental within Nyquist.
 ## The cut is a hard zero, so the waveform can step where a harmonic leaves
 ## the band.
 ##
@@ -399,7 +400,7 @@ proc sweepHarmonicsInto*[T: SampleType](spec: SweepSpec, x: var openArray[T],
         s = sin(p)
       else:
         for h in harmonics:
-          if h.order * f < nyq:
+          if h.order == 1 or h.order * f < nyq:
             s += h.amp * sin(h.order * p + degToRad(h.phaseDeg))
       x[j] = T(spec.amplitude * s)
   if x.len == nSweep:
