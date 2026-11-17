@@ -118,7 +118,7 @@ proc isPacked(insn: string): bool =
 
 proc checkBuild(mode: string)
 
-proc main() =
+proc main*() =
   when not (defined(amd64) and defined(linux)) or defined(release) or
       defined(addressSanitizer):
     echo "  skipped (needs a debug run on x86-64 Linux)"
@@ -183,4 +183,4 @@ proc checkBuild(mode: string) =
     doAssert packedOf.len > 0, "no instance of " & k & " in the kernel build"
     echo "  ", k, ": ", packedOf.len, " instance(s) vectorized"
 
-main()
+when isMainModule: main()

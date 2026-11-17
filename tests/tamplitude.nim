@@ -10,409 +10,412 @@ import processSEG
 import parseSEG
 import utils/[allocs, synth]
 
-const
-  traces = 40
-  cols = 1001
-  dtMs = 2.0
+proc main*() =
+  const
+    traces = 40
+    cols = 1001
+    dtMs = 2.0
 
-type Injected = enum
-  inDead, inConstant, inClipped, inSpiky, inDc, inNoisy, inWeak, inNan,
-  inHeaderDead, inFailed
+  type Injected = enum
+    inDead, inConstant, inClipped, inSpiky, inDc, inNoisy, inWeak, inNan,
+    inHeaderDead, inFailed
 
-const injectedRow: array[Injected, int] = [3, 5, 7, 11, 13, 17, 19, 23, 29, 31]
+  const injectedRow: array[Injected, int] = [3, 5, 7, 11, 13, 17, 19, 23, 29, 31]
 
-func expected(r: int): set[AmplitudeFlag] =
-  for k, row in injectedRow:
-    if row == r:
-      return case k
-        of inDead: {afDead}
-        of inConstant: {afConstant}
-        of inClipped: {afClipped}
-        of inSpiky: {afSpiky}
-        of inDc: {afDcOffset}
-        of inNoisy: {afNoisy}
-        of inWeak: {afWeak}
-        of inNan: {afNonFinite}
-        of inHeaderDead, inFailed: {}
-  {}
+  func expected(r: int): set[AmplitudeFlag] =
+    for k, row in injectedRow:
+      if row == r:
+        return case k
+          of inDead: {afDead}
+          of inConstant: {afConstant}
+          of inClipped: {afClipped}
+          of inSpiky: {afSpiky}
+          of inDc: {afDcOffset}
+          of inNoisy: {afNoisy}
+          of inWeak: {afWeak}
+          of inNan: {afNonFinite}
+          of inHeaderDead, inFailed: {}
+    {}
 
-proc baseTrace(r: int): seq[float64] =
-  ## A Ricker wavelet at 200 + 10·r ms, its gain varying ±2 dB from trace
-  ## to trace (a field record's natural scatter), in weak white noise.
-  result = newSeq[float64](cols)
-  result.addRicker(dtMs, centreMs = 200 + 10 * float64(r), freqHz = 25,
-    amp = pow(10.0, 2 * sin(1.7 * float64(r)) / 20))
-  result.addNoise(0.02, 1000 + r)
+  proc baseTrace(r: int): seq[float64] =
+    ## A Ricker wavelet at 200 + 10·r ms, its gain varying ±2 dB from trace
+    ## to trace (a field record's natural scatter), in weak white noise.
+    result = newSeq[float64](cols)
+    result.addRicker(dtMs, centreMs = 200 + 10 * float64(r), freqHz = 25,
+      amp = pow(10.0, 2 * sin(1.7 * float64(r)) / 20))
+    result.addNoise(0.02, 1000 + r)
 
-proc record[T](): SynthGather[T] =
-  var keys = newSeq[TraceKeys](traces)
-  for r in 0 ..< traces: keys[r] = stationKeys(0, 25 * float64(r + 1), 0, 0, dtMs)
-  keys[injectedRow[inHeaderDead]].status = tsDead
-  result = initSynthGather[T](keys, cols, dtMs)
-  for r in 0 ..< traces:
-    var x = baseTrace(r)
-    if r == injectedRow[inDead]:
-      for v in x.mitems: v = 0
-    elif r == injectedRow[inConstant]:
-      for v in x.mitems: v = 0.7
-    elif r == injectedRow[inClipped]:
-      # At 0.3 of the peak the wavelet's main lobe and both side lobes are
-      # cut: three runs. (At 0.5 it was one run of 5 samples, which is now
-      # counted but, alone and under 2·clipRun, not flagged.)
-      var m = 0.0
-      for v in x: m = max(m, abs(v))
-      for v in x.mitems: v = clamp(v, -0.3 * m, 0.3 * m)
-    elif r == injectedRow[inSpiky]:
-      x[1600 div 2] += 1.0 # 1600 ms, far from the wavelet
-    elif r == injectedRow[inDc]:
-      var s = 0.0
-      for v in x: s += v * v
-      x.addDc(sqrt(s / cols)) # one standard deviation
-    elif r == injectedRow[inNoisy]:
-      x.addNoise(2.0, 77) # some +25 dB
-    elif r == injectedRow[inWeak]:
-      for v in x.mitems: v *= 0.01
-    elif r == injectedRow[inNan]:
-      x[100] = NaN
-      x[101] = Inf
-      x[900] = NaN
-    for j in 0 ..< cols: result.data[r, j] = T(x[j])
+  proc record[T](): SynthGather[T] =
+    var keys = newSeq[TraceKeys](traces)
+    for r in 0 ..< traces: keys[r] = stationKeys(0, 25 * float64(r + 1), 0, 0, dtMs)
+    keys[injectedRow[inHeaderDead]].status = tsDead
+    result = initSynthGather[T](keys, cols, dtMs)
+    for r in 0 ..< traces:
+      var x = baseTrace(r)
+      if r == injectedRow[inDead]:
+        for v in x.mitems: v = 0
+      elif r == injectedRow[inConstant]:
+        for v in x.mitems: v = 0.7
+      elif r == injectedRow[inClipped]:
+        # At 0.3 of the peak the wavelet's main lobe and both side lobes are
+        # cut: three runs. (At 0.5 it was one run of 5 samples, which is now
+        # counted but, alone and under 2·clipRun, not flagged.)
+        var m = 0.0
+        for v in x: m = max(m, abs(v))
+        for v in x.mitems: v = clamp(v, -0.3 * m, 0.3 * m)
+      elif r == injectedRow[inSpiky]:
+        x[1600 div 2] += 1.0 # 1600 ms, far from the wavelet
+      elif r == injectedRow[inDc]:
+        var s = 0.0
+        for v in x: s += v * v
+        x.addDc(sqrt(s / cols)) # one standard deviation
+      elif r == injectedRow[inNoisy]:
+        x.addNoise(2.0, 77) # some +25 dB
+      elif r == injectedRow[inWeak]:
+        for v in x.mitems: v *= 0.01
+      elif r == injectedRow[inNan]:
+        x[100] = NaN
+        x[101] = Inf
+        x[900] = NaN
+      for j in 0 ..< cols: result.data[r, j] = T(x[j])
 
-func same(a, b: float64): bool = a == b or (a.isNaN and b.isNaN)
+  func same(a, b: float64): bool = a == b or (a.isNaN and b.isNaN)
 
-func same(a, b: TraceAmplitude): bool =
-  ## Equal, NaN equal to NaN.
-  a.samples == b.samples and same(a.rmsDb, b.rmsDb) and same(a.maxDb, b.maxDb) and
-    same(a.mean, b.mean) and a.nonFinite == b.nonFinite and a.clipped == b.clipped and
-    a.spikes == b.spikes and same(a.robustZ, b.robustZ) and a.flags == b.flags
+  func same(a, b: TraceAmplitude): bool =
+    ## Equal, NaN equal to NaN.
+    a.samples == b.samples and same(a.rmsDb, b.rmsDb) and same(a.maxDb, b.maxDb) and
+      same(a.mean, b.mean) and a.nonFinite == b.nonFinite and a.clipped == b.clipped and
+      a.spikes == b.spikes and same(a.robustZ, b.robustZ) and a.flags == b.flags
 
-proc checkRecord[T]() =
-  var g = record[T]()
-  let failed = @[injectedRow[inFailed]]
-  let meta = initChunkMeta(g.rows, dtMs, failed = failed)
-  var amps = newSeq[TraceAmplitude](traces)
-  var ws = initWorkspace()
-  ws.reserve(max(traceAmplitudeWorkspace(cols), recordAmplitudeWorkspace(traces)))
-  traceAmplitudeInto(g.data, meta, AmplitudeParams(), amps, ws)
-  let rec = recordAmplitude(amps, AmplitudeParams(), ws)
-  for r in 0 ..< traces:
-    doAssert amps[r].flags == expected(r),
-      $T & " row " & $r & ": " & $amps[r].flags & " (z " & $amps[r].robustZ & ")"
-  for k in [inHeaderDead, inFailed]:
-    let a = amps[injectedRow[k]]
-    doAssert a.samples == 0 and a.rmsDb.isNaN and a.robustZ.isNaN
-  doAssert amps[injectedRow[inNan]].nonFinite == 3
-  doAssert amps[injectedRow[inNan]].samples == cols
-  doAssert amps[injectedRow[inSpiky]].spikes == 1
-  doAssert amps[injectedRow[inClipped]].clipped >= 12, $amps[injectedRow[inClipped]].clipped
-  doAssert amps[injectedRow[inDead]].rmsDb == -Inf
-  doAssert abs(amps[injectedRow[inConstant]].rmsDb - 20 * log10(0.7)) < 1e-5
-  doAssert abs(amps[injectedRow[inConstant]].mean - 0.7) < 1e-6
-  # Statistics: every live trace but the dead, constant, header-dead, failed.
-  doAssert rec.traces == traces - 4
-  doAssert rec.flagged == 8
-  for f in AmplitudeFlag: doAssert rec.counts[f] == 1, $f
-  doAssert rec.madDb > 0.5 and rec.madDb < 2.5, $rec.madDb
-  doAssert amps[injectedRow[inNoisy]].robustZ > 10
-  doAssert amps[injectedRow[inWeak]].robustZ < -10
-  # The pool gives the same.
-  var pooled = newSeq[TraceAmplitude](traces)
-  var pool = newProcessPool(3)
-  pool.traceAmplitudeInto(g.data, meta, AmplitudeParams(), pooled)
-  discard recordAmplitude(pooled, AmplitudeParams(), ws)
-  for r in 0 ..< traces: doAssert same(pooled[r], amps[r]), $r
-  # No allocation once reserved.
-  doAssert allocsIn(traceAmplitudeInto(g.data, meta, AmplitudeParams(), amps, ws)) == 0
-  doAssert allocsIn((discard recordAmplitude(amps, AmplitudeParams(), ws))) == 0
-
-block record_flags_float32:
-  checkRecord[float32]()
-
-block record_flags_float64:
-  checkRecord[float64]()
-
-block record_flags_recomputed:
-  # recordAmplitude clears weak / noisy from an earlier call.
-  var amps = @[TraceAmplitude(samples: 10, rmsDb: 0, flags: {afWeak}),
-    TraceAmplitude(samples: 10, rmsDb: 0), TraceAmplitude(samples: 10, rmsDb: 0)]
-  var ws = initWorkspace()
-  ws.reserve(recordAmplitudeWorkspace(3))
-  let rec = recordAmplitude(amps, AmplitudeParams(), ws)
-  doAssert rec.flagged == 0 and rec.madDb == 0 and amps[0].robustZ == 0
-  amps[2].rmsDb = 0.1 # MAD 0: any difference is an outlier
-  discard recordAmplitude(amps, AmplitudeParams(), ws)
-  doAssert amps[2].flags == {afNoisy} and amps[2].robustZ == Inf
-
-block empty_record:
-  var amps: seq[TraceAmplitude]
-  var ws = initWorkspace()
-  let rec = recordAmplitude(amps, AmplitudeParams(), ws)
-  doAssert rec.traces == 0 and rec.medianRmsDb.isNaN and rec.flagged == 0
-
-block windows:
-  # A spike outside the window is not seen; window times follow t0Ms.
-  var g = record[float32]()
-  let meta = initChunkMeta(g.rows, dtMs)
-  var amps = newSeq[TraceAmplitude](traces)
-  var ws = initWorkspace()
-  ws.reserve(traceAmplitudeWorkspace(cols))
-  let r = injectedRow[inSpiky]
-  traceAmplitudeInto(g.data, meta, AmplitudeParams(startMs: 0, endMs: 1000), amps, ws)
-  doAssert amps[r].flags == {} and amps[r].samples == 501
-  traceAmplitudeInto(g.data, meta, AmplitudeParams(startMs: 1500, endMs: 1700), amps, ws)
-  doAssert amps[r].flags == {afSpiky} and amps[r].samples == 101
-  g.keys[r].t0Ms = 1000 # the spike now at 2600 ms
-  traceAmplitudeInto(g.data, meta, AmplitudeParams(startMs: 1500, endMs: 1700), amps, ws)
-  doAssert amps[r].flags == {} and amps[r].samples == 101
-  g.keys[r].t0Ms = NaN # a finite window needs t0
-  traceAmplitudeInto(g.data, meta, AmplitudeParams(startMs: 1500, endMs: 1700), amps, ws)
-  doAssert amps[r].samples == 0 and amps[r].rmsDb.isNaN
-  traceAmplitudeInto(g.data, meta, AmplitudeParams(), amps, ws)
-  doAssert amps[r].samples == cols and amps[r].flags == {afSpiky}
-  # A short trace: its live samples only.
-  g.setLive(r, 300)
-  traceAmplitudeInto(g.data, meta, AmplitudeParams(), amps, ws)
-  doAssert amps[r].samples == 300 and amps[r].flags == {}
-
-block single_trace:
-  var x = newSeq[float32](100)
-  doAssert traceAmplitude(x, 1).flags == {afDead}
-  x[50] = 1
-  let a = traceAmplitude(x, 1)
-  doAssert a.flags == {afSpiky} and a.spikes == 1, $a # 1 among zeros
-  doAssert a.maxDb == 0
-  let b = traceAmplitude(x, 1, AmplitudeParams(spikeFactor: Inf, dcRatio: Inf))
-  doAssert b.flags == {}
-  # Clip runs: three samples at the maximum, positive and negative, are
-  # counted; the flag takes a run of twice clipRun (or a second run).
-  var y = newSeq[float64](64)
-  y.addSinusoid(1, 37)
-  for j in 10 .. 11: y[j] = 2
-  y[12] = -2
-  let c = traceAmplitude(y, 1, AmplitudeParams(spikeFactor: Inf))
-  doAssert c.clipped == 3 and c.flags == {}
-  for j in 13 .. 15: y[j] = -2
-  let c6 = traceAmplitude(y, 1, AmplitudeParams(spikeFactor: Inf))
-  doAssert c6.clipped == 6 and c6.flags == {afClipped}
-  let c4 = traceAmplitude(y, 1, AmplitudeParams(clipRun: 4, spikeFactor: Inf))
-  doAssert c4.clipped == 6 and c4.flags == {}
-  doAssert traceAmplitude(y, 1, AmplitudeParams(clipRun: 7, spikeFactor: Inf)).clipped == 0
-  var allNan = [NaN, NaN]
-  let d = traceAmplitude(allNan, 1)
-  doAssert d.flags == {afNonFinite} and d.rmsDb.isNaN and d.nonFinite == 2
-  let e = traceAmplitude(newSeq[float32](0), 1)
-  doAssert e.samples == 0 and e.flags == {} and e.rmsDb.isNaN
-
-block huge_spikes:
-  # Two opposite spikes of 1e12 on noise: each found once, the sliding sum
-  # recovers after each one leaves the window.
-  var x = newSeq[float32](2000)
-  x.addNoise(1, 5)
-  x[100] += 1e12
-  x[1000] -= 1e12
-  let a = traceAmplitude(x, 1)
-  doAssert a.spikes == 2 and afSpiky in a.flags, $a.spikes
-  # Two spikes in one window: both seen once the factor allows.
-  var y = newSeq[float64](400)
-  y.addNoise(1, 6)
-  y[200] += 1000
-  y[205] += 1000
-  doAssert traceAmplitude(y, 1, AmplitudeParams(spikeFactor: 4)).spikes == 2
-
-block inf_is_not_clipped:
-  var x = newSeq[float64](100)
-  x.addSinusoid(1, 37)
-  for j in 50 ..< 55: x[j] = Inf
-  doAssert traceAmplitude(x, 1, AmplitudeParams(spikeFactor: Inf)).flags == {afNonFinite}
-
-proc reference(x: seq[float64], half: int, p: AmplitudeParams): TraceAmplitude =
-  ## The module's definitions on a finite trace, written out sample by
-  ## sample: each window summed on its own, each level tested in turn.
-  let n = x.len
-  result = TraceAmplitude(samples: n, rmsDb: NaN, maxDb: NaN, mean: NaN)
-  if n == 0: return
-  var sum, sumSq = 0.0
-  var lo = Inf
-  var hi = -Inf
-  for v in x:
-    sum += v
-    sumSq += v * v
-    lo = min(lo, v)
-    hi = max(hi, v)
-  let mean = sum / float64(n)
-  let mx = max(-lo, hi)
-  result.mean = mean
-  result.rmsDb = 20 * log10(sqrt(sumSq / float64(n)))
-  result.maxDb = 20 * log10(mx)
-  if mx == 0:
-    result.flags.incl afDead
-    return
-  if lo == hi:
-    result.flags.incl afConstant
-    return
-  if abs(mean) > p.dcRatio * sqrt(max(sumSq / float64(n) - mean * mean, 0.0)):
-    result.flags.incl afDcOffset
-  let near = (1 - max(p.clipTolerance, 0.01)) * mx
-  var run, runs, longest = 0
-  for i in 0 .. n:
-    if i < n and ((hi >= near and x[i] >= (1 - p.clipTolerance) * hi) or
-        (-lo >= near and x[i] <= (1 - p.clipTolerance) * lo)):
-      inc run
-    else:
-      if run >= p.clipRun:
-        result.clipped += run
-        inc runs
-        longest = max(longest, run)
-      run = 0
-  if runs >= 2 or longest >= 2 * p.clipRun: result.flags.incl afClipped
-  for i in 0 ..< n:
-    let a = max(0, i - half)
-    let b = min(n - 1, i + half)
-    var others = 0.0
-    for j in a .. b:
-      if j != i: others += (x[j] - mean) * (x[j] - mean)
-    let d = (x[i] - mean) * (x[i] - mean)
-    if b > a and d > 0 and d * float64(b - a) > p.spikeFactor * p.spikeFactor * others:
-      inc result.spikes
-  if result.spikes > 0: result.flags.incl afSpiky
-
-block the_kernels_against_the_definitions:
-  # Traces of every length about the spike window (none, shorter than
-  # half of it, a few windows), with spikes, clips, a DC level, coarse
-  # quantization, constants and zeros: the vector passes and the block
-  # sums give the counts and flags of the definitions, the statistics to
-  # rounding, in float32 and float64, one trace or a block.
-  const (rows, width) = (360, 90)
-  var keys = newSeq[TraceKeys](rows)
-  var counts = newSeq[int](rows)
-  var d32 = zeros[float32](rows, width)
-  var d64 = zeros[float64](rows, width)
-  for r in 0 ..< rows:
-    keys[r] = stationKeys(0, 25 * float64(r + 1), 0, 0, 1)
-    counts[r] = r mod (width + 1)
-    var x = newSeq[float32](width)
-    x.addNoise(1, 5000 + r)
-    case r mod 9
-    of 1: x[(r * 7) mod width] += 60
-    of 2:
-      for v in x.mitems: v = clamp(v, -0.7, 0.7)
-    of 3: x.addDc(3)
-    of 4:
-      for v in x.mitems: v = round(v)
-    of 5:
-      for v in x.mitems: v = (if r mod 2 == 0: 0'f32 else: 0.25'f32)
-    of 6:
-      x[(r * 5) mod width] = 1e12
-      x[(r * 11) mod width] = -40
-    else: discard
-    for j in 0 ..< width:
-      d32[r, j] = x[j]
-      d64[r, j] = float64(x[j])
-  let meta = initChunkMeta(rowsOf(keys, counts), 1)
-  var ws = initWorkspace()
-  ws.reserve(traceAmplitudeWorkspace(width))
-  for halfMs in [1.0, 3.0, 10.0, 40.0, 200.0]:
-    let p = AmplitudeParams(spikeHalfWindowMs: halfMs, spikeFactor: 8)
-    var a32, a64 = newSeq[TraceAmplitude](rows)
-    traceAmplitudeInto(d32, meta, p, a32, ws)
-    traceAmplitudeInto(d64, meta, p, a64, ws)
-    for r in 0 ..< rows:
-      var x = newSeq[float64](counts[r])
-      for j in 0 ..< x.len: x[j] = d64[r, j]
-      let want = reference(x, int(halfMs), p)
-      let what = "half " & $halfMs & " row " & $r
-      for got in [a32[r], a64[r], traceAmplitude(x, 1, p)]:
-        doAssert got.samples == want.samples and got.flags == want.flags, what & ": " &
-          $got & " vs " & $want
-        doAssert got.clipped == want.clipped and got.spikes == want.spikes, what
-        if x.len > 0:
-          doAssert abs(got.mean - want.mean) <= 1e-12 * max(1.0, abs(want.mean)), what
-          doAssert same(got.maxDb, want.maxDb), what
-          doAssert same(got.rmsDb, want.rmsDb) or abs(got.rmsDb - want.rmsDb) < 1e-9, what
-
-block clips_of_both_polarities:
-  # A 24-bit recorder clips at +8388607 and at −8388608: the two rails
-  # differ by one count, and both are clips.
-  var x = newSeq[float32](2000)
-  var atRail = 0
-  for j in 0 ..< x.len:
-    let v = clamp(round(1.5 * 8388608.0 * sin(2 * PI * 25 * float64(j) * 0.002)),
-      -8388608.0, 8388607.0)
-    x[j] = float32(v)
-    if v == 8388607.0 or v == -8388608.0: inc atRail
-  let a = traceAmplitude(x, 2, AmplitudeParams(spikeFactor: Inf))
-  doAssert a.clipped == atRail and afClipped in a.flags, $a.clipped & " of " & $atRail
-  # A one-sided signal clips at its one rail: the small side's own
-  # maximum is no clip level.
-  var y = newSeq[float64](400)
-  for j in 0 ..< y.len:
-    y[j] = min(100 * abs(sin(0.05 * float64(j))), 80.0) - (if j mod 40 < 5: 3.0 else: 0.0)
-  var top = 0
-  for v in y:
-    if v == 80: inc top
-  doAssert traceAmplitude(y, 2, AmplitudeParams(spikeFactor: Inf, dcRatio: Inf)).clipped == top
-
-block one_short_run_at_the_maximum_is_not_a_clip:
-  # Weak data recorded as integers sits at its largest count for a few
-  # samples somewhere: counted, not flagged. Two such runs, or one of twice
-  # clipRun, are.
-  var x = newSeq[float32](600)
-  for j in 0 ..< x.len: x[j] = float32((j * 7919) mod 5 - 2) # −2 .. 2, no run
-  for j in 100 .. 102: x[j] = 3
-  var a = traceAmplitude(x, 2)
-  doAssert a.clipped == 3 and afClipped notin a.flags, $a
-  for j in 300 .. 302: x[j] = 3
-  a = traceAmplitude(x, 2)
-  doAssert a.clipped == 6 and afClipped in a.flags, $a
-  for j in 300 .. 302: x[j] = 0
-  for j in 100 .. 105: x[j] = 3
-  a = traceAmplitude(x, 2)
-  doAssert a.clipped == 6 and afClipped in a.flags, $a
-
-const shotFile = currentSourcePath().parentDir.parentDir / "exampleFiles" /
-  "00000151_12900_11300.sgd"
-
-block the_example_record_is_not_clipped:
-  if not fileExists(shotFile):
-    echo "  skipped: the example SEG-D record is not present"
-  else:
-    var f = openSeismic(shotFile, keys = true)
-    defer: f.close()
-    let data = f.readTraces(0 ..< f.len, float32)
-    let meta = chunkMeta(f, 0 ..< f.len)
-    var amps = newSeq[TraceAmplitude](meta.len)
+  proc checkRecord[T]() =
+    var g = record[T]()
+    let failed = @[injectedRow[inFailed]]
+    let meta = initChunkMeta(g.rows, dtMs, failed = failed)
+    var amps = newSeq[TraceAmplitude](traces)
     var ws = initWorkspace()
-    ws.reserve(traceAmplitudeWorkspace(data.shape[1]))
-    traceAmplitudeInto(data, meta, AmplitudeParams(), amps, ws)
-    var flagged, runs = 0
-    for a in amps:
-      if afClipped in a.flags: inc flagged
-      if a.clipped > 0: inc runs
-    echo "  example record: ", runs, " traces with a run at their maximum, ", flagged,
-      " flagged as clipped"
-    doAssert flagged == 0 # four weak traces (max −83 .. −99 dB) had one run of 3
+    ws.reserve(max(traceAmplitudeWorkspace(cols), recordAmplitudeWorkspace(traces)))
+    traceAmplitudeInto(g.data, meta, AmplitudeParams(), amps, ws)
+    let rec = recordAmplitude(amps, AmplitudeParams(), ws)
+    for r in 0 ..< traces:
+      doAssert amps[r].flags == expected(r),
+        $T & " row " & $r & ": " & $amps[r].flags & " (z " & $amps[r].robustZ & ")"
+    for k in [inHeaderDead, inFailed]:
+      let a = amps[injectedRow[k]]
+      doAssert a.samples == 0 and a.rmsDb.isNaN and a.robustZ.isNaN
+    doAssert amps[injectedRow[inNan]].nonFinite == 3
+    doAssert amps[injectedRow[inNan]].samples == cols
+    doAssert amps[injectedRow[inSpiky]].spikes == 1
+    doAssert amps[injectedRow[inClipped]].clipped >= 12, $amps[injectedRow[inClipped]].clipped
+    doAssert amps[injectedRow[inDead]].rmsDb == -Inf
+    doAssert abs(amps[injectedRow[inConstant]].rmsDb - 20 * log10(0.7)) < 1e-5
+    doAssert abs(amps[injectedRow[inConstant]].mean - 0.7) < 1e-6
+    # Statistics: every live trace but the dead, constant, header-dead, failed.
+    doAssert rec.traces == traces - 4
+    doAssert rec.flagged == 8
+    for f in AmplitudeFlag: doAssert rec.counts[f] == 1, $f
+    doAssert rec.madDb > 0.5 and rec.madDb < 2.5, $rec.madDb
+    doAssert amps[injectedRow[inNoisy]].robustZ > 10
+    doAssert amps[injectedRow[inWeak]].robustZ < -10
+    # The pool gives the same.
+    var pooled = newSeq[TraceAmplitude](traces)
+    var pool = newProcessPool(3)
+    pool.traceAmplitudeInto(g.data, meta, AmplitudeParams(), pooled)
+    discard recordAmplitude(pooled, AmplitudeParams(), ws)
+    for r in 0 ..< traces: doAssert same(pooled[r], amps[r]), $r
+    # No allocation once reserved.
+    doAssert allocsIn(traceAmplitudeInto(g.data, meta, AmplitudeParams(), amps, ws)) == 0
+    doAssert allocsIn((discard recordAmplitude(amps, AmplitudeParams(), ws))) == 0
 
-block errors:
-  var x = newSeq[float32](10)
-  for p in [AmplitudeParams(startMs: 10, endMs: 0), AmplitudeParams(startMs: NaN),
-      AmplitudeParams(clipRun: 1), AmplitudeParams(clipTolerance: 1),
-      AmplitudeParams(spikeFactor: 0), AmplitudeParams(spikeHalfWindowMs: Inf),
-      AmplitudeParams(dcRatio: NaN), AmplitudeParams(outlierZ: 0)]:
-    doAssertRaises(ValueError): discard traceAmplitude(x, 1, p)
-  doAssertRaises(ValueError): discard traceAmplitude(x, 0)
-  var g = record[float32]()
-  let meta = initChunkMeta(g.rows, dtMs)
-  var short = newSeq[TraceAmplitude](traces - 1)
-  var ws = initWorkspace()
-  ws.reserve(traceAmplitudeWorkspace(cols))
-  doAssertRaises(ValueError): traceAmplitudeInto(g.data, meta, AmplitudeParams(), short, ws)
-  var amps = newSeq[TraceAmplitude](4)
-  var small = initWorkspace()
-  doAssertRaises(ValueError): discard recordAmplitude(amps, AmplitudeParams(), small)
-  # A workspace too small for the block is refused the same way.
-  var all = newSeq[TraceAmplitude](traces)
-  small.reserve(traceAmplitudeWorkspace(cols - 1))
-  doAssertRaises(ValueError): traceAmplitudeInto(g.data, meta, AmplitudeParams(), all, small)
-  var pool = newProcessPool(2)
-  doAssertRaises(ValueError):
-    pool.traceAmplitudeInto(g.data, meta, AmplitudeParams(), short)
+  block record_flags_float32:
+    checkRecord[float32]()
+
+  block record_flags_float64:
+    checkRecord[float64]()
+
+  block record_flags_recomputed:
+    # recordAmplitude clears weak / noisy from an earlier call.
+    var amps = @[TraceAmplitude(samples: 10, rmsDb: 0, flags: {afWeak}),
+      TraceAmplitude(samples: 10, rmsDb: 0), TraceAmplitude(samples: 10, rmsDb: 0)]
+    var ws = initWorkspace()
+    ws.reserve(recordAmplitudeWorkspace(3))
+    let rec = recordAmplitude(amps, AmplitudeParams(), ws)
+    doAssert rec.flagged == 0 and rec.madDb == 0 and amps[0].robustZ == 0
+    amps[2].rmsDb = 0.1 # MAD 0: any difference is an outlier
+    discard recordAmplitude(amps, AmplitudeParams(), ws)
+    doAssert amps[2].flags == {afNoisy} and amps[2].robustZ == Inf
+
+  block empty_record:
+    var amps: seq[TraceAmplitude]
+    var ws = initWorkspace()
+    let rec = recordAmplitude(amps, AmplitudeParams(), ws)
+    doAssert rec.traces == 0 and rec.medianRmsDb.isNaN and rec.flagged == 0
+
+  block windows:
+    # A spike outside the window is not seen; window times follow t0Ms.
+    var g = record[float32]()
+    let meta = initChunkMeta(g.rows, dtMs)
+    var amps = newSeq[TraceAmplitude](traces)
+    var ws = initWorkspace()
+    ws.reserve(traceAmplitudeWorkspace(cols))
+    let r = injectedRow[inSpiky]
+    traceAmplitudeInto(g.data, meta, AmplitudeParams(startMs: 0, endMs: 1000), amps, ws)
+    doAssert amps[r].flags == {} and amps[r].samples == 501
+    traceAmplitudeInto(g.data, meta, AmplitudeParams(startMs: 1500, endMs: 1700), amps, ws)
+    doAssert amps[r].flags == {afSpiky} and amps[r].samples == 101
+    g.keys[r].t0Ms = 1000 # the spike now at 2600 ms
+    traceAmplitudeInto(g.data, meta, AmplitudeParams(startMs: 1500, endMs: 1700), amps, ws)
+    doAssert amps[r].flags == {} and amps[r].samples == 101
+    g.keys[r].t0Ms = NaN # a finite window needs t0
+    traceAmplitudeInto(g.data, meta, AmplitudeParams(startMs: 1500, endMs: 1700), amps, ws)
+    doAssert amps[r].samples == 0 and amps[r].rmsDb.isNaN
+    traceAmplitudeInto(g.data, meta, AmplitudeParams(), amps, ws)
+    doAssert amps[r].samples == cols and amps[r].flags == {afSpiky}
+    # A short trace: its live samples only.
+    g.setLive(r, 300)
+    traceAmplitudeInto(g.data, meta, AmplitudeParams(), amps, ws)
+    doAssert amps[r].samples == 300 and amps[r].flags == {}
+
+  block single_trace:
+    var x = newSeq[float32](100)
+    doAssert traceAmplitude(x, 1).flags == {afDead}
+    x[50] = 1
+    let a = traceAmplitude(x, 1)
+    doAssert a.flags == {afSpiky} and a.spikes == 1, $a # 1 among zeros
+    doAssert a.maxDb == 0
+    let b = traceAmplitude(x, 1, AmplitudeParams(spikeFactor: Inf, dcRatio: Inf))
+    doAssert b.flags == {}
+    # Clip runs: three samples at the maximum, positive and negative, are
+    # counted; the flag takes a run of twice clipRun (or a second run).
+    var y = newSeq[float64](64)
+    y.addSinusoid(1, 37)
+    for j in 10 .. 11: y[j] = 2
+    y[12] = -2
+    let c = traceAmplitude(y, 1, AmplitudeParams(spikeFactor: Inf))
+    doAssert c.clipped == 3 and c.flags == {}
+    for j in 13 .. 15: y[j] = -2
+    let c6 = traceAmplitude(y, 1, AmplitudeParams(spikeFactor: Inf))
+    doAssert c6.clipped == 6 and c6.flags == {afClipped}
+    let c4 = traceAmplitude(y, 1, AmplitudeParams(clipRun: 4, spikeFactor: Inf))
+    doAssert c4.clipped == 6 and c4.flags == {}
+    doAssert traceAmplitude(y, 1, AmplitudeParams(clipRun: 7, spikeFactor: Inf)).clipped == 0
+    var allNan = [NaN, NaN]
+    let d = traceAmplitude(allNan, 1)
+    doAssert d.flags == {afNonFinite} and d.rmsDb.isNaN and d.nonFinite == 2
+    let e = traceAmplitude(newSeq[float32](0), 1)
+    doAssert e.samples == 0 and e.flags == {} and e.rmsDb.isNaN
+
+  block huge_spikes:
+    # Two opposite spikes of 1e12 on noise: each found once, the sliding sum
+    # recovers after each one leaves the window.
+    var x = newSeq[float32](2000)
+    x.addNoise(1, 5)
+    x[100] += 1e12
+    x[1000] -= 1e12
+    let a = traceAmplitude(x, 1)
+    doAssert a.spikes == 2 and afSpiky in a.flags, $a.spikes
+    # Two spikes in one window: both seen once the factor allows.
+    var y = newSeq[float64](400)
+    y.addNoise(1, 6)
+    y[200] += 1000
+    y[205] += 1000
+    doAssert traceAmplitude(y, 1, AmplitudeParams(spikeFactor: 4)).spikes == 2
+
+  block inf_is_not_clipped:
+    var x = newSeq[float64](100)
+    x.addSinusoid(1, 37)
+    for j in 50 ..< 55: x[j] = Inf
+    doAssert traceAmplitude(x, 1, AmplitudeParams(spikeFactor: Inf)).flags == {afNonFinite}
+
+  proc reference(x: seq[float64], half: int, p: AmplitudeParams): TraceAmplitude =
+    ## The module's definitions on a finite trace, written out sample by
+    ## sample: each window summed on its own, each level tested in turn.
+    let n = x.len
+    result = TraceAmplitude(samples: n, rmsDb: NaN, maxDb: NaN, mean: NaN)
+    if n == 0: return
+    var sum, sumSq = 0.0
+    var lo = Inf
+    var hi = -Inf
+    for v in x:
+      sum += v
+      sumSq += v * v
+      lo = min(lo, v)
+      hi = max(hi, v)
+    let mean = sum / float64(n)
+    let mx = max(-lo, hi)
+    result.mean = mean
+    result.rmsDb = 20 * log10(sqrt(sumSq / float64(n)))
+    result.maxDb = 20 * log10(mx)
+    if mx == 0:
+      result.flags.incl afDead
+      return
+    if lo == hi:
+      result.flags.incl afConstant
+      return
+    if abs(mean) > p.dcRatio * sqrt(max(sumSq / float64(n) - mean * mean, 0.0)):
+      result.flags.incl afDcOffset
+    let near = (1 - max(p.clipTolerance, 0.01)) * mx
+    var run, runs, longest = 0
+    for i in 0 .. n:
+      if i < n and ((hi >= near and x[i] >= (1 - p.clipTolerance) * hi) or
+          (-lo >= near and x[i] <= (1 - p.clipTolerance) * lo)):
+        inc run
+      else:
+        if run >= p.clipRun:
+          result.clipped += run
+          inc runs
+          longest = max(longest, run)
+        run = 0
+    if runs >= 2 or longest >= 2 * p.clipRun: result.flags.incl afClipped
+    for i in 0 ..< n:
+      let a = max(0, i - half)
+      let b = min(n - 1, i + half)
+      var others = 0.0
+      for j in a .. b:
+        if j != i: others += (x[j] - mean) * (x[j] - mean)
+      let d = (x[i] - mean) * (x[i] - mean)
+      if b > a and d > 0 and d * float64(b - a) > p.spikeFactor * p.spikeFactor * others:
+        inc result.spikes
+    if result.spikes > 0: result.flags.incl afSpiky
+
+  block the_kernels_against_the_definitions:
+    # Traces of every length about the spike window (none, shorter than
+    # half of it, a few windows), with spikes, clips, a DC level, coarse
+    # quantization, constants and zeros: the vector passes and the block
+    # sums give the counts and flags of the definitions, the statistics to
+    # rounding, in float32 and float64, one trace or a block.
+    const (rows, width) = (360, 90)
+    var keys = newSeq[TraceKeys](rows)
+    var counts = newSeq[int](rows)
+    var d32 = zeros[float32](rows, width)
+    var d64 = zeros[float64](rows, width)
+    for r in 0 ..< rows:
+      keys[r] = stationKeys(0, 25 * float64(r + 1), 0, 0, 1)
+      counts[r] = r mod (width + 1)
+      var x = newSeq[float32](width)
+      x.addNoise(1, 5000 + r)
+      case r mod 9
+      of 1: x[(r * 7) mod width] += 60
+      of 2:
+        for v in x.mitems: v = clamp(v, -0.7, 0.7)
+      of 3: x.addDc(3)
+      of 4:
+        for v in x.mitems: v = round(v)
+      of 5:
+        for v in x.mitems: v = (if r mod 2 == 0: 0'f32 else: 0.25'f32)
+      of 6:
+        x[(r * 5) mod width] = 1e12
+        x[(r * 11) mod width] = -40
+      else: discard
+      for j in 0 ..< width:
+        d32[r, j] = x[j]
+        d64[r, j] = float64(x[j])
+    let meta = initChunkMeta(rowsOf(keys, counts), 1)
+    var ws = initWorkspace()
+    ws.reserve(traceAmplitudeWorkspace(width))
+    for halfMs in [1.0, 3.0, 10.0, 40.0, 200.0]:
+      let p = AmplitudeParams(spikeHalfWindowMs: halfMs, spikeFactor: 8)
+      var a32, a64 = newSeq[TraceAmplitude](rows)
+      traceAmplitudeInto(d32, meta, p, a32, ws)
+      traceAmplitudeInto(d64, meta, p, a64, ws)
+      for r in 0 ..< rows:
+        var x = newSeq[float64](counts[r])
+        for j in 0 ..< x.len: x[j] = d64[r, j]
+        let want = reference(x, int(halfMs), p)
+        let what = "half " & $halfMs & " row " & $r
+        for got in [a32[r], a64[r], traceAmplitude(x, 1, p)]:
+          doAssert got.samples == want.samples and got.flags == want.flags, what & ": " &
+            $got & " vs " & $want
+          doAssert got.clipped == want.clipped and got.spikes == want.spikes, what
+          if x.len > 0:
+            doAssert abs(got.mean - want.mean) <= 1e-12 * max(1.0, abs(want.mean)), what
+            doAssert same(got.maxDb, want.maxDb), what
+            doAssert same(got.rmsDb, want.rmsDb) or abs(got.rmsDb - want.rmsDb) < 1e-9, what
+
+  block clips_of_both_polarities:
+    # A 24-bit recorder clips at +8388607 and at −8388608: the two rails
+    # differ by one count, and both are clips.
+    var x = newSeq[float32](2000)
+    var atRail = 0
+    for j in 0 ..< x.len:
+      let v = clamp(round(1.5 * 8388608.0 * sin(2 * PI * 25 * float64(j) * 0.002)),
+        -8388608.0, 8388607.0)
+      x[j] = float32(v)
+      if v == 8388607.0 or v == -8388608.0: inc atRail
+    let a = traceAmplitude(x, 2, AmplitudeParams(spikeFactor: Inf))
+    doAssert a.clipped == atRail and afClipped in a.flags, $a.clipped & " of " & $atRail
+    # A one-sided signal clips at its one rail: the small side's own
+    # maximum is no clip level.
+    var y = newSeq[float64](400)
+    for j in 0 ..< y.len:
+      y[j] = min(100 * abs(sin(0.05 * float64(j))), 80.0) - (if j mod 40 < 5: 3.0 else: 0.0)
+    var top = 0
+    for v in y:
+      if v == 80: inc top
+    doAssert traceAmplitude(y, 2, AmplitudeParams(spikeFactor: Inf, dcRatio: Inf)).clipped == top
+
+  block one_short_run_at_the_maximum_is_not_a_clip:
+    # Weak data recorded as integers sits at its largest count for a few
+    # samples somewhere: counted, not flagged. Two such runs, or one of twice
+    # clipRun, are.
+    var x = newSeq[float32](600)
+    for j in 0 ..< x.len: x[j] = float32((j * 7919) mod 5 - 2) # −2 .. 2, no run
+    for j in 100 .. 102: x[j] = 3
+    var a = traceAmplitude(x, 2)
+    doAssert a.clipped == 3 and afClipped notin a.flags, $a
+    for j in 300 .. 302: x[j] = 3
+    a = traceAmplitude(x, 2)
+    doAssert a.clipped == 6 and afClipped in a.flags, $a
+    for j in 300 .. 302: x[j] = 0
+    for j in 100 .. 105: x[j] = 3
+    a = traceAmplitude(x, 2)
+    doAssert a.clipped == 6 and afClipped in a.flags, $a
+
+  const shotFile = currentSourcePath().parentDir.parentDir / "exampleFiles" /
+    "00000151_12900_11300.sgd"
+
+  block the_example_record_is_not_clipped:
+    if not fileExists(shotFile):
+      echo "  skipped: the example SEG-D record is not present"
+    else:
+      var f = openSeismic(shotFile, keys = true)
+      defer: f.close()
+      let data = f.readTraces(0 ..< f.len, float32)
+      let meta = chunkMeta(f, 0 ..< f.len)
+      var amps = newSeq[TraceAmplitude](meta.len)
+      var ws = initWorkspace()
+      ws.reserve(traceAmplitudeWorkspace(data.shape[1]))
+      traceAmplitudeInto(data, meta, AmplitudeParams(), amps, ws)
+      var flagged, runs = 0
+      for a in amps:
+        if afClipped in a.flags: inc flagged
+        if a.clipped > 0: inc runs
+      echo "  example record: ", runs, " traces with a run at their maximum, ", flagged,
+        " flagged as clipped"
+      doAssert flagged == 0 # four weak traces (max −83 .. −99 dB) had one run of 3
+
+  block errors:
+    var x = newSeq[float32](10)
+    for p in [AmplitudeParams(startMs: 10, endMs: 0), AmplitudeParams(startMs: NaN),
+        AmplitudeParams(clipRun: 1), AmplitudeParams(clipTolerance: 1),
+        AmplitudeParams(spikeFactor: 0), AmplitudeParams(spikeHalfWindowMs: Inf),
+        AmplitudeParams(dcRatio: NaN), AmplitudeParams(outlierZ: 0)]:
+      doAssertRaises(ValueError): discard traceAmplitude(x, 1, p)
+    doAssertRaises(ValueError): discard traceAmplitude(x, 0)
+    var g = record[float32]()
+    let meta = initChunkMeta(g.rows, dtMs)
+    var short = newSeq[TraceAmplitude](traces - 1)
+    var ws = initWorkspace()
+    ws.reserve(traceAmplitudeWorkspace(cols))
+    doAssertRaises(ValueError): traceAmplitudeInto(g.data, meta, AmplitudeParams(), short, ws)
+    var amps = newSeq[TraceAmplitude](4)
+    var small = initWorkspace()
+    doAssertRaises(ValueError): discard recordAmplitude(amps, AmplitudeParams(), small)
+    # A workspace too small for the block is refused the same way.
+    var all = newSeq[TraceAmplitude](traces)
+    small.reserve(traceAmplitudeWorkspace(cols - 1))
+    doAssertRaises(ValueError): traceAmplitudeInto(g.data, meta, AmplitudeParams(), all, small)
+    var pool = newProcessPool(2)
+    doAssertRaises(ValueError):
+      pool.traceAmplitudeInto(g.data, meta, AmplitudeParams(), short)
+
+when isMainModule: main()

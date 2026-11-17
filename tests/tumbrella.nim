@@ -4,5 +4,8 @@ import std/assertions
 {.warning[UnusedImport]: off.}
 import processSEG
 
-block umbrella_imports:
-  doAssert declared(processSEG), "the umbrella module should be importable"
+proc main*() =
+  block umbrella_imports:
+    doAssert declared(processSEG), "the umbrella module should be importable"
+
+when isMainModule: main()
