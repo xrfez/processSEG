@@ -1,5 +1,6 @@
 # Nim compiler artifacts
 nimcache/
+.nimcache/
 bin/
 htmldocs/
 *.exe

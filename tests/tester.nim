@@ -1,26 +1,46 @@
-## Test runner: compiles and runs every `tests/t*.nim` file in its own process.
+## Test runner: one compile of the suite, each test in its own process.
 ##
-## The runner's command-line arguments are passed to the compiler for every test,
-## so one runner build serves each mode:
+## Every `tests/t*.nim` exports `proc main*()` and ends with
+## `when isMainModule: main()`, so `nim c -r tests/tfoo.nim` still runs that
+## test alone, and importing the module runs nothing. The runner writes one
+## program into the cache (not tracked) that imports every joined test and
+## dispatches on its first argument: `alltests tfoo` calls `tfoo.main()`,
+## `alltests --list` prints the names. It compiles that program once, then
+## runs `alltests <name>` per test.
 ##
-##   nim c -r tests/tester.nim                    # debug
-##   nim c -r tests/tester.nim -d:release         # release (also -d:danger)
+## A test that cannot join the aggregate carries one comment line
+##
+##   # nimtest: separate: <reason>
+##
+## and is compiled alone, as every test used to be. `--separate` compiles
+## every test alone, for when the aggregate itself does not compile.
+## `tests/reject/r*.nim` stay separate too: each must fail to compile, and
+## holds a line `## Expect: <text>` that the compiler's output must contain.
+##
+## Arguments that do not start with `-` select tests (`tfoo` or `tfoo.nim`);
+## the rest are compiler flags, passed through as before:
+##
+##   nim c -r tests/tester.nim
+##   nim c -r tests/tester.nim -d:release
 ##   nim c -r tests/tester.nim -d:addressSanitizer
-##
-## Helper modules must not start with `t` (they live in `tests/utils/`).
-##
-## **Reject tests**, `tests/reject/r*.nim`, must *fail* to compile (to C, with
-## the same flags): each holds a line `## Expect: <text>`, and the compiler's
-## output must contain that text. They check contracts that `compiles()` cannot
-## see, such as a `=copy` that is an error.
+##   nim c -r tests/tester.nim tbasic
+##   nim c -r tests/tester.nim --separate
 
 import std/[algorithm, os, osproc, streams, strutils]
 
+const separateMark = "# nimtest: separate:"
+
 proc run(exe: string, args: openArray[string]): int =
-  ## Runs `exe` with `args` directly (no shell, so no quoting rules), with
-  ## this process's stdout and stderr; returns the exit code.
+  ## Runs `exe` with `args` directly (no shell), with this process's stdout
+  ## and stderr; returns the exit code.
   var p = startProcess(exe, args = args, options = {poParentStreams})
   result = p.waitForExit()
+  p.close()
+
+proc capture(exe: string, args: openArray[string]): tuple[output: string, code: int] =
+  var p = startProcess(exe, args = args, options = {poStdErrToStdOut})
+  result.output = p.outputStream.readAll()
+  result.code = p.waitForExit()
   p.close()
 
 proc expected(f: string): string =
@@ -28,6 +48,17 @@ proc expected(f: string): string =
   for line in lines(f):
     if line.startsWith("## Expect: "):
       return line["## Expect: ".len .. ^1].strip
+  ""
+
+proc separateReason(f: string): string =
+  ## The reason after `# nimtest: separate:`, or "" when `f` joins the aggregate.
+  for line in lines(f):
+    let s = line.strip
+    if s.startsWith(separateMark) or s.startsWith("#" & separateMark):
+      let rest = s[s.find(separateMark) + separateMark.len .. ^1].strip
+      if rest.len == 0:
+        quit "FAILURE " & f & " has an empty `# nimtest: separate:` reason"
+      return rest
   ""
 
 proc rejected(nim, f: string, flags: openArray[string], testDir,
@@ -49,34 +80,154 @@ proc rejected(nim, f: string, flags: openArray[string], testDir,
     echo "  failed without `", want, "`:\n", output
   result = code != 0 and want in output
 
+proc nimQuote(s: string): string =
+  ## A Nim string literal of `s`, for the generated config.
+  result = "\""
+  for c in s:
+    if c == '\\': result.add "\\\\"
+    elif c == '"': result.add "\\\""
+    else: result.add c
+  result.add "\""
+
+proc writeSuiteConfig(dir, root: string) =
+  ## The switches `tests/config.nims` would have applied had the aggregate
+  ## lived in `tests/`. The project's own config still loads (this directory
+  ## is under it): outdir, CPU target.
+  var s = "switch(\"path\", " & nimQuote(root / "src") & ")\n"
+  s.add "switch(\"path\", " & nimQuote(root / "tests") & ")\n"
+  s.add "switch(\"define\", \"nimAllocStats\")\n"
+  s.add """
+when defined(addressSanitizer):
+  switch("debugger", "native")
+  switch("define", "noSignalHandler")
+  switch("define", "useMalloc")
+  when defined(vcc):
+    switch("passC", "/fsanitize=address")
+  elif defined(windows):
+    {.error: "nim asan needs gcc/clang on Linux or macOS, or MSVC (--cc:vcc)".}
+  else:
+    switch("passC", "-fsanitize=address -fno-omit-frame-pointer")
+    switch("passL", "-fsanitize=address -fno-omit-frame-pointer")
+"""
+  writeFile(dir / "config.nims", s)
+
+proc aggregateSource(names: seq[string]): string =
+  ## One program: `alltests <name>` runs that test, `alltests --list` prints them.
+  result = "## Generated by tests/tester.nim. Not tracked.\nimport std/os\n\n"
+  for n in names:
+    result.add "import " & n & " as m_" & n & "\n"
+  result.add "\nproc list() =\n"
+  for n in names:
+    result.add "  echo \"" & n & "\"\n"
+  result.add "\nproc run(name: string) =\n  case name\n"
+  for n in names:
+    result.add "  of \"" & n & "\", \"" & n & ".nim\", \"" & n & ".exe\":\n"
+    result.add "    m_" & n & ".main()\n"
+  result.add "  else:\n    quit \"unknown test: \" & name\n"
+  result.add """
+when isMainModule:
+  if paramCount() == 0 or paramStr(1) == "--list":
+    list()
+  else:
+    run(paramStr(1))
+"""
+
+proc moduleName(f: string): string =
+  f.extractFilename.changeFileExt("")
+
+proc selected(name, file: string, picked: seq[string]): bool =
+  if picked.len == 0: return true
+  for p in picked:
+    if p == name or p == file.extractFilename or p == "reject" / file.extractFilename:
+      return true
+  false
+
 proc main() =
   let
     testDir = currentSourcePath().parentDir
-    flags = commandLineParams()
+    root = testDir.parentDir
     nim = getCurrentCompilerExe()
-  var tests: seq[string]
+  var
+    flags: seq[string] = @[]
+    picked: seq[string] = @[]
+    separateAll = false
+  for a in commandLineParams():
+    if a == "--separate":
+      separateAll = true
+    elif a.len > 0 and a[0] != '-':
+      picked.add a
+    else:
+      flags.add a
+  var tests: seq[string] = @[]
   for f in walkFiles(testDir / "t*.nim"):
     if f.extractFilename != "tester.nim":
       tests.add f
   tests.sort()
   if tests.len == 0:
     quit "FAILURE no tests found in " & testDir
-  var failed: seq[string]
+  for p in picked:
+    var known = false
+    for f in tests:
+      if selected(moduleName(f), f, @[p]):
+        known = true
+    if not known:
+      for f in walkFiles(testDir / "reject" / "r*.nim"):
+        if p == f.extractFilename or p == "reject" / f.extractFilename:
+          known = true
+      if not known:
+        quit "FAILURE unknown test: " & p
+  var joined: seq[string] = @[]
+  var alone = 0
   for f in tests:
-    echo "Running: ", f.extractFilename, " ", flags.join(" ")
-    if run(nim, @["c", "-r", "--hints:off"] & flags & @[f]) != 0:
-      failed.add f.extractFilename
-  var rejects: seq[string]
+    if selected(moduleName(f), f, picked):
+      if separateAll or separateReason(f).len > 0:
+        inc alone
+      else:
+        joined.add f
+  let exe = root / "bin" / "alltests".addFileExt(ExeExt)
+  if joined.len > 0:
+    createDir(root / ".nimcache")
+    createDir(root / "bin")
+    let genDir = root / ".nimcache" / "suite"
+    createDir(genDir)
+    var names: seq[string] = @[]
+    for f in joined:
+      names.add moduleName(f)
+    writeFile(genDir / "alltests.nim", aggregateSource(names))
+    writeSuiteConfig(genDir, root)
+    echo "Compiling: alltests ", flags.join(" ")
+    if run(nim, @["c", "--hints:off", "-o:" & exe] & flags & @[genDir / "alltests.nim"]) != 0:
+      quit "FAILURE the aggregate did not compile. Re-run with --separate."
+    let listed = capture(exe, @["--list"])
+    if listed.code != 0 or listed.output.strip.splitLines != names:
+      echo listed.output
+      quit "FAILURE alltests --list does not match the joined tests"
+  var failed: seq[string] = @[]
+  for f in tests:
+    let name = moduleName(f)
+    if not selected(name, f, picked):
+      discard
+    elif separateAll or separateReason(f).len > 0:
+      echo "Running: ", f.extractFilename, " ", flags.join(" ")
+      if run(nim, @["c", "-r", "--hints:off"] & flags & @[f]) != 0:
+        failed.add f.extractFilename
+    else:
+      echo "Running: ", f.extractFilename, " ", flags.join(" ")
+      if run(exe, @[name]) != 0:
+        failed.add f.extractFilename
+  var rejects: seq[string] = @[]
   for f in walkFiles(testDir / "reject" / "r*.nim"):
-    rejects.add f
+    if selected("", f, picked):
+      rejects.add f
   rejects.sort()
   let cache = getTempDir() / ("processseg_reject_" & $getCurrentProcessId())
   for f in rejects:
     echo "Rejecting: ", f.extractFilename, " ", flags.join(" ")
     if not rejected(nim, f, flags, testDir, cache):
       failed.add "reject/" & f.extractFilename
-  removeDir(cache)
-  let total = tests.len + rejects.len
+  if rejects.len > 0:
+    removeDir(cache)
+  let total = joined.len + alone + rejects.len
   if failed.len > 0:
     quit "FAILURE " & $failed.len & " of " & $total & " test files: " &
       failed.join(", ")

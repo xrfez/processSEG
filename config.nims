@@ -53,7 +53,8 @@ task zigDebug, "Build debug binary using Zig CC with debug symbols":
   selfExec "c -d:zigcc --cc:clang --clang.exe:\"" & zigccExe & "\" --clang.linkerexe:\"" & zigccExe & "\" --debuginfo:on src/processSEG.nim"
 
 # Every test task builds the runner tests/tester.nim once, in debug; the runner
-# compiles and runs each tests/t*.nim with the flags given after it.
+# compiles the joined tests once (or each tests/t*.nim, with --separate) with
+# the flags given after it, then runs each test in its own process.
 const tester = "c -r --hints:off tests/tester.nim"
 
 task test, "Run test suite":
