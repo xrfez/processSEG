@@ -92,6 +92,9 @@ proc main*() =
     doAssert wholeSamples(4.0, Inf) == 0
     doAssert wholeSamples(1e20, 1e-10) == high(int)
     doAssert wholeSamples(-1e20, 1e-10) == low(int)
+    # Exactly ±2^53 is not saturated: it is the whole sample it names.
+    doAssert wholeSamples(9007199254740992.0, 1.0) == 9007199254740992
+    doAssert wholeSamples(-9007199254740992.0, 1.0) == -9007199254740992
     var row = newSeq[float64](16)
     for j in 0 ..< row.len: row[j] = float64(j + 1)
     row[4] = NaN

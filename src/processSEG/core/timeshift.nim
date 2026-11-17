@@ -75,6 +75,6 @@ func wholeSamples*(ms, dtMs: float64): int {.raises: [].} =
   if ms.classify in {fcNan, fcInf, fcNegInf}: return 0
   if dtMs.classify != fcNormal or dtMs <= 0: return 0
   let s = ms / dtMs
-  if s >= 9007199254740992.0: return high(int) # 2^53
-  if s <= -9007199254740992.0: return low(int)
+  if s > 9007199254740992.0: return high(int) # past 2^53
+  if s < -9007199254740992.0: return low(int)
   int(round(s))
