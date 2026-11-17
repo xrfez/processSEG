@@ -109,8 +109,12 @@ edit the Atlas section of `nim.cfg` by hand: Atlas rewrites it.
 
 - `src/processSEG.nim`: the umbrella module; `src/processSEG/<area>/<module>.nim`: the
   library (core, fft, filter, gain, velocity, statics, stack, qc, pipeline, batch).
-- `tests/`: test suites (`tester.nim` runs every `t*.nim`; helpers go in `tests/utils/`;
-  `tests/reject/` holds programs that must not compile; `tests/fuzz/` the fuzz targets).
+- `tests/`: test suites. `tester.nim` compiles them once and runs each `t*.nim` in its
+  own process. A test's body is `proc main*()` and the file ends with
+  `when isMainModule: main()`, so `nim c -r tests/tfoo.nim` still runs that test alone.
+  A test that cannot join the one compile is marked `# nimtest: separate: <reason>`.
+  Helpers go in `tests/utils/`; `tests/reject/` holds programs that must not compile;
+  `tests/fuzz/` the fuzz targets.
 - `bench/`: benchmarks and their recorded results.
 - `docs/`: guides, API reference and the integration contract.
 - `tools/`: build helper wrappers (`tools/zigcc` for Zig CC invocations).
@@ -141,6 +145,8 @@ default.
 ## Development Commands
 
 - Run test suite: `nim test`
+- Run one test: `nim c -r tests/tfoo.nim`
+- Run the suite, compiling each file alone: `nim c -r tests/tester.nim --separate`
 - Run test suite in release and danger builds: `nim testRelease`
 - Run test suite under AddressSanitizer: `nim asan`
 - Run the fuzz targets (libFuzzer, ASan, UBSan; clang with compiler-rt):
