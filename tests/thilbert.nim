@@ -244,4 +244,56 @@ proc main*() =
       hp.analyticInto(x, dtMs, env, phase, hz, ws)
       for j in 0 ..< n: doAssert hz[j].isNaN and env[j] == 0
 
+  block frequency_near_nyquist_with_noise:
+    # Fail-first: the plain mean of two steps on opposite sides of the wrap
+    # read about 0 Hz for most samples of a 0.49 fs tone with noise.
+    let n = 2001
+    let dtMs = 4.0
+    let fs = 1000 / dtMs
+    var ws = initWorkspace()
+    let hp = initHilbertPlan(float64, n)
+    ws.reserve(hp.workspaceSize)
+    var env, phase, hz = newSeq[float64](n)
+    var seed = 12345'u32
+    proc rnd(): float64 =
+      seed = seed * 1664525'u32 + 1013904223'u32
+      float64(seed shr 8) / float64(1'u32 shl 24) - 0.5
+    var x = newSeq[float64](n)
+    for j in 0 ..< n:
+      x[j] = gauss(j, n) * cos(2 * PI * 0.49 * fs * float64(j) * dtMs / 1000) +
+        0.05 * gauss(j, n) * rnd()
+    hp.analyticInto(x, dtMs, env, phase, hz, ws)
+    var seen = 0
+    for j in n div 3 ..< 2 * n div 3:
+      doAssert hz[j] > fs / 4, $j & " " & $hz[j]
+      inc seen
+    doAssert seen > 600
+    for frac in [0.25, 0.5]:
+      for j in 0 ..< n:
+        x[j] = gauss(j, n) * cos(2 * PI * frac * fs * float64(j) * dtMs / 1000)
+      hp.analyticInto(x, dtMs, env, phase, hz, ws)
+      if frac == 0.25:
+        for j in n div 3 ..< 2 * n div 3: doAssert abs(hz[j] - fs / 4) < 0.005 * fs / 4
+    # Exactly Nyquist: H is zero there, so the analytic signal is real and the
+    # phase flips 0, 180: the step is +180 either way (reads +fs/2).
+    for j in 0 ..< n: x[j] = (if j mod 2 == 0: 1.0 else: -1.0)
+    hp.analyticInto(x, dtMs, env, phase, hz, ws)
+    for j in n div 3 ..< 2 * n div 3: doAssert abs(hz[j] - fs / 2) < 0.01 * fs, $hz[j]
+    # Two tones, 5 Hz at 1 and 10 Hz at 0.7: the phase runs backwards where
+    # the beat is at its minimum (true frequency -6.7 Hz there). The reading
+    # follows the exact value (a1²f1 + a2²f2 + a1a2(f1+f2)cos Δ) / |z|².
+    for j in 0 ..< n:
+      let t = float64(j) * dtMs / 1000
+      x[j] = cos(2 * PI * 5 * t) + 0.7 * cos(2 * PI * 10 * t)
+    hp.analyticInto(x, dtMs, env, phase, hz, ws)
+    var lowest = 0.0
+    for j in n div 3 ..< 2 * n div 3:
+      let t = float64(j) * dtMs / 1000
+      let d = 2 * PI * 5 * t
+      let want = (5 + 0.49 * 10 + 0.7 * 15 * cos(d)) /
+        (1 + 0.49 + 1.4 * cos(d))
+      doAssert abs(hz[j] - want) < 1.0, $j & " " & $hz[j] & " " & $want
+      lowest = min(lowest, hz[j])
+    doAssert lowest < -5, $lowest
+
 when isMainModule: main()

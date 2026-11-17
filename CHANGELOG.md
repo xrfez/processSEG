@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- `analyticInto`: the instantaneous frequency was wrong above a quarter of the sampling rate (it read the true value minus fs/2); the phase step is now taken per sample, in (−π, π], so it is right up to Nyquist.
+- `analyticInto`: the instantaneous frequency was wrong above a quarter of the sampling rate (it read the true value minus fs/2); the phase step is now taken per sample (circular mean of the two steps around the sample), so it is right up to Nyquist for a clean tone.
 - `circularMeanDeg`: the circular mean of angles in degrees and the resultant length.
 
 ## 0.7.0

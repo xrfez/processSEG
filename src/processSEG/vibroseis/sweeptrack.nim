@@ -903,6 +903,11 @@ proc trackInto*[T: SampleType](tp: SweepTrackPlan[T], x: openArray[T],
     let a = (if m > 0 and not track.phaseDeg[m - 1].isNaN: m - 1 else: m)
     let b = (if m + 1 < tp.points and not track.phaseDeg[m + 1].isNaN: m + 1 else: m)
     if a == b: continue
+    # The phase step between the neighbouring points is wrapped to ±180°:
+    # a fundamental more than 1/(2·(t[b] − t[a])) Hz from the reference
+    # (25 Hz at the default 10 ms step, 2.5 Hz at 100 ms; double at the two
+    # ends, which use one interval) folds. A vibrator is within a few Hz of
+    # its reference, so the default is far from it; a coarse `stepMs` is not.
     let dTheta = wrapDeg(track.phaseDeg[b] - track.phaseDeg[a])
     let dt = (track.timeMs[b] - track.timeMs[a]) / 1000
     track.frequencyHz[m] = reference.refHz[m] + dTheta / (360 * dt)

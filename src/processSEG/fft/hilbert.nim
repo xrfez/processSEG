@@ -163,10 +163,13 @@ proc analyticInto*[T: SampleType](hp: HilbertPlan[T], x: openArray[T],
   ## The envelope, the instantaneous phase and the instantaneous frequency
   ## of `x` from one Hilbert transform. `env[j] = |x + i·H[x]|`. `phaseDeg`
   ## is `arg(x + i·H[x])` in (−180, 180], NaN where the envelope is 0.
-  ## `hz[j]` is the mean of the two one-sample phase steps around sample `j`
-  ## (`z[j]·conj(z[j-1])` and `z[j+1]·conj(z[j])`, each step taken in (−π, π]),
-  ## in Hz (`dtMs` is the sample interval). So it is right for every
-  ## frequency from 0 up to Nyquist, and for a real signal positive for
+  ## `hz[j]` is the circular mean of the two one-sample phase steps around
+  ## sample `j` (`z[j]·conj(z[j-1])` and `z[j+1]·conj(z[j])`, each step taken
+  ## in (−π, π]), in Hz (`dtMs` is the sample interval). So it is right for
+  ## every frequency from 0 up to Nyquist for a clean tone (a tone at exactly
+  ## Nyquist reads +Nyquist). Noise or a second component near Nyquist makes
+  ## the two steps differ; the circular mean keeps them on the same side of
+  ## the wrap, but the reading is then only as good as the phase is, and for a real signal positive for
   ## `cos(2πft)` with `f > 0` (a negative value is a falling frequency, as in a
   ## down sweep). The value belongs to sample `j` itself; it is NaN at the
   ## first and last samples, and where that sample or either neighbour has
@@ -207,4 +210,6 @@ proc analyticInto*[T: SampleType](hp: HilbertPlan[T], x: openArray[T],
       # wrapped to (−π, π], so a step up to Nyquist (π per sample) is exact.
       let back = wrapPi((phaseDeg[j] - phaseDeg[j - 1]) * PI / 180)
       let fwd = wrapPi((phaseDeg[j + 1] - phaseDeg[j]) * PI / 180)
-      hz[j] = (back + fwd) * scale
+      # The circular mean of the two steps: near ±π noise can put them on
+      # opposite sides of the wrap, and their plain mean would read about 0.
+      hz[j] = wrapPi(back + 0.5 * wrapPi(fwd - back)) * (2 * scale)
