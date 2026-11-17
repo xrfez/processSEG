@@ -4,7 +4,8 @@
 ## allocation and the pool.
 ##
 ## Fail-first: `peak_at_n_ms` failed while the record was correlated
-## unshifted, so identical traces peaked at sample 0 instead of N.
+## unshifted (`timeShift` omitted after `wholeSamples`), so identical
+## traces peaked at sample 0 instead of 20.
 
 import std/[assertions, math, complex]
 import parseSEG, processSEG
@@ -387,26 +388,25 @@ proc main*() =
     doAssertRaises(ValueError): plan.correlateInto(src, dst2, m4, ws)
 
   block peak_at_n_ms:
-    # Shift the record later by N, then correlate against the unshifted pilot.
+    # Snap N to a sample, shift the record later by that, then correlate
+    # against the unshifted pilot.
     let dtMs = 2.0
     let nMs = 40.0
     let spec = linearSweep(8, 80, 400, dtMs, initSweepTaper(40, 40))
     let pilot = generatePilot(spec)
-    let n = pilot.len + int(nMs / dtMs) + 4
+    let n = pilot.len + wholeSamples(nMs, dtMs) + 4
     var record = newSeq[float64](n)
     for j in 0 ..< pilot.len: record[j] = pilot.samples[j]
-    let shift = initTimeShiftPlan(float64, dtMs, n)
-    var ws = initWorkspace()
-    ws.reserve(shift)
-    shift.shiftMs(record, shiftMs = -nMs, ws)
+    record.timeShift(wholeSamples(-nMs, dtMs))
     let corr = initCorrelationPlan(float64, pilot, dtMs, n, outSamples = n)
+    var ws = initWorkspace()
     ws.reserve(corr)
     var y = newSeq[float64](n)
     corr.correlateInto(record, y, ws)
     var best = 0
     for j in 1 ..< y.len:
       if abs(y[j]) > abs(y[best]): best = j
-    let at = int(round(nMs / dtMs))
+    let at = wholeSamples(nMs, dtMs)
     doAssert best == at, "identical traces peak at " & $at & ", got " & $best
     doAssert y[best] > 0.9, $y[best]
 

@@ -717,10 +717,10 @@ The viewer does not build these itself. Each call fills a buffer the viewer alre
 | Spectrogram averaged over traces | `sg.averageSpectrogramInto` (`averageWorkspace`). A NaN frame drops that trace |
 | Response of the flow as applied, edges included | `appliedResponseInto(flow, float32, dtMs, samples, hz, gain, ws)`. Not `response()` |
 | Gain held flat after a time | `heldGain(curve, untilMs)` then `gainCurveOp` |
-| Shift a trace by milliseconds, length kept | `initTimeShiftPlan`, `plan.shiftMs` or `shiftMsInto`. Whole samples are a move; a fraction rings at an end that is not zero, and what leaves one end does not come back at the other. `shiftSamples` remains the interpolator statics and LMO use |
-| Peak at N ms | `shiftMsInto` the trace later by N (`shiftMs = -N`), then `CorrelationPlan.correlateInto` against the unshifted reference. Identical traces peak at N. Both lags around zero are already `CrossCorrelationPlan` |
+| Shift a trace by whole samples, length kept | `timeShift` or `timeShiftInto`. `shift` is a whole number of samples; `wholeSamples` snaps milliseconds (round to nearest, ties away from zero). What leaves one end is clipped; the vacated end is zeros. `shiftSamples` remains the interpolator statics and LMO use |
+| Peak at N ms | `timeShift` the trace later by N snapped to a sample (`wholeSamples(-N, dtMs)`), then `CorrelationPlan.correlateInto` against the unshifted reference. Identical traces peak at that sample. Both lags around zero are already `CrossCorrelationPlan` |
 
-**Peak at N ms.** Shift the trace with `shiftMsInto` (a negative shift moves the event later), then correlate that shifted trace with the unshifted reference using the existing `CorrelationPlan` — its windows and scale unchanged. Identical traces peak at N. `CrossCorrelationPlan` already returns both lags around zero when the lag itself is what is wanted.
+**Peak at N ms.** Snap N to a whole number of samples with `wholeSamples` (round to nearest, ties away from zero) and shift the trace later by that many samples with `timeShift` (a negative shift moves the event later), then correlate that shifted trace with the unshifted reference using the existing `CorrelationPlan` — its windows and scale unchanged. Identical traces peak at the snapped sample. `CrossCorrelationPlan` already returns both lags around zero when the lag itself is what is wanted.
 
 ## Viewer checklist
 
