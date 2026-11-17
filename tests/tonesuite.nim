@@ -8,6 +8,7 @@
 ## file then fails.
 
 import std/[assertions, os, strutils]
+import utils/listlines
 
 proc fail(msg: string) {.noreturn.} =
   quit "tonesuite: " & msg
@@ -67,6 +68,22 @@ proc check(path: string) =
     fail name & " has " & $entries & " `when isMainModule` lines"
 
 proc main*() =
+  # Break: stop removing `\r` in `listedNames` (utils/listlines.nim). A Windows
+  # pipe's `\r\n` then fails this block, and the runner's `--list` check with it.
+  block list_lines_drop_cr:
+    doAssert listedNames("tfoo\r\ntbar\r\n") == @["tfoo", "tbar"]
+    doAssert listedNames("tfoo\ntbar\n") == @["tfoo", "tbar"]
+    doAssert listedNames("") == newSeq[string]()
+    doAssert listedNames("a\rb") == @["ab"]
+    let msg = listFailure(1, "", @["tfoo"])
+    doAssert "exit 1 (0x00000001)" in msg, msg
+    doAssert "output 0 bytes" in msg, msg
+    doAssert "expected 1 names" in msg, msg
+    doAssert "line 0: got end expected \"tfoo\"" in msg, msg
+    let cr = listFailure(-1073741515, "tfoo\r\n", @["tfoo"])
+    doAssert "0xC0000135" in cr, cr
+    doAssert firstDiff(listedNames("tfoo\r\n"), @["tfoo"]).len == 0
+
   let testDir = currentSourcePath().parentDir
   var n = 0
   for f in walkFiles(testDir / "t*.nim"):
