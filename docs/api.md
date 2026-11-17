@@ -326,7 +326,7 @@ auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guid
 | Proc | What |
 |---|---|
 | `timeShiftInto(src, dst, shift)`, `timeShift(x, shift)` | `dst[j]` is the old sample at `j + shift` (positive: earlier, as `shiftSamples`). `shift` is a whole number of samples. Length kept. What leaves one end is clipped; the vacated end is zeros. NaN kept. `|shift| >= len` is all zeros. Empty and one-sample traces are fine. Nothing allocates. |
-| `wholeSamples(ms, dtMs)` | Whole samples in `ms` at interval `dtMs`: `ms / dtMs` rounded to nearest, ties away from zero (`1.5` is `2`, `-1.5` is `-2`). A non-finite `ms`, or a `dtMs` that is not finite and positive, is 0. Callers snap a millisecond shift with this. |
+| `wholeSamples(ms, dtMs)` | Whole samples in `ms` at interval `dtMs`: `ms / dtMs` rounded to nearest, ties away from zero (`1.5` is `2`, `-1.5` is `-2`). A non-finite `ms`, or a `dtMs` that is not a normal positive number (zero, negative, subnormal, NaN or infinite), is 0. Callers snap a millisecond shift with this. |
 
 ## velocity/model: velocity functions and fields
 

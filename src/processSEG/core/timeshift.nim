@@ -69,8 +69,8 @@ proc timeShift*[T: SampleType](x: var openArray[T], shift: int) {.
 func wholeSamples*(ms, dtMs: float64): int {.raises: [].} =
   ## Whole samples in `ms` at a sample interval `dtMs`: `ms / dtMs` rounded
   ## to nearest, ties away from zero (`1.5` is `2`, `-1.5` is `-2`, not
-  ## half-to-even). A non-finite `ms`, or a `dtMs` that is not finite and
-  ## positive, is 0. A quotient past ±2⁵³ saturates, so the result always
+  ## half-to-even). A non-finite `ms`, or a `dtMs` that is not a normal
+  ## positive number (zero, negative, subnormal, NaN or infinite), is 0. A quotient past ±2⁵³ saturates, so the result always
   ## fits an `int`.
   if ms.classify in {fcNan, fcInf, fcNegInf}: return 0
   if dtMs.classify != fcNormal or dtMs <= 0: return 0

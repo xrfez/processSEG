@@ -90,6 +90,7 @@ proc main*() =
     doAssert wholeSamples(4.0, -2.0) == 0
     doAssert wholeSamples(4.0, NaN) == 0
     doAssert wholeSamples(4.0, Inf) == 0
+    doAssert wholeSamples(1.0, 1e-320) == 0 # subnormal dtMs
     doAssert wholeSamples(1e20, 1e-10) == high(int)
     doAssert wholeSamples(-1e20, 1e-10) == low(int)
     # Exactly ±2^53 is not saturated: it is the whole sample it names.
