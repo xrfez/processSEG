@@ -339,4 +339,29 @@ proc main*() =
       discard acc.add(g.data, meta, 0, ws, rows = 0 .. 1)
     doAssert quiet == 0
 
+  block circular_mean:
+    # Straddling ±180: a plain mean of 170 and -170 would be 0.
+    var r = circularMeanDeg([170.0, -170.0])
+    doAssert abs(abs(r.meanDeg) - 180) < 1e-9 and r.meanDeg > 0, $r.meanDeg
+    doAssert abs(r.resultant - cos(degToRad(10.0))) < 1e-12
+    r = circularMeanDeg([350.0, 10.0])
+    doAssert abs(r.meanDeg) < 1e-9
+    # Opposite angles cancel: no direction, resultant 0.
+    r = circularMeanDeg([0.0, 180.0])
+    doAssert r.meanDeg.isNaN and r.resultant < 1e-12
+    # One value, any wrap.
+    r = circularMeanDeg([-90.0])
+    doAssert abs(r.meanDeg + 90) < 1e-9 and abs(r.resultant - 1) < 1e-12
+    r = circularMeanDeg([270.0])
+    doAssert abs(r.meanDeg + 90) < 1e-9
+    # NaNs are left out; empty and all-NaN give (NaN, 0).
+    r = circularMeanDeg([NaN, 30.0, NaN, 50.0])
+    doAssert abs(r.meanDeg - 40) < 1e-9 and r.resultant > 0.9
+    r = circularMeanDeg([NaN, NaN])
+    doAssert r.meanDeg.isNaN and r.resultant == 0
+    r = circularMeanDeg(newSeq[float64]())
+    doAssert r.meanDeg.isNaN and r.resultant == 0
+    r = circularMeanDeg([-180.0])
+    doAssert r.meanDeg == 180
+
 when isMainModule: main()

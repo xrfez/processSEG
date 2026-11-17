@@ -213,6 +213,7 @@ auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guid
 | `amplitudePhaseInto(re, im, amp, phase)` | Modulus and phase of a raw `forward` spectrum, unscaled. |
 | `DbReference` (`dbPeak`, `dbAbsolute`); `toDbInto(amp, db, reference = dbPeak, floorDb = -120, refAmplitude = 1)` | 20·log10 of the amplitudes, 0 dB at the peak or at `refAmplitude` (`dbAbsolute`; 1 by default, so present callers are unchanged), clamped at `floorDb`. `dbPeak` ignores `refAmplitude`. |
 | `unwrapPhaseInto(phaseDeg, shown, dst)` | Unwrap along shown finite bins. A gap is not crossed: the next drawn bin restarts from the last drawn value, and a step over 180° is ±360. NaN where not drawn. Same length or `AssertionDefect`. |
+| `circularMeanDeg(angles): tuple[meanDeg, resultant]` | Circular mean of angles in degrees, in (−180, 180], and the mean resultant length 0..1. NaN and infinite angles are left out; none left gives `(NaN, 0)`; cancelling angles (opposite) give `(NaN, ~0)`. |
 | `removeDelayInto(unwrapped, hz, shown, dst): float64` | Least squares `p = a + b·f` on drawn finite bins; `dst = p − (a + b·f)`, NaN elsewhere. Returns the delay in ms, `−b·1000/360`; NaN if fewer than 2 bins or the denominator is below `1e-12·max(1, Σf²)`. |
 | `SpectrumAccumulator[T]`; `initSpectrumAccumulator(T, dtMs, windowLen, nfft = 0, taperFraction = 0.1, demean = true)` | A power sum of `averageAmplitudeInto` over several calls. Same window as `initSpectrumPlan`. |
 | `acc.bins`, `acc.windowLen`, `acc.nfft`, `acc.dtMs`, `acc.binHz(k)`, `acc.used`, `acc.workspaceSize`, `acc.clear` | Its axes, the rows added, its scratch, and a reset of the sum. |
@@ -226,7 +227,7 @@ auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guid
 | `HilbertPlan[T]`; `initHilbertPlan(T, samples, nfft = 0)`, `hp.samples`, `hp.nfft`, `hp.workspaceSize` | The Hilbert transform of traces of up to `samples` samples, zero padded to `nfft` (0: `nextFastLen(2·samples)`, so nothing wraps). `ValueError` for `samples < 1` or an `nfft` below `2·samples` or not smooth. |
 | `hp.hilbertInto(x, h, ws)` | `H[x]`, the imaginary part of the analytic signal (`H[cos] = sin`; 0 Hz and Nyquist to zero), `x.len` values. |
 | `hp.envelopeInto(x, env, ws)` | The envelope `\|x + i·H[x]\|`. |
-| `hp.analyticInto(x, dtMs, env, phaseDeg, hz, ws, floorDb = -60)` | Envelope, phase in (−180, 180] and instantaneous Hz from one Hilbert. Phase is NaN where the envelope is 0. Hz is a central difference, NaN at the ends and where that sample or a neighbour is 0 or below `peak·10^(floorDb/20)`. Outputs are float64, length `x.len`. `dtMs` is required (a plan has no interval). |
+| `hp.analyticInto(x, dtMs, env, phaseDeg, hz, ws, floorDb = -60)` | Envelope, phase in (−180, 180] and instantaneous Hz from one Hilbert. Phase is NaN where the envelope is 0. Hz is the mean of the two one-sample phase steps around the sample (each the argument of `z[n]·conj(z[n-1])`, in (−π, π]), so it is exact from 0 up to Nyquist; it belongs to that sample, is positive for a rising `cos` frequency, and is NaN at the first and last samples and where that sample or a neighbour is 0 or below `peak·10^(floorDb/20)` (a zero trace is all NaN). Outputs are float64, length `x.len`. `dtMs` is required (a plan has no interval). |
 
 ## fft/spectrogram: `SpectrogramPlan`
 

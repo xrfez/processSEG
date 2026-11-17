@@ -204,6 +204,32 @@ proc unwrapPhaseInto*(phaseDeg: openArray[float64], shown: openArray[bool],
       dst[i] = last + wrapStep(phaseDeg[i] - last)
       last = dst[i]
 
+func circularMeanDeg*(angles: openArray[float64]): tuple[meanDeg, resultant: float64] {.
+    raises: [].} =
+  ## The circular mean of `angles` (degrees) and the mean resultant length,
+  ## from the sum of their unit vectors: `meanDeg` is its argument in
+  ## (−180, 180], and `resultant` is its length over the count, 0 (opposite
+  ## angles) to 1 (all equal). A plain mean of wrapped angles is wrong near
+  ## ±180°. NaN angles are left out; an angle that is infinite counts as NaN.
+  ## With none left (an empty or all-NaN input) the result is `(NaN, 0)`.
+  ## When the unit vectors cancel (both sums under `1e-12`, as for opposite
+  ## angles) the direction is undefined: `meanDeg` is NaN and `resultant` is
+  ## the (near zero) length. Nothing allocates.
+  var sx, sy = 0.0
+  var n = 0
+  for v in angles:
+    if v.classify in {fcNormal, fcSubnormal, fcZero, fcNegZero}:
+      sx += cos(degToRad(v))
+      sy += sin(degToRad(v))
+      inc n
+  if n == 0: return (NaN, 0.0)
+  result.resultant = min(hypot(sx, sy) / float64(n), 1.0)
+  if abs(sx) < 1e-12 and abs(sy) < 1e-12:
+    result.meanDeg = NaN
+  else:
+    result.meanDeg = radToDeg(arctan2(sy, sx))
+    if result.meanDeg <= -180: result.meanDeg += 360
+
 proc removeDelayInto*(unwrapped, hz: openArray[float64], shown: openArray[bool],
     dst: var openArray[float64]): float64 {.raises: [].} =
   ## Removes the least-squares line `p = a + b·f` from the drawn finite bins
