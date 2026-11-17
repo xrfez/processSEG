@@ -12,6 +12,8 @@
 ## interpolation has the gain `|cos(πf·dt)|` (−3 dB at half Nyquist), the
 ## cubic −3 dB near 0.65 Nyquist. Integer shifts are exact with both.
 ## A shift there and back loses the samples moved out of the row.
+## A viewer's length-keeping shift by whole samples is `timeShift`
+## (`core/timeshift`), not this interpolator.
 
 import std/math
 import parseSEG

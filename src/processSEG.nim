@@ -17,7 +17,6 @@
 ## - `processSEG/fft/hilbert`: `HilbertPlan`, the Hilbert transform and the envelope of a trace;
 ## - `processSEG/fft/spectrogram`: `SpectrogramPlan`, short-time Fourier amplitudes (time-frequency);
 ## - `processSEG/fft/fk`: `FkPlan`, the f-k amplitude of a gather;
-## - `processSEG/fft/timeshift`: `TimeShiftPlan`, a band-limited shift by milliseconds;
 ## - `processSEG/filter/design`: `FilterSpec`, cos² trapezoid, Butterworth and notch responses;
 ## - `processSEG/filter/apply`: `FilterPlan`, zero-phase FFT filtering with edge handling;
 ## - `processSEG/filter/iir`: `IirPlan`, Butterworth biquads, zero and minimum phase;
@@ -25,6 +24,8 @@
 ## - `processSEG/gain/curves`: time-variant gain (`GainCurve`, `GainCurvePlan`);
 ## - `processSEG/gain/stats`: per-trace and panel RMS, max and percentile clip;
 ## - `processSEG/core/shift`: fractional time shifts of a row (`shiftSamples`);
+## - `processSEG/core/timeshift`: a whole-sample shift of a trace (`timeShift`,
+##   `wholeSamples`);
 ## - `processSEG/velocity/model`: velocity functions, Dix, fields (`VelocityField`);
 ## - `processSEG/velocity/formats`: VELF, HANDVEL and CSV velocity picks;
 ## - `processSEG/velocity/moveout`: LMO and NMO times for overlays (`Moveout`), LMO on samples;
@@ -65,8 +66,8 @@
 ## - `processSEG/synth`: synthetic traces and gathers (`ricker`, `addSinusoid`, `addRicker`,
 ##   `addNoise`, `linearMs`, `hyperbolicMs`, `addLinear`, `addHyperbola`).
 
-import processSEG/core/[types, rows, workspace, basic, mute, shift, units, calibrate]
-import processSEG/fft/[plan, spectrum, hilbert, spectrogram, fk, timeshift]
+import processSEG/core/[types, rows, workspace, basic, mute, shift, timeshift, units, calibrate]
+import processSEG/fft/[plan, spectrum, hilbert, spectrogram, fk]
 import processSEG/filter/[design, apply, iir]
 import processSEG/gain/[gain, curves, stats]
 import processSEG/[pipeline, adapters, batch, filescales]

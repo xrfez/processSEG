@@ -24,7 +24,7 @@ These hold throughout; a row below only mentions what departs from them.
   plan's own check): no kernel writes past its scratch. Applying a valid plan to any data
   never raises: NaN and Inf stay in their own row.
 - **`{.raises: [].}` kernels.** The single-row kernels (`openArray[T]`: `demean`, `agc`,
-  `applyFilter`, `shiftSamples`, `nmoInto`, `plan.pick`, `forward`, ...), the accessors of
+  `applyFilter`, `shiftSamples`, `timeShift`, `nmoInto`, `plan.pick`, `forward`, ...), the accessors of
   plans and metas, and the per-trace primitives (`lmoTime`, `binOf`, `staticMs`,
   `checkGeometry`, `acc.add`) are declared `{.raises: [].}`, so they can be called from a
   parseSEG `ChunkTransform` or another non-raising context. Three row kernels check an
@@ -246,13 +246,6 @@ auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guid
 | `fkRows(meta, cols, firstCol, nCols, rows = 0 .. high(int)): int` | Live rows that enter the window: the `traces` to build the plan for. |
 | `plan.fkAmplitudeInto(b \| samples, meta, firstCol, amp, ws, rows = 0 .. high(int)): int` | Unscaled modulus, `nK·nFreq`, frequency fastest. `ValueError` when the live count is not the plan's. A wrong `amp` length is an `AssertionDefect` (every other Into kernel), not the `ValueError` the audit suggested. |
 
-## fft/timeshift: `TimeShiftPlan`
-
-| Proc | What |
-|---|---|
-| `TimeShiftPlan[T]`; `initTimeShiftPlan(T, dtMs, samples)`, `plan.samples`, `plan.dtMs`, `plan.nfft`, `plan.workspaceSize` | A shift by milliseconds of traces up to `samples` long. The FFT is `nextFastLen(3·samples)` and only a remainder of at most half a sample uses it. |
-| `plan.shiftMsInto(src, dst, shiftMs, ws)`, `plan.shiftMs(x, shiftMs, ws)` | `dst[j]` is the old sample at `j + shiftMs/dtMs` (positive: earlier, as `shiftSamples`). Length kept. What leaves one end is clipped; the other end is zeros; nothing that left comes back. A whole number of samples (within 1e-6) is a pure move, no FFT, NaN kept. A fraction is that move after a half-sample phase ramp on a zero-padded copy. A trace whose ends are not zero rings there (the sinc of the jump to the pad); that ringing is not a wrap. Nyquist is not shifted fractionally. A NaN shift leaves the samples. `|shift|` of a whole trace zeroes it. |
-
 ## filter/design: `FilterSpec`
 
 | Proc | What |
@@ -327,6 +320,13 @@ auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guid
 |---|---|
 | `ShiftInterp` (`siLinear`, `siCubic`: 4-point Catmull-Rom) | Interpolation of fractional shifts (statics, LMO, NMO). |
 | `shiftSamples(x, shift, interp = siLinear)` | `x[j]` becomes the old `x[j + shift]`, zero outside; a NaN shift leaves `x` alone. |
+
+## core/timeshift: whole-sample shift
+
+| Proc | What |
+|---|---|
+| `timeShiftInto(src, dst, shift)`, `timeShift(x, shift)` | `dst[j]` is the old sample at `j + shift` (positive: earlier, as `shiftSamples`). `shift` is a whole number of samples. Length kept. What leaves one end is clipped; the vacated end is zeros. NaN kept. `|shift| >= len` is all zeros. Empty and one-sample traces are fine. Nothing allocates. |
+| `wholeSamples(ms, dtMs)` | Whole samples in `ms` at interval `dtMs`: `ms / dtMs` rounded to nearest, ties away from zero (`1.5` is `2`, `-1.5` is `-2`). A non-finite `ms`, or a `dtMs` that is not finite and positive, is 0. Callers snap a millisecond shift with this. |
 
 ## velocity/model: velocity functions and fields
 
