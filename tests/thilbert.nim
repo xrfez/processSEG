@@ -194,4 +194,54 @@ proc main*() =
     hp.analyticInto(bare, dtMs, env, phase, hz, ws)
     doAssert phase[n div 2].isNaN and hz[n div 2].isNaN and env[n div 2] == 0
 
+  block instantaneous_frequency_to_nyquist:
+    # Fail-first: the phase over two samples was wrapped to ±π, so a tone
+    # above a quarter of the sampling rate read as its frequency minus fs/2.
+    let n = 2001
+    let dtMs = 4.0
+    let fs = 1000 / dtMs
+    var ws = initWorkspace()
+    let hp = initHilbertPlan(float64, n)
+    ws.reserve(hp.workspaceSize)
+    var env, phase, hz = newSeq[float64](n)
+    for frac in [0.1, 0.24, 0.26, 0.4, 0.49]:
+      let f = frac * fs
+      var x = newSeq[float64](n)
+      for j in 0 ..< n: x[j] = cos(2 * PI * f * float64(j) * dtMs / 1000 + 0.4)
+      hp.analyticInto(x, dtMs, env, phase, hz, ws)
+      for j in n div 4 ..< 3 * n div 4:
+        doAssert abs(hz[j] - f) < 0.005 * f, $frac & " " & $j & " " & $hz[j]
+    block float32_tone:
+      let hp32 = initHilbertPlan(float32, n)
+      var ws32 = initWorkspace()
+      ws32.reserve(hp32.workspaceSize)
+      let f = 0.4 * fs
+      var x = newSeq[float32](n)
+      for j in 0 ..< n: x[j] = float32(cos(2 * PI * f * float64(j) * dtMs / 1000))
+      hp32.analyticInto(x, dtMs, env, phase, hz, ws32)
+      for j in n div 4 ..< 3 * n div 4:
+        doAssert abs(hz[j] - f) < 0.005 * f, $j & " " & $hz[j]
+    block sweep:
+      # 10 -> 100 Hz in 4 s, Gaussian-tapered ends: f(t) = 10 + 22.5·t.
+      let t1 = 4.0
+      var x = newSeq[float64](n)
+      for j in 0 ..< n:
+        let t = float64(j) * dtMs / 1000
+        x[j] = 0.0
+        if t <= t1:
+          let tp = 2 * PI * (10 * t + 22.5 * t * t / 2)
+          x[j] = sin(tp) * (0.5 - 0.5 * cos(2 * PI * min(min(t, t1 - t), 0.4) / 0.8))
+      hp.analyticInto(x, dtMs, env, phase, hz, ws)
+      var checked = 0
+      for j in 0 ..< n:
+        let t = float64(j) * dtMs / 1000
+        if t > 0.3 and t < t1 - 0.3:
+          doAssert abs(hz[j] - (10 + 22.5 * t)) < 1.0, $t & " " & $hz[j]
+          inc checked
+      doAssert checked > 800
+    block zero_input:
+      let x = newSeq[float64](n)
+      hp.analyticInto(x, dtMs, env, phase, hz, ws)
+      for j in 0 ..< n: doAssert hz[j].isNaN and env[j] == 0
+
 when isMainModule: main()

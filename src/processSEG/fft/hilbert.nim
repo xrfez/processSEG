@@ -163,10 +163,15 @@ proc analyticInto*[T: SampleType](hp: HilbertPlan[T], x: openArray[T],
   ## The envelope, the instantaneous phase and the instantaneous frequency
   ## of `x` from one Hilbert transform. `env[j] = |x + i·H[x]|`. `phaseDeg`
   ## is `arg(x + i·H[x])` in (−180, 180], NaN where the envelope is 0.
-  ## `hz` is the central difference of that phase, unwrapped to a step in
-  ## (−π, π] and converted to Hz (`dtMs` is the sample interval); NaN at the
-  ## two ends, and where that sample or either neighbour is 0 or below
-  ## `peak·10^(floorDb/20)` (`peak` the largest envelope). All three outputs
+  ## `hz[j]` is the mean of the two one-sample phase steps around sample `j`
+  ## (`z[j]·conj(z[j-1])` and `z[j+1]·conj(z[j])`, each step taken in (−π, π]),
+  ## in Hz (`dtMs` is the sample interval). So it is right for every
+  ## frequency from 0 up to Nyquist, and for a real signal positive for
+  ## `cos(2πft)` with `f > 0` (a negative value is a falling frequency, as in a
+  ## down sweep). The value belongs to sample `j` itself; it is NaN at the
+  ## first and last samples, and where that sample or either neighbour has
+  ## envelope 0 or below `peak·10^(floorDb/20)` (`peak` the largest envelope;
+  ## a zero trace is all NaN, never an infinity). All three outputs
   ## have `x.len` values. `ws` must hold `hp.workspaceSize`. A `dtMs` that is
   ## not finite and positive, or another length, is an `AssertionDefect`.
   ## Nothing allocates.
@@ -188,7 +193,7 @@ proc analyticInto*[T: SampleType](hp: HilbertPlan[T], x: openArray[T],
     else:
       phaseDeg[j] = NaN
   let thr = peak * pow(10.0, floorDb / 20.0)
-  let scale = 1000 / (4 * PI * dtMs) # radians over two samples, to Hz
+  let scale = 1000 / (4 * PI * dtMs) # two steps' sum in radians per sample, to Hz
   hz[0] = NaN
   if n > 1: hz[n - 1] = NaN
   for j in 1 ..< n - 1:
@@ -198,5 +203,8 @@ proc analyticInto*[T: SampleType](hp: HilbertPlan[T], x: openArray[T],
     if e0 <= 0 or e1 <= 0 or e2 <= 0 or e0 < thr or e1 < thr or e2 < thr:
       hz[j] = NaN
     else:
-      let dDeg = phaseDeg[j + 1] - phaseDeg[j - 1]
-      hz[j] = wrapPi(dDeg * PI / 180) * scale
+      # Each step is the argument of z[n]·conj(z[n-1]): the phase difference
+      # wrapped to (−π, π], so a step up to Nyquist (π per sample) is exact.
+      let back = wrapPi((phaseDeg[j] - phaseDeg[j - 1]) * PI / 180)
+      let fwd = wrapPi((phaseDeg[j + 1] - phaseDeg[j]) * PI / 180)
+      hz[j] = (back + fwd) * scale
