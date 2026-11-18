@@ -126,7 +126,8 @@
 ##   sums the harmonics with `k·f ≤ harmonicBandHz` at the point (`f` the
 ##   reference's frequency there), up to the 16th, whatever `harmonics`: the
 ##   distortion a vibrator controller reports, with the band at the sweep's
-##   top frequency (`topFrequencyHz`); 0 where no harmonic is in band (the
+##   top frequency (`topFrequencyHz`, an estimate: take the edge from the
+##   sweep's design for QC); 0 where no harmonic is in band (the
 ##   reference above half the band's edge), NaN where a harmonic in band is
 ##   not measured (`thFixed`); `thdCount` is the harmonics in band;
 ## - `peak`: the largest `|s|` within one period of the reference centred on
@@ -233,7 +234,7 @@ type
       ## frequency in Hz: THD sums the harmonics that lie within the band, `k·f
       ## ≤ harmonicBandHz` with `f` the reference's frequency at the point, as a
       ## vibrator controller's distortion does with the sweep's top frequency
-      ## (`topFrequencyHz` gives the reference's), up to 16 whatever `harmonics`
+      ## (`topFrequencyHz` estimates the reference's; QC takes it from the sweep's design), up to 16 whatever `harmonics`
       ## (`trackedHarmonics`); it is 0 at a point where no harmonic is in the
       ## band, and NaN where one that is has not been measured (past the
       ## harmonic limit; `thdHarmonics` = `thAllThatFit`: left out instead).
@@ -241,8 +242,10 @@ type
       ## at the sweep's start is summed over the first 16.
     harmonicBandAuto*: bool
       ## With `harmonicBandHz` NaN: the band's edge is the reference's top
-      ## frequency (`topFrequencyHz`), found by `trackInto` itself, so one
-      ## pass does it; `SweepTrack.bandHz` is the edge used. Ignored where
+      ## frequency as `topFrequencyHz` estimates it (a suggestion, wrong on
+      ## a reference with noise after the sweep, long tapers or a short steep
+      ## exponential sweep: for QC give `harmonicBandHz`), found by `trackInto`
+      ## itself, so one pass does it; `SweepTrack.bandHz` is the edge used. Ignored where
       ## `harmonicBandHz` is set.
     thd*: ThdReference = thdFundamental ## What THD is relative to.
     thdHarmonics*: ThdHarmonics = thFixed ## Which harmonics THD sums.
@@ -483,33 +486,56 @@ func extent*(r: SweepReference): SweepExtent {.raises: [].} =
     result = SweepExtent(startMs: float64(r.first) * r.dtMs, endMs: float64(r.last) * r.dtMs,
       flatStartMs: float64(r.flatFirst) * r.dtMs, flatEndMs: float64(r.flatLast) * r.dtMs)
 
-func topFrequencyHz*(r: SweepReference): float64 {.raises: [].} =
-  ## The reference's highest frequency, Hz: the sweep's band edge, to set
-  ## `TrackParams.harmonicBandHz` to (or `harmonicBandAuto`). NaN without a
-  ## sweep. Robust to noise: not read from the instantaneous frequency (a
-  ## spike under 1 % noise) but from the unwrapped phase over chords of 250
-  ## ms in the flat part, and each end of the sweep from a line (of ln f, so
-  ## an exponential sweep too) through the
-  ## chords of its last 1 s, extended over the taper (at most 1 s): the larger of
-  ## the two ends and the chords. Measured within 1 % of the law's top for a
-  ## clean reference and one with 5 % rms noise, untapered, up, down and
-  ## exponential, tapers to 0.5 s.
-  result = NaN
-  if r.first < 0: return
+func chords(r: SweepReference, cj, cf: var seq[float64]): int {.raises: [].} =
+  ## The chord frequencies of the flat part (250 ms chords of the unwrapped
+  ## phase): centres (samples) into `cj`, Hz into `cf`; returns the stride.
   var a = r.flatFirst
   var b = r.flatLast
   if b - a < 8:
     a = r.first
     b = r.last
   let half = max(1, min(int(round(125 / r.dtMs)), (b - a) div 4))
-  let stride = max(1, half div 4)
+  result = max(1, half div 4)
   let dtS = r.dtMs / 1000
-  var cj, cf: seq[float64] # the chords' centres (samples) and frequencies
   var j = a + half
   while j + half <= b:
     cj.add float64(j)
     cf.add (r.psi[j + half] - r.psi[j - half]) / (2 * PI * dtS * float64(2 * half))
-    j += stride
+    j += result
+
+func largestChordHz*(r: SweepReference): float64 {.raises: [].} =
+  ## The largest frequency measured over the flat part (chords of 250 ms of
+  ## the unwrapped phase), Hz: a lower bound of the sweep's top, which lies
+  ## in the tapers beyond it. NaN without a sweep. A caller can warn when
+  ## `topFrequencyHz` and this differ by more than 2 %.
+  result = NaN
+  if r.first < 0: return
+  var cj, cf: seq[float64]
+  discard r.chords(cj, cf)
+  if cj.len == 0: return
+  result = 0
+  for f in cf: result = max(result, f)
+
+func topFrequencyHz*(r: SweepReference): float64 {.raises: [].} =
+  ## An ESTIMATE of the reference's highest frequency, Hz, to suggest as the
+  ## band edge (`TrackParams.harmonicBandHz`): not a measurement to rely on.
+  ## NaN without a sweep. The largest chord frequency over the flat part
+  ## (`largestChordHz`), and each end of the sweep extrapolated over its
+  ## taper from a line (of ln f) through the chords of its last 1 s, the
+  ## extension at most 1 s. Measured by a reviewer on clean references with
+  ## tapers up to 0.5 s: within about 0.4 % (linear 6-220 Hz, 12 s: +0.19 %
+  ## up, +0.38 % down). It is wrong where the reference is not a clean sweep
+  ## with its tapers: noise after the sweep's end (a recorded pilot with
+  ## listen time and 1-5 % noise reads 5-6 % high), an end taper longer
+  ## than 1 s (4-8 % low), a short steep exponential sweep (it can be
+  ## several times too high), and a reference cut short (it follows the
+  ## cut). For QC, give `harmonicBandHz` from the sweep's design and show
+  ## this (and `harmonicBandAuto`) as a suggestion to confirm, perhaps
+  ## warning when it differs from `largestChordHz` by more than 2 %.
+  result = NaN
+  if r.first < 0: return
+  var cj, cf: seq[float64]
+  let stride = r.chords(cj, cf)
   if cj.len == 0:
     result = 0
     for k in r.first .. r.last: result = max(result, r.freqHz[k])

@@ -463,10 +463,15 @@ keeps the assignment with the file). processSEG fills each plot's buffers, value
   Pass the trace's own end (the last sample's time less half a window) as `VibLimits.toMs`
   to `analyzeVibrators`, `summarize`, `limitFlagsInto`, `judgedInto` and `windowStats`; the
   library does not find it from the samples.
-- **THD in the sweep's band:** `TrackParams(harmonicBandAuto: true)` makes THD the controller's
-  distortion in one pass: `trackInto` (so `analyzeVibrators`) sets the edge at the reference's
-  top frequency (`SweepReference.topFrequencyHz`, robust to noise) and reports it in
-  `track.bandHz`; or give `harmonicBandHz` in Hz. THD sums the harmonics with `k·f` at or below
+- **THD in the sweep's band:** `TrackParams(harmonicBandHz: edge)` makes THD the controller's
+  distortion: give the edge in Hz **from the sweep's design** for QC. `harmonicBandAuto: true`
+  sets it at `SweepReference.topFrequencyHz` inside `trackInto` instead (reported in
+  `track.bandHz`), but that value is an ESTIMATE: within about 0.4 % on a clean reference with
+  tapers to 0.5 s (6-220 Hz, 12 s: +0.19 % up, +0.38 % down), and wrong with noise after the
+  sweep's end (a recorded pilot with listen time and 1-5 % noise reads 5-6 % high), an end
+  taper over 1 s (4-8 % low), a short steep exponential sweep (several times too high), or a
+  reference cut short (it follows the cut). Show it as an editable suggestion, and warn when it
+  differs from `largestChordHz` (a lower bound of the top) by more than 2 %. THD sums the harmonics with `k·f` at or below
   the edge (up to 16, `harmonics` ignored), where the default sums 2-5 to 0.8 of Nyquist. It
   is 0 where no harmonic is in band (above half the edge) and NaN where harmonics are in band
   and none could be measured (past 0.8 of Nyquist; with `thAllThatFit` the measured ones are

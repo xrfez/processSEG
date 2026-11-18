@@ -227,8 +227,9 @@ ending):
   the sweep's band:** `TrackParams(harmonicBandHz: topHz)` sums the harmonics with
   `k·f ≤ topHz` instead (`f` the reference's frequency at the point; up to the 16th,
   `harmonics` ignored): what a vibrator controller reports as distortion, with the sweep's
-  top frequency as the edge (`harmonicBandAuto: true` takes it from the reference, in one pass,
-  and `track.bandHz` reports it; 220 Hz sweep: up to H14 from 15 Hz). It is 0 where no
+  top frequency as the edge (give it from the sweep's design; `harmonicBandAuto: true` takes the
+  estimate `topFrequencyHz` in one pass and `track.bandHz` reports it, but it is a suggestion to
+  confirm: see integration.md for where it is wrong; `largestChordHz` is a lower bound of it; 220 Hz sweep: up to H14 from 15 Hz). It is 0 where no
   harmonic is in band (above half the edge), and NaN where some are and none could be
   measured (past the harmonic limit; all that fit: the measured ones are summed);
 - `peak`: the largest |s| within one period, harmonics and noise included, of the

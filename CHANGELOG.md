@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- `TrackParams.harmonicBandHz`: THD over the harmonics within a band (`k·f ≤` the edge), as a vibrator controller's distortion; `trackedHarmonics`, `topFrequencyHz` (the reference's top frequency).
+- `TrackParams.harmonicBandHz`: THD over the harmonics within a band (`k·f ≤` the edge), as a vibrator controller's distortion; `trackedHarmonics`, `topFrequencyHz` (an estimate of the reference's top frequency).
 - `TrackParams.maxFundamentalFraction` (default 0.8, as before); `SweepTrack.fundamentalCut` and `lastFundamentalMs` say where the fundamental stops being measured.
-- `TrackParams.harmonicBandAuto` sets the band at the reference's top frequency inside `trackInto` (one pass); `SweepTrack.bandHz` is the edge used. In-band THD is NaN where harmonics are in band but none was measured (0 only where none is in band), and `lkHarmonic` judges the in-band harmonics only. `topFrequencyHz` is robust to noise (a chord fit, not the largest instantaneous frequency).
+- `TrackParams.harmonicBandAuto` sets the band at the reference's top frequency inside `trackInto` (one pass); `SweepTrack.bandHz` is the edge used. In-band THD is NaN where harmonics are in band but none was measured (0 only where none is in band), and `lkHarmonic` judges the in-band harmonics only. `topFrequencyHz` is an estimate (a chord fit: about 0.4 % on a clean reference with tapers to 0.5 s; wrong with noise after the sweep, tapers over 1 s, short steep exponential sweeps or a cut reference): give `harmonicBandHz` from the sweep's design for QC. `largestChordHz` is a lower bound of the top.
 - Behaviour change: `maxHarmonicFraction` no longer limits the fundamental (it follows `maxFundamentalFraction`, 0.8 by default): a caller that set a non-default `maxHarmonicFraction` gets the fundamental measured to 0.8 of Nyquist regardless.
 - `windowStats` takes `originMs` (default the extent's start).
 - `windowStats`, `WindowStats`, `WindowSummary`: per-window (500 ms) mean phase, force, peak and THD and their average and worst window over the sweep.
