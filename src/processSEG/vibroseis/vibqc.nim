@@ -159,11 +159,11 @@ type
     lkHarmonic = "harmonic"
       ## A harmonic's `100·A_k/A_1 > harmonicPct` at a point (with a THD band,
       ## only the harmonics inside it there).
-    lkForceLow = "force low"   ## The fundamental below `forceLow` at a point.
+    lkForceLow = "force low" ## The fundamental below `forceLow` at a point.
     lkForceHigh = "force high" ## The fundamental above `forceHigh` at a point.
     lkPeakForce = "peak force" ## The peak above `peakForce` at a point.
     lkMeanPhase = "mean phase" ## The mean `|phase|` above `meanPhaseDeg`.
-    lkMeanThd = "mean THD"     ## The mean THD above `meanThdPct`.
+    lkMeanThd = "mean THD" ## The mean THD above `meanThdPct`.
     lkMeanForce = "mean force" ## The mean fundamental below `meanForceLow`.
 
   VibLimits* = object
