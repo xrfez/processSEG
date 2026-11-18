@@ -1,6 +1,6 @@
 # Package
 
-version       = "0.7.1"
+version       = "0.8.0"
 author        = "Joshua Fenner"
 description   = "Seismic SEG-Y / SEG-D processing built on parseSEG"
 license       = "MIT"

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0
 
 - `TrackParams.harmonicBandHz`: THD over the harmonics within a band (`k·f ≤` the edge), as a vibrator controller's distortion; `trackedHarmonics`, `topFrequencyHz` (an estimate of the reference's top frequency).
 - `TrackParams.maxFundamentalFraction` (default 0.8, as before); `SweepTrack.fundamentalCut` and `lastFundamentalMs` say where the fundamental stops being measured.
