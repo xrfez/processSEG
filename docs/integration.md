@@ -453,11 +453,33 @@ keeps the assignment with the file). processSEG fills each plot's buffers, value
   summary counts the judged points with a phase and with a THD (`phasePoints`,
   `thdPoints`): a limit judges those alone, so show a count of 0 (a dead channel's phase,
   THD above 40 Hz at 2 ms) as "not judged", not as a pass.
+- **Windowed statistics** (a controller's log: a mean per 500 ms window, then the
+  average and the worst window): `windowStats(track, limits, windowMs = 500, minFill = 0.5)`:
+  per window (aligned to the sweep's start) the mean |phase|, mean fundamental, largest
+  peak and mean THD, and in `.summary` their average and worst window with its time. Judged
+  points only, so `limits` leaves out the tapers or an empty tail; a window cut short by
+  the judged range is kept when its points span `minFill` of it.
+- **A trace shorter than its reference:** its end is zeros, measured as force 0 and failed.
+  Pass the trace's own end (the last sample's time less half a window) as `VibLimits.toMs`
+  to `analyzeVibrators`, `summarize`, `limitFlagsInto`, `judgedInto` and `windowStats`; the
+  library does not find it from the samples.
+- **THD in the sweep's band:** `TrackParams(harmonicBandHz: reference.topFrequencyHz)`
+  makes THD the controller's distortion: the harmonics with `k·f` at or below the sweep's
+  top frequency (up to 16, `harmonics` ignored; 0 where none is, which is above half the
+  edge), where the default sums harmonics 2-5 to 0.8 of Nyquist. `topFrequencyHz` needs the
+  reference prepared (`referenceInto`), so a viewer takes it from a first prepared plan or
+  from the pilot's design, then makes the plan with the edge.
+- **Where the fundamental stops:** it is measured to `maxFundamentalFraction` of Nyquist
+  (0.8: at 2 ms a 6-220 Hz sweep to 200 Hz). `track.fundamentalCut` and
+  `track.lastFundamentalMs` say so: do not read the end of the measures as the signal
+  ending (compare with the reference's own `lastFundamentalMs`, not `extent.endMs`). A clean
+  tone is accurate to about 0.9 of Nyquist, so the fraction may be raised.
 - **Conventions** (the guide states them): phase is the signal's minus the reference's,
   positive when the signal leads; THD over harmonics 2-5 relative to the fundamental, each
   of them (`thFixed`: NaN where the 5th passes 0.8 of Nyquist, above 80 Hz at 1 ms, 40 Hz
   at 2 ms) or all that fit (`thAllThatFit`, with the count per point; up to 16 harmonics);
-  peak force is the largest |GF| per period of the band-limited signal; the window is 4
+  peak force is the largest |GF| per period of the band-limited signal (within 3e-4 for
+  a fundamental up to 0.8 of Nyquist); the window is 4
   periods of the fundamental but at least 100 ms (an even count of periods), points every
   10 ms.
 - **Where values are NaN:** outside the sweep (where the reference is more than 40 dB

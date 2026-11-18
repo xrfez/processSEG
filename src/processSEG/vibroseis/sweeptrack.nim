@@ -122,7 +122,13 @@
 ##   floor grows as the square root of that count (1 % white noise: 0.29 %
 ##   over 2-5, 0.58 % over 2-16, at 0.5 ms). At most 16 harmonics are
 ##   tracked (the lanes of the sums); `distortionInto` gives one harmonic's
-##   `100·A_k/A_1`;
+##   `100·A_k/A_1`. **In the sweep's band** (`harmonicBandHz`, in Hz): THD
+##   sums the harmonics with `k·f ≤ harmonicBandHz` at the point (`f` the
+##   reference's frequency there), up to the 16th, whatever `harmonics`: the
+##   distortion a vibrator controller reports, with the band at the sweep's
+##   top frequency (`topFrequencyHz`); 0 where no harmonic is in band (the
+##   reference above half the band's edge), NaN where a harmonic in band is
+##   not measured (`thFixed`); `thdCount` is the harmonics in band;
 ## - `peak`: the largest `|s|` within one period of the reference centred on
 ##   the point, harmonics and noise included (a ground force's *peak force*),
 ##   of the band-limited signal between the samples: around the largest and
@@ -130,8 +136,12 @@
 ##   side) gives the signal every 1/8 sample, and a parabola through the
 ##   largest of those and its neighbours its vertex. The largest sample alone falls short of a peak by
 ##   up to `1 − cos(π·f·dt)` (3 % at 80 Hz and 1 ms, 12 % at 2 ms, more with
-##   harmonics); this way the error stays under 0.1 % for content up to 0.65
-##   of Nyquist (0.4 % up to 0.8). Samples clipped after the anti-alias
+##   harmonics); this way a pure fundamental is read within 3e-4 from 0.05 to
+##   0.8 of Nyquist (measured 1.3e-4, at 0.5, 1, 2 and 4 ms; 16 taps each side
+##   with a Kaiser window of 10: 8 taps with 8 read up to 4 % low from 0.7 of
+##   Nyquist), and a 3rd harmonic at 0.9 of Nyquist within 0.2 % of the
+##   waveform's maximum (a content between 0.8 and 1 of Nyquist is the
+##   interpolator's transition band: expect a fraction of a percent). Samples clipped after the anti-alias
 ##   filter are not band-limited: their peak overshoots the clip level (3 %
 ##   at 80 Hz and 1 ms);
 ## - `referenceHz`: the reference's instantaneous frequency (the sweep law as
@@ -141,8 +151,21 @@
 ## **Where it is measured.** A point is measured when its window lies inside
 ## the sweep, so the measures start half a window after the reference does
 ## and stop half a window before its end (4 periods of the end's frequency
-## at 100 ms and 80 Hz: 50 ms). Harmonic `k` is measured where
-## `k·f ≤ maxHarmonicFraction · Nyquist` all through the window. Inside the
+## at 100 ms and 80 Hz: 50 ms). Harmonic `k` ≥ 2 is measured where
+## `k·f ≤ maxHarmonicFraction · Nyquist` all through the window, and the
+## fundamental where `f ≤ maxFundamentalFraction · Nyquist` (0.8 as well, by
+## default: at 2 ms a 6-220 Hz sweep is measured to 200 Hz only, and a
+## signal's measures stop there). **Where the fundamental stops** is in the
+## result: `SweepTrack.fundamentalCut` (some point inside the sweep is not
+## measured for its frequency, a down sweep's first points as well) and
+## `lastFundamentalMs` (the last measured point): a caller that compares
+## where a signal ends with where the reference does must use these, not
+## `extent.endMs`, or it reads the cut as the signal ending. A higher
+## `maxFundamentalFraction` is accurate for a clean sweep (measured on a
+## pure tone: amplitude within 1e-4 and phase 0.01° to 0.93 of Nyquist at
+## 1 ms; at 2 ms the same to 0.85, then 0.4 % and 0.2° from 0.9), but the harmonics' limit stays (an
+## anti-alias filter's roll-off is in the signal), so it is the caller's to
+## raise. Inside the
 ## sweep's tapers the amplitudes follow the ramps and the phase is measured
 ## as long as the reference is above `minReferenceDb`.
 ##
@@ -195,7 +218,25 @@ type
     minReferenceDb*: float64 = -40
       ## The sweep is where the reference's envelope is within this of its peak (< 0).
     maxHarmonicFraction*: float64 = 0.8
-      ## Harmonic k is measured where `k·f` stays below this fraction of Nyquist (0 .. 1].
+      ## Harmonic k (2 and up) is measured where `k·f` stays below this fraction
+      ## of Nyquist (0 .. 1].
+    maxFundamentalFraction*: float64 = 0.8
+      ## The fundamental (k = 1) is measured where `f` stays below this
+      ## fraction of Nyquist (0 .. 1]: above it its phase, amplitude, THD and
+      ## peak are NaN (`SweepTrack.fundamentalCut`, `lastFundamentalMs`). The
+      ## default is the harmonics' own; see the module documentation, "Where
+      ## it is measured", for what a higher one costs in accuracy.
+    harmonicBandHz*: float64 = NaN
+      ## NaN (the default): THD sums the harmonics 2 .. `harmonics`. A
+      ## frequency in Hz: THD sums the harmonics that lie within the band, `k·f
+      ## ≤ harmonicBandHz` with `f` the reference's frequency at the point, as a
+      ## vibrator controller's distortion does with the sweep's top frequency
+      ## (`topFrequencyHz` gives the reference's), up to 16 whatever `harmonics`
+      ## (`trackedHarmonics`); it is 0 at a point where no harmonic is in the
+      ## band, and NaN where one that is has not been measured (past the
+      ## harmonic limit; `thdHarmonics` = `thAllThatFit`: left out instead).
+      ## Harmonics above the 16th are not tracked: a band holding more than 16
+      ## at the sweep's start is summed over the first 16.
     thd*: ThdReference = thdFundamental ## What THD is relative to.
     thdHarmonics*: ThdHarmonics = thFixed ## Which harmonics THD sums.
 
@@ -242,15 +283,24 @@ type
     phaseDeg*: seq[float64] ## The fundamental's phase minus the reference's, degrees, (−180, 180].
     amplitude*: seq[seq[float64]] ## `[order − 1][point]`: harmonic `order`'s peak amplitude.
     thdPct*: seq[float64] ## Total harmonic distortion, %.
-    thdCount*: seq[int] ## The harmonics THD sums at the point (0 where THD is NaN).
+    thdCount*: seq[int] ## The harmonics THD sums at the point (0 where THD is NaN, or none is in `harmonicBandHz`).
     peak*: seq[float64] ## The largest `|s|` within one period around the point.
     extent*: SweepExtent ## The reference's sweep and flat part (`SweepReference.extent`).
+    lastFundamentalMs*: float64 = NaN
+      ## The time of the last point whose fundamental is measured (NaN: none).
+    fundamentalCut*: bool
+      ## Some point inside the sweep is not measured because the fundamental
+      ## (`maxFundamentalFraction`, 0.8 of Nyquist by default) is above its
+      ## limit: the measures stopping there (or starting there, on a down
+      ## sweep) are not the signal ending. Compare a signal's last measured
+      ## point with `lastFundamentalMs` of the reference's own track, not
+      ## with `extent.endMs`.
 
 const
   maxHarmonics = 16
   peakPhases = 8                   # sub-sample positions of the band-limited peak
-  peakHalf = 8                     # taps each side of the interpolator
-  peakBeta = 8.0                   # its Kaiser window
+  peakHalf = 16                    # taps each side of the interpolator
+  peakBeta = 10.0                  # its Kaiser window
   sumCount = 10                    # running sums per harmonic: 5 weights, real and imaginary
   flatLookMs = 10.0                # the flat part: the envelope, averaged over a period, rises (falls)
   flatRise = 2e-4                  # by at most this fraction of itself over the next (previous) flatLookMs,
@@ -275,6 +325,17 @@ proc validate*(p: TrackParams) =
     badTrack("minReferenceDb must be finite and negative, got " & $p.minReferenceDb)
   if not (p.maxHarmonicFraction > 0 and p.maxHarmonicFraction <= 1):
     badTrack("maxHarmonicFraction must be in (0, 1], got " & $p.maxHarmonicFraction)
+  if not (p.maxFundamentalFraction > 0 and p.maxFundamentalFraction <= 1):
+    badTrack("maxFundamentalFraction must be in (0, 1], got " & $p.maxFundamentalFraction)
+  if not (p.harmonicBandHz.isNaN or (p.harmonicBandHz > 0 and p.harmonicBandHz < Inf)):
+    badTrack("harmonicBandHz must be NaN (all the harmonics tracked) or a finite " &
+      "frequency above 0, got " & $p.harmonicBandHz)
+
+func trackedHarmonics*(p: TrackParams): int {.inline, raises: [].} =
+  ## The harmonics a plan tracks (`SweepTrack.harmonics`): `harmonics`, or 16
+  ## where `harmonicBandHz` is set (a band holds a different number at each
+  ## frequency).
+  if p.harmonicBandHz.isNaN: p.harmonics else: maxHarmonics
 
 proc initSweepTrackPlan*(T: typedesc[SampleType], params: TrackParams, dtMs: float64,
     samples: int): SweepTrackPlan[T] =
@@ -292,7 +353,7 @@ proc initSweepTrackPlan*(T: typedesc[SampleType], params: TrackParams, dtMs: flo
   let stepF = round(params.stepMs / dtMs)
   result.step = (if stepF >= float64(samples): samples else: max(1, int(stepF)))
   result.points = (samples - 1) div result.step + 1
-  result.lanes = if params.harmonics <= 8: 8 else: 16
+  result.lanes = if params.trackedHarmonics <= 8: 8 else: 16
   # The interpolator: phase q is q/8 of a sample after a sample, its tap k
   # on the sample k − 7 from that one.
   result.peakTaps = newSeq[float64](peakPhases * 2 * peakHalf)
@@ -386,7 +447,9 @@ proc initSweepTrack*[T](tp: SweepTrackPlan[T]): SweepTrack =
     for v in s[].mitems: v = NaN
   result.thdCount = newSeq[int](p)
   result.extent = SweepExtent()
-  result.amplitude = newSeq[seq[float64]](tp.params.harmonics)
+  result.lastFundamentalMs = NaN
+  result.fundamentalCut = false
+  result.amplitude = newSeq[seq[float64]](tp.params.trackedHarmonics)
   for a in result.amplitude.mitems:
     a = newSeq[float64](p)
     for v in a.mitems: v = NaN
@@ -408,6 +471,16 @@ func extent*(r: SweepReference): SweepExtent {.raises: [].} =
   if r.first >= 0:
     result = SweepExtent(startMs: float64(r.first) * r.dtMs, endMs: float64(r.last) * r.dtMs,
       flatStartMs: float64(r.flatFirst) * r.dtMs, flatEndMs: float64(r.flatLast) * r.dtMs)
+
+func topFrequencyHz*(r: SweepReference): float64 {.raises: [].} =
+  ## The reference's highest instantaneous frequency over its sweep (`span`),
+  ## Hz: the sweep's band edge, to default `TrackParams.harmonicBandHz` to.
+  ## NaN without a sweep. (Read from the analytic signal: within a fraction
+  ## of a percent of a clean sweep's own top.)
+  result = NaN
+  if r.first < 0: return
+  result = 0
+  for j in r.first .. r.last: result = max(result, r.freqHz[j])
 
 func isMeasured*(r: SweepReference, point: int): bool {.inline, raises: [].} =
   ## Point `point`'s window lies inside the sweep.
@@ -752,9 +825,12 @@ proc finishPoint[T; L: static int](tp: SweepTrackPlan[T], r: SweepReference, m: 
   let w = r.weight[m]
   let nyq = 500 / tp.dtMs
   let limit = tp.params.maxHarmonicFraction * nyq
+  let limit1 = tp.params.maxFundamentalFraction * nyq
+  let band = tp.params.harmonicBandHz
+  let banded = not band.isNaN
   var a1, harm = 0.0
-  var measured, missing = 0 # harmonics (k ≥ 2) measured, and past the limit
-  for k in 1 .. tp.params.harmonics:
+  var measured, missing = 0 # THD's harmonics (k ≥ 2) measured, and past the limit
+  for k in 1 .. tp.params.trackedHarmonics:
     let l = k - 1
     var re, im = 0.0
     for q in 0 ..< 5:
@@ -763,22 +839,24 @@ proc finishPoint[T; L: static int](tp: SweepTrackPlan[T], r: SweepReference, m: 
     # c_k = 2·(Σ…/8)/w, the weight's own /8 included in w.
     let cr = re / (4 * w)
     let ci = im / (4 * w)
-    if float64(k) * r.maxHz[m] > limit:
+    let counts = k > 1 and (not banded or float64(k) * r.refHz[m] <= band) # in THD
+    if float64(k) * r.maxHz[m] > (if k == 1: limit1 else: limit):
       track.amplitude[l][m] = NaN
-      if k > 1: inc missing
+      if counts: inc missing
       continue
     let a = hypot(cr, ci)
     track.amplitude[l][m] = a
     if k == 1:
       a1 = a
       track.phaseDeg[m] = (if a > 0: wrapDeg(radToDeg(arctan2(ci, cr))) else: NaN)
-    else:
+    elif counts:
       harm += a * a
       inc measured
   if track.amplitude[0][m].isNaN:
     track.phaseDeg[m] = NaN
     track.thdPct[m] = NaN
-  elif measured == 0 or not (a1 > 0) or (missing > 0 and tp.params.thdHarmonics == thFixed):
+  elif (measured == 0 and not banded) or not (a1 > 0) or
+      (missing > 0 and tp.params.thdHarmonics == thFixed):
     track.thdPct[m] = NaN
   else:
     track.thdPct[m] = 100 * sqrt(harm) /
@@ -840,7 +918,7 @@ proc trackInto*[T: SampleType](tp: SweepTrackPlan[T], x: openArray[T],
   doAssert x.len <= tp.samples, "a signal longer than the plan's samples"
   doAssert reference.samples == tp.samples and reference.points == tp.points,
     "the reference is not sized for this plan"
-  doAssert track.sizedFor(tp.points, tp.params.harmonics), "the track is not sized for this plan"
+  doAssert track.sizedFor(tp.points, tp.params.trackedHarmonics), "the track is not sized for this plan"
   doAssert ws.fits(tp.workspaceSize), "reserve the plan's workspaceSize first"
   for m in 0 ..< tp.points:
     track.timeMs[m] = tp.pointMs(m)
@@ -852,7 +930,12 @@ proc trackInto*[T: SampleType](tp: SweepTrackPlan[T], x: openArray[T],
     track.peak[m] = NaN
     for a in track.amplitude.mitems: a[m] = NaN
   track.extent = reference.extent
+  track.lastFundamentalMs = NaN
+  track.fundamentalCut = false
   if reference.first < 0: return
+  let limit1 = tp.params.maxFundamentalFraction * 500 / tp.dtMs
+  for m in 0 ..< tp.points:
+    if reference.lo[m] >= 0 and reference.maxHz[m] > limit1: track.fundamentalCut = true
   for g in 0 ..< reference.groupCount: # one scan per window length
     let C = reference.groups[g]
     if tp.lanes == 8: tp.scan[:T, 8](x, reference, track, ws, C)
@@ -897,6 +980,8 @@ proc trackInto*[T: SampleType](tp: SweepTrackPlan[T], x: openArray[T],
         if curve < 0: v -= (a - c) * (a - c) / (8 * curve)
       p = max(p, v)
     track.peak[m] = p
+  for m in 0 ..< tp.points:
+    if not track.amplitude[0][m].isNaN: track.lastFundamentalMs = track.timeMs[m]
   for m in 0 ..< tp.points:
     let th = track.phaseDeg[m]
     if th.isNaN: continue

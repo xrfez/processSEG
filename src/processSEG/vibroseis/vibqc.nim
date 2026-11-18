@@ -80,6 +80,22 @@
 ## still measured and returned; `judgedInto` (`UnitSignature.judged`) flags
 ## each point in or out, for a viewer to leave out or dim.
 ##
+## **A trace shorter than its reference.** The reference's sweep sets the
+## judged part, and a signal row that ends earlier (a record cut short, or a
+## stored reference longer than the traces) is zeros after its last sample:
+## those points are measured as a force of 0 and a phase of noise, and fail
+## every limit. `toMs` is the way out, and the caller's: pass the trace's own
+## end (the last sample's time, less half a window: the window at a point
+## reaches half of its length past it) in `VibLimits.toMs` to `analyzeVibrators`,
+## `summarize`, `limitFlagsInto`, `judgedInto`, `automaticPolarity` and
+## `windowStats`; every one of them judges `judgedPart` and so honours it.
+## The library does not guess the trace's end from its samples.
+##
+## **Windows of the sweep** (`windowStats`): the statistics per 500 ms window
+## aligned to the sweep's start, and their average and peak over the sweep, as
+## a vibrator controller's QC log gives them (a mean per window, then the mean
+## and the worst of the windows, rather than the worst point).
+##
 ## **Limits** (`VibLimits`, every limit NaN, i.e. off, by default). At each
 ## judged point: `|phase| > phaseDeg`, `THD > thdPct`, any harmonic's
 ## `100·A_k/A_1 > harmonicPct`, the fundamental below `forceLow` or above
@@ -386,6 +402,132 @@ func summarize*(track: SweepTrack, limits = VibLimits()): TrackSummary {.raises:
   if result.meanThdPct > limits.meanThdPct: result.failed.incl lkMeanThd
   if result.meanForce < limits.meanForceLow: result.failed.incl lkMeanForce
 
+# ----------------------------------------------------------- windows --
+
+type
+  WindowSummary* = object
+    ## A sweep's window statistics (`WindowStats`): the mean of the windows'
+    ## means ("average") and the largest window ("peak"), as a vibrator
+    ## controller's log gives them, each with the start of the window it is
+    ## from. NaN where no window has the measure.
+    windows*: int ## The windows kept.
+    meanAbsPhaseDeg*: float64 ## Mean of the windows' mean `|phase|`.
+    maxAbsPhaseDeg*, maxAbsPhaseAtMs*: float64 ## The largest window mean `|phase|`, and its window's start.
+    meanForce*: float64 ## Mean of the windows' mean fundamental.
+    minForce*, minForceAtMs*: float64 ## The smallest window mean fundamental, and its window's start.
+    maxForce*, maxForceAtMs*: float64 ## The largest window mean fundamental, and its window's start.
+    meanThdPct*: float64 ## Mean of the windows' mean THD.
+    maxThdPct*, maxThdAtMs*: float64 ## The largest window mean THD, and its window's start.
+    maxPeak*, maxPeakAtMs*: float64 ## The largest window peak, and its window's start.
+
+  WindowStats* = object
+    ## A track's statistics per window of the sweep (`windowStats`): the
+    ## windows kept, one value each in the sequences, and the sweep's
+    ## summary of them.
+    windowMs*: float64 ## The window's length, ms.
+    startMs*: seq[float64] ## Each kept window's start, ms from the rows' first sample.
+    points*: seq[int] ## Each window's measured, judged points (those with a fundamental).
+    meanAbsPhaseDeg*: seq[float64] ## Mean `|phase|` of the window's points with a phase (NaN: none).
+    meanForce*: seq[float64] ## Mean fundamental.
+    peak*: seq[float64] ## The largest `SweepTrack.peak` of the window: its largest `|signal|`.
+    meanThdPct*: seq[float64] ## Mean THD of the window's points with a THD (NaN: none).
+    summary*: WindowSummary ## The sweep's average and peak of the windows.
+
+proc windowStats*(track: SweepTrack, limits = VibLimits(), windowMs = 500.0,
+    minFill = 0.5): WindowStats =
+  ## The statistics of `track` per window of `windowMs` (a vibrator
+  ## controller's 500 ms), and the sweep's "average" and "peak" of them
+  ## (`WindowSummary`). The windows are aligned to the sweep's start
+  ## (`track.extent.startMs`): window `i` is `start + i·windowMs ..< start +
+  ## (i + 1)·windowMs`. Only the measured points inside the judged part
+  ## (`judgedPart(track.extent, limits)`: the tapers or `skipStartMs` and
+  ## `skipEndMs`, within `fromMs .. toMs`) count, so a range leaves out the
+  ## tapers or a zero-padded tail of a trace shorter than its reference.
+  ##
+  ## **Partial windows.** A window the judged part or the measured points cut
+  ## short is averaged over the points it has, and kept when those points
+  ## span at least `minFill` of `windowMs` (their count times the points'
+  ## interval); a thinner one is left out and counted nowhere. `minFill = 0`
+  ## keeps every window with a point, `1` only the complete ones. The average
+  ## of the windows is of the kept windows, each as one.
+  ##
+  ## Empty (no window) for a track without a sweep or without points in the
+  ## judged part. Raises `ValueError` for a `windowMs` that is not finite and
+  ## above 0, or a `minFill` outside 0 .. 1.
+  if not (windowMs > 0 and windowMs < Inf):
+    badVib("windowMs must be finite and positive, got " & $windowMs)
+  if not (minFill >= 0 and minFill <= 1):
+    badVib("minFill must be in 0 .. 1, got " & $minFill)
+  result.windowMs = windowMs
+  var sum = WindowSummary(meanAbsPhaseDeg: NaN, maxAbsPhaseDeg: NaN, maxAbsPhaseAtMs: NaN,
+    meanForce: NaN, minForce: NaN, minForceAtMs: NaN, maxForce: NaN, maxForceAtMs: NaN,
+    meanThdPct: NaN, maxThdPct: NaN, maxThdAtMs: NaN, maxPeak: NaN, maxPeakAtMs: NaN)
+  result.summary = sum
+  let origin = track.extent.startMs
+  let span = track.extent.judgedPart(limits)
+  if origin.isNaN or span.a.isNaN or span.b.isNaN or track.len < 2: return
+  let step = track.timeMs[1] - track.timeMs[0]
+  if not (step > 0): return
+  type Acc = object
+    n, nPhase, nThd: int
+    phase, force, thd, peak: float64
+  let count = int(floor((span.b - origin) / windowMs)) + 1
+  if count <= 0: return
+  var accs = newSeq[Acc](count)
+  for m in 0 ..< track.len:
+    let t = track.timeMs[m]
+    let a1 = track.amplitude[0][m]
+    if a1.isNaN or t notin span or t < origin: continue
+    let i = int(floor((t - origin) / windowMs))
+    if i >= count: continue
+    template acc: untyped = accs[i]
+    inc acc.n
+    acc.force += a1
+    let p = abs(track.phaseDeg[m])
+    if not p.isNaN:
+      acc.phase += p
+      inc acc.nPhase
+    let d = track.thdPct[m]
+    if not d.isNaN:
+      acc.thd += d
+      inc acc.nThd
+    let pk = track.peak[m]
+    if not pk.isNaN and not (pk <= acc.peak): acc.peak = pk
+  var nPhase, nThd, nPeak = 0
+  var sumPhase, sumForce, sumThd = 0.0
+  for i, acc in accs:
+    if acc.n == 0 or float64(acc.n) * step < minFill * windowMs * (1 - 1e-9): continue
+    let at = origin + float64(i) * windowMs
+    let phase = (if acc.nPhase > 0: acc.phase / float64(acc.nPhase) else: NaN)
+    let force = acc.force / float64(acc.n)
+    let thd = (if acc.nThd > 0: acc.thd / float64(acc.nThd) else: NaN)
+    let peak = (if acc.peak > 0: acc.peak else: NaN)
+    result.startMs.add at
+    result.points.add acc.n
+    result.meanAbsPhaseDeg.add phase
+    result.meanForce.add force
+    result.peak.add peak
+    result.meanThdPct.add thd
+    inc sum.windows
+    sumForce += force
+    if not (force >= sum.minForce): (sum.minForce, sum.minForceAtMs) = (force, at)
+    if not (force <= sum.maxForce): (sum.maxForce, sum.maxForceAtMs) = (force, at)
+    if not phase.isNaN:
+      sumPhase += phase
+      inc nPhase
+      if not (phase <= sum.maxAbsPhaseDeg): (sum.maxAbsPhaseDeg, sum.maxAbsPhaseAtMs) = (phase, at)
+    if not thd.isNaN:
+      sumThd += thd
+      inc nThd
+      if not (thd <= sum.maxThdPct): (sum.maxThdPct, sum.maxThdAtMs) = (thd, at)
+    if not peak.isNaN:
+      inc nPeak
+      if not (peak <= sum.maxPeak): (sum.maxPeak, sum.maxPeakAtMs) = (peak, at)
+  if sum.windows > 0: sum.meanForce = sumForce / float64(sum.windows)
+  if nPhase > 0: sum.meanAbsPhaseDeg = sumPhase / float64(nPhase)
+  if nThd > 0: sum.meanThdPct = sumThd / float64(nThd)
+  result.summary = sum
+
 proc reversePolarity*(track: var SweepTrack) {.raises: [].} =
   ## The measures of the signal reversed: every phase turned by 180°
   ## (wrapped to (−180, 180]); the amplitudes, THD, peak and frequencies of
@@ -416,6 +558,8 @@ proc fillNaN(t: var SweepTrack) {.raises: [].} =
   for s in [addr t.referenceHz, addr t.frequencyHz, addr t.phaseDeg, addr t.thdPct, addr t.peak]:
     for v in s[].mitems: v = NaN
   for v in t.thdCount.mitems: v = 0
+  t.lastFundamentalMs = NaN
+  t.fundamentalCut = false
   for a in t.amplitude.mitems:
     for v in a.mitems: v = NaN
   t.extent = SweepExtent()
@@ -504,7 +648,7 @@ proc analyzeVibrators*[T: SampleType](tp: SweepTrackPlan[T], b: RowBlock[T],
     # Sized for another plan (a record of another length can have as many
     # points): sized again.
     if res.planSamples != tp.samples or res.tracks[vsReference].len != tp.points or
-        res.tracks[vsReference].harmonics != tp.params.harmonics:
+        res.tracks[vsReference].harmonics != tp.params.trackedHarmonics:
       res.reference = initSweepReference(tp)
       for s in VibSignal:
         res.tracks[s] = initSweepTrack(tp)

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `TrackParams.harmonicBandHz`: THD over the harmonics within a band (`k·f ≤` the edge), as a vibrator controller's distortion; `trackedHarmonics`, `topFrequencyHz` (the reference's top frequency).
+- `TrackParams.maxFundamentalFraction` (default 0.8, as before); `SweepTrack.fundamentalCut` and `lastFundamentalMs` say where the fundamental stops being measured.
+- `windowStats`, `WindowStats`, `WindowSummary`: per-window (500 ms) mean phase, force, peak and THD and their average and worst window over the sweep.
+- `sweeptrack`: the peak interpolator has 16 taps each side (was 8): a pure fundamental reads within 3e-4 up to 0.8 of Nyquist (it read up to 4 % low from 0.7).
+
 ## 0.7.1
 
 - `analyticInto`: the instantaneous frequency was wrong above a quarter of the sampling rate (it read the true value minus fs/2); the phase step is now taken per sample (circular mean of the two steps around the sample), so it is right up to Nyquist for a clean tone.

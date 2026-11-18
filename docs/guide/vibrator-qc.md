@@ -209,7 +209,10 @@ phase takes about 0.36 of a window to show (35 ms at 100 ms). `reference.cyclesA
 gives the window's periods at a point; `minWindowMs = 0` keeps `cycles` everywhere.
 
 The measures, one value per point, NaN where not measured (outside the sweep, within half a
-window of its ends, a harmonic above `maxHarmonicFraction` of Nyquist):
+window of its ends, a harmonic above `maxHarmonicFraction` of Nyquist, the fundamental above
+`maxFundamentalFraction`: 0.8 of both by default, so at 2 ms a 220 Hz sweep is measured to 200
+Hz; `track.fundamentalCut` and `track.lastFundamentalMs` say so, and tell it from the signal
+ending):
 
 - `phaseDeg`: the fundamental's phase minus the reference's, degrees in (−180, 180],
   positive when the signal leads (the reference delayed by τ reads −360·f·τ);
@@ -220,9 +223,16 @@ window of its ends, a harmonic above `maxHarmonicFraction` of Nyquist):
   `harmonics` (5): all of them by default (`thFixed`: NaN where one is past the harmonic
   limit, so THD means the same all along the sweep), or those that fit below it
   (`thAllThatFit`: THD steps down where one leaves the band); `thdCount` gives the harmonics
-  summed at each point; `distortionInto(k, dst)`: one harmonic's `100·A_k/A_1`;
+  summed at each point; `distortionInto(k, dst)`: one harmonic's `100·A_k/A_1`. **THD in
+  the sweep's band:** `TrackParams(harmonicBandHz: topHz)` sums the harmonics with
+  `k·f ≤ topHz` instead (`f` the reference's frequency at the point; up to the 16th,
+  `harmonics` ignored): what a vibrator controller reports as distortion, with the sweep's
+  top frequency as the edge (`reference.topFrequencyHz` gives it; 220 Hz sweep: up to H14
+  from 15 Hz). It is 0 where no harmonic is in band (above half the edge), and NaN where one
+  that is is past the harmonic limit (all that fit: left out);
 - `peak`: the largest |s| within one period, harmonics and noise included, of the
-  band-limited signal (the **peak force**, against the hold-down weight);
+  band-limited signal (the **peak force**, against the hold-down weight), within 3e-4 for a
+  fundamental up to 0.8 of Nyquist;
 - `referenceHz` and `frequencyHz`: the reference's instantaneous frequency (the sweep law
   as it was driven) and the signal fundamental's.
 
@@ -375,6 +385,25 @@ A summary's `points` are the judged points with a fundamental; `phasePoints` and
 harmonics 2-5 is not measured where the 5th passes the harmonic limit (above 40 Hz at 2 ms),
 and a dead channel has no phase, so a THD or phase limit there is neither passed nor failed.
 Show a count of 0, or one well under `points`, beside the pass or fail.
+
+**A trace shorter than its reference** (a record cut short, a stored reference longer than the
+traces): the rows are zeros after their last sample, and those points are measured as a force
+of 0 and fail every limit. Pass the trace's own end in `VibLimits.toMs` (its last sample's
+time less half a window) to `analyzeVibrators`, `summarize`, `limitFlagsInto`, `judgedInto` and
+`windowStats`: the library does not guess it from the samples.
+
+**Windows of the sweep.** A controller's QC log gives a mean per 500 ms window, then the
+mean and the worst of the windows, not the worst point. `windowStats(track, limits, windowMs =
+500, minFill = 0.5)` returns, per window aligned to the sweep's start (`startMs`, `points`),
+the mean |phase| (`meanAbsPhaseDeg`), the mean fundamental (`meanForce`), the largest peak of
+its points (`peak`: the in-window largest |signal|) and the mean THD (`meanThdPct`); and
+`summary`: for each, the mean of the window means ("average") and the worst window with its
+start (`maxAbsPhaseDeg` and `maxAbsPhaseAtMs`, `minForce`, `maxForce`, `maxThdPct`,
+`maxPeak`). Only judged, measured points count (`limits` as for `summarize`: tapers by default,
+`skipStartMs`, `fromMs`, `toMs`). A window the judged part or the measured points cut short is
+averaged over the points it has and kept when they span at least `minFill` of the window
+(0.5 default: a half window at a taper's edge counts, a sliver does not; 1 keeps whole
+windows only).
 
 ## Conventions, and what is still to confirm
 
