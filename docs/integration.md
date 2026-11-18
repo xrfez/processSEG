@@ -455,7 +455,7 @@ keeps the assignment with the file). processSEG fills each plot's buffers, value
   THD above 40 Hz at 2 ms) as "not judged", not as a pass.
 - **Windowed statistics** (a controller's log: a mean per 500 ms window, then the
   average and the worst window): `windowStats(track, limits, windowMs = 500, minFill = 0.5)`:
-  per window (aligned to the sweep's start) the mean |phase|, mean fundamental, largest
+  per window (aligned to the sweep's start, or `originMs`: the true start or time break) the mean |phase|, mean fundamental, largest
   peak and mean THD, and in `.summary` their average and worst window with its time. Judged
   points only, so `limits` leaves out the tapers or an empty tail; a window cut short by
   the judged range is kept when its points span `minFill` of it.
@@ -463,13 +463,15 @@ keeps the assignment with the file). processSEG fills each plot's buffers, value
   Pass the trace's own end (the last sample's time less half a window) as `VibLimits.toMs`
   to `analyzeVibrators`, `summarize`, `limitFlagsInto`, `judgedInto` and `windowStats`; the
   library does not find it from the samples.
-- **THD in the sweep's band:** `TrackParams(harmonicBandHz: reference.topFrequencyHz)`
-  makes THD the controller's distortion: the harmonics with `k·f` at or below the sweep's
-  top frequency (up to 16, `harmonics` ignored; 0 where none is, which is above half the
-  edge), where the default sums harmonics 2-5 to 0.8 of Nyquist. `topFrequencyHz` needs the
-  reference prepared (`referenceInto`), so a viewer takes it from a first prepared plan or
-  from the pilot's design, then makes the plan with the edge.
-- **Where the fundamental stops:** it is measured to `maxFundamentalFraction` of Nyquist
+- **THD in the sweep's band:** `TrackParams(harmonicBandAuto: true)` makes THD the controller's
+  distortion in one pass: `trackInto` (so `analyzeVibrators`) sets the edge at the reference's
+  top frequency (`SweepReference.topFrequencyHz`, robust to noise) and reports it in
+  `track.bandHz`; or give `harmonicBandHz` in Hz. THD sums the harmonics with `k·f` at or below
+  the edge (up to 16, `harmonics` ignored), where the default sums 2-5 to 0.8 of Nyquist. It
+  is 0 where no harmonic is in band (above half the edge) and NaN where harmonics are in band
+  and none could be measured (past 0.8 of Nyquist; with `thAllThatFit` the measured ones are
+  summed). The harmonic limit (`lkHarmonic`) judges the in-band harmonics only.
+- **Where the fundamental stops:** (`maxHarmonicFraction` no longer limits it) it is measured to `maxFundamentalFraction` of Nyquist
   (0.8: at 2 ms a 6-220 Hz sweep to 200 Hz). `track.fundamentalCut` and
   `track.lastFundamentalMs` say so: do not read the end of the measures as the signal
   ending (compare with the reference's own `lastFundamentalMs`, not `extent.endMs`). A clean

@@ -73,7 +73,7 @@ proc main*() =
           inc seen[(if 3 * f < edge: 0 elif 2 * f < edge: 1 else: 2)]
         doAssert seen[0] > 30 and seen[1] > 30 and seen[2] > 100, $seen
         # The reference's top, to default the band to.
-        doAssert abs(r.topFrequencyHz - 220) < 0.6,
+        doAssert abs(r.topFrequencyHz - 220) < 2.2,
           $r.topFrequencyHz
         # The other THD of the default parameters: 2 .. 5 whatever the band.
         let tp0 = initSweepTrackPlan(float64, TrackParams(), dtMs, n)
@@ -86,23 +86,65 @@ proc main*() =
             doAssert t0.thdCount[m] == 4 and abs(t0.thdPct[m] - 11.18) < 0.05
 
   block top_frequency:
-    for (f0, f1) in [(6.0, 220.0), (220.0, 6.0), (8.0, 80.0)]:
-      let ch = sweepOf(1, f0, f1)
-      let ref0 = chirp(ch, 1, 12001, [Tone()])
-      let tp = initSweepTrackPlan(float64, TrackParams(), 1, 12001)
+    # The top of the reference's band, from a clean one to 5 % rms noise,
+    # untapered, down and exponential: within 1 % (the largest instantaneous
+    # frequency read 925 Hz of a 220 Hz sweep under 1 % noise).
+    let up = sweepOf(1, 6, 220)
+    let down = sweepOf(1, 220, 6)
+    let bare = Chirp(law: clLinear, f0: 8, f1: 80, lengthMs: 8000, ramp: rmNone)
+    let expo = Chirp(law: clExponential, f0: 6, f1: 96, lengthMs: 8000, ramp: rmBlackman,
+      startMs: 250, endMs: 500)
+    var seed = 1
+    for (ch, top, noise) in [(up, 220.0, 0.0), (up, 220.0, 0.001), (up, 220.0, 0.01),
+        (up, 220.0, 0.05), (down, 220.0, 0.01), (down, 220.0, 0.05), (bare, 80.0, 0.0),
+        (bare, 80.0, 0.01), (expo, 96.0, 0.0), (expo, 96.0, 0.01), (expo, 96.0, 0.05)]:
+      inc seed
+      let n = int(ch.lengthMs) + 1
+      let ref0 = chirp(ch, 1, n, [Tone()], noise = noise, seed = seed)
+      let tp = initSweepTrackPlan(float64, TrackParams(), 1, n)
       var ws = initWorkspace()
       ws.reserve(tp.workspaceSize)
       var r = initSweepReference(tp)
       doAssert initSweepReference(tp).topFrequencyHz.isNaN # no sweep yet
       tp.referenceInto(ref0, r, ws)
-      doAssert abs(r.topFrequencyHz - max(f0, f1)) < 0.6, $r.topFrequencyHz
-      var zeros = newSeq[float64](12001)
+      doAssert abs(r.topFrequencyHz / top - 1) < 0.01,
+        $ch.law & " " & $top & " noise " & $noise & ": " & $r.topFrequencyHz
+      var zeros = newSeq[float64](n)
       tp.referenceInto(zeros, r, ws)
       doAssert r.topFrequencyHz.isNaN
 
+  block auto_band:
+    # `harmonicBandAuto` is the band at the reference's top, in one pass: the
+    # same THD as the typed 220 Hz (within the edge's 1 %), the edge reported.
+    let ch = sweepOf(1, 6, 220)
+    let n = 12001
+    let ref0 = chirp(ch, 1, n, [Tone()], noise = 0.01)
+    let x = chirp(ch, 1, n, [Tone(amp: 1000), Tone(order: 2, amp: 100), Tone(order: 3, amp: 50)])
+    var ws = initWorkspace()
+    let tpa = initSweepTrackPlan(float64, TrackParams(harmonicBandAuto: true), 1, n)
+    let tpt = initSweepTrackPlan(float64, TrackParams(harmonicBandHz: edge), 1, n)
+    ws.reserve(tpa.workspaceSize)
+    let (_, ta) = tpa.track(ref0, x, ws)
+    let (_, tt) = tpt.track(ref0, x, ws)
+    doAssert ta.harmonics == 16 and abs(ta.bandHz / 220 - 1) < 0.01 and tt.bandHz == edge
+    var seen = 0
+    for m in 0 ..< ta.len:
+      let f = ta.referenceHz[m]
+      if f.isNaN or ta.timeMs[m] < 1000 or ta.timeMs[m] > 11000: continue
+      if abs(2 * f - 220) < 12 or abs(3 * f - 220) < 12: continue
+      doAssert abs(ta.thdPct[m] - tt.thdPct[m]) < 0.3, $f
+      inc seen
+    doAssert seen > 800
+    doAssert initSweepTrack(tpa).bandHz.isNaN
+    let tp0 = initSweepTrackPlan(float64, TrackParams(), 1, n)
+    ws.reserve(tp0.workspaceSize)
+    doAssert tp0.track(ref0, x, ws)[1].bandHz.isNaN
+
   block band_stepping_down:
-    # At 2 ms the 2nd harmonic of 101-109 Hz is in band and not measured:
-    # THD is NaN (fixed), or the measured harmonics' (all that fit).
+    # At 2 ms the 2nd harmonic of 101-109 Hz is in band and not measured, and
+    # nothing else is: THD is NaN, not 0 % (0 only where none is in band); at
+    # 52 Hz the 4th (208 Hz) is the one not measured: NaN (fixed), or the
+    # 2nd and 3rd's 10 % (all that fit).
     let ch = sweepOf(2, 6, 220)
     let n = 6001
     let ref0 = chirp(ch, 2, n, [Tone()])
@@ -113,13 +155,17 @@ proc main*() =
         thdHarmonics: mode), 2, n)
       ws.reserve(tp.workspaceSize)
       let (_, t) = tp.track(ref0, x, ws)
-      var seen = 0
+      var seen = [0, 0]
       for m in 0 ..< t.len:
-        if t.referenceHz[m].isNaN or abs(t.referenceHz[m] - 105) > 2: continue
-        doAssert (mode == thFixed) == t.thdPct[m].isNaN, $mode & ": " & $t.thdPct[m]
-        if mode == thAllThatFit: doAssert t.thdPct[m] == 0 and t.thdCount[m] == 0
-        inc seen
-      doAssert seen > 3
+        if t.referenceHz[m].isNaN: continue
+        if abs(t.referenceHz[m] - 105) < 2:
+          doAssert t.thdPct[m].isNaN, $mode & ": " & $t.thdPct[m]
+          inc seen[0]
+        if abs(t.referenceHz[m] - 52) < 0.5 and t.timeMs[m] > 1000:
+          doAssert (mode == thFixed) == t.thdPct[m].isNaN, $mode & ": " & $t.thdPct[m]
+          if mode == thAllThatFit: doAssert abs(t.thdPct[m] - 10) < 0.1
+          inc seen[1]
+      doAssert seen[0] > 3 and seen[1] > 0, $seen
 
   block fundamental_limit:
     # 6-220 Hz at 2 ms (Nyquist 250 Hz): the fundamental stops at 0.8 of
@@ -246,6 +292,30 @@ proc main*() =
       let one = t.windowStats(windowMs = 1000)
       doAssert one.startMs == @[0.0, 1000] and one.meanForce == @[950.0, 750]
       doAssert one.meanAbsPhaseDeg == @[3.0, 7]
+    block origin:
+      # Windows from 250 ms: the first holds 25 points of window 0 and 25 of 1.
+      let s = t.windowStats(originMs = 250)
+      doAssert s.startMs[0] == 250 and s.startMs[1] == 750 and s.meanForce[0] == 950 and
+        s.meanForce[1] == 850
+    block band_harmonic_limit:
+      # H2 10 % and H3 50 % at 100 Hz: with the band at 220 Hz only the 2nd is in
+      # it, and a 20 % limit on any one harmonic is not exceeded; without a band
+      # it is (by the 3rd).
+      var u = t
+      for m in 0 ..< u.len:
+        u.referenceHz[m] = 100
+        u.amplitude[1][m] = 100
+        u.amplitude[2][m] = 500
+      let lim = VibLimits(harmonicPct: 20, skipStartMs: 0)
+      var flags = newSeq[set[LimitKind]](u.len)
+      u.limitFlagsInto(lim, flags)
+      doAssert lkHarmonic in flags[10]
+      u.bandHz = 220
+      u.limitFlagsInto(lim, flags)
+      doAssert lkHarmonic notin flags[10]
+      u.bandHz = 320
+      u.limitFlagsInto(lim, flags)
+      doAssert lkHarmonic in flags[10]
     block missing_values:
       var u = t
       for m in 0 ..< 25: u.thdPct[m] = NaN # half of window 0 has no THD

@@ -4,6 +4,9 @@
 
 - `TrackParams.harmonicBandHz`: THD over the harmonics within a band (`k·f ≤` the edge), as a vibrator controller's distortion; `trackedHarmonics`, `topFrequencyHz` (the reference's top frequency).
 - `TrackParams.maxFundamentalFraction` (default 0.8, as before); `SweepTrack.fundamentalCut` and `lastFundamentalMs` say where the fundamental stops being measured.
+- `TrackParams.harmonicBandAuto` sets the band at the reference's top frequency inside `trackInto` (one pass); `SweepTrack.bandHz` is the edge used. In-band THD is NaN where harmonics are in band but none was measured (0 only where none is in band), and `lkHarmonic` judges the in-band harmonics only. `topFrequencyHz` is robust to noise (a chord fit, not the largest instantaneous frequency).
+- Behaviour change: `maxHarmonicFraction` no longer limits the fundamental (it follows `maxFundamentalFraction`, 0.8 by default): a caller that set a non-default `maxHarmonicFraction` gets the fundamental measured to 0.8 of Nyquist regardless.
+- `windowStats` takes `originMs` (default the extent's start).
 - `windowStats`, `WindowStats`, `WindowSummary`: per-window (500 ms) mean phase, force, peak and THD and their average and worst window over the sweep.
 - `sweeptrack`: the peak interpolator has 16 taps each side (was 8): a pure fundamental reads within 3e-4 up to 0.8 of Nyquist (it read up to 4 % low from 0.7).
 

@@ -227,9 +227,10 @@ ending):
   the sweep's band:** `TrackParams(harmonicBandHz: topHz)` sums the harmonics with
   `k·f ≤ topHz` instead (`f` the reference's frequency at the point; up to the 16th,
   `harmonics` ignored): what a vibrator controller reports as distortion, with the sweep's
-  top frequency as the edge (`reference.topFrequencyHz` gives it; 220 Hz sweep: up to H14
-  from 15 Hz). It is 0 where no harmonic is in band (above half the edge), and NaN where one
-  that is is past the harmonic limit (all that fit: left out);
+  top frequency as the edge (`harmonicBandAuto: true` takes it from the reference, in one pass,
+  and `track.bandHz` reports it; 220 Hz sweep: up to H14 from 15 Hz). It is 0 where no
+  harmonic is in band (above half the edge), and NaN where some are and none could be
+  measured (past the harmonic limit; all that fit: the measured ones are summed);
 - `peak`: the largest |s| within one period, harmonics and noise included, of the
   band-limited signal (the **peak force**, against the hold-down weight), within 3e-4 for a
   fundamental up to 0.8 of Nyquist;
@@ -394,7 +395,7 @@ time less half a window) to `analyzeVibrators`, `summarize`, `limitFlagsInto`, `
 
 **Windows of the sweep.** A controller's QC log gives a mean per 500 ms window, then the
 mean and the worst of the windows, not the worst point. `windowStats(track, limits, windowMs =
-500, minFill = 0.5)` returns, per window aligned to the sweep's start (`startMs`, `points`),
+500, minFill = 0.5)` returns, per window aligned to the sweep's start (or `originMs`, the true start or time break) (`startMs`, `points`),
 the mean |phase| (`meanAbsPhaseDeg`), the mean fundamental (`meanForce`), the largest peak of
 its points (`peak`: the in-window largest |signal|) and the mean THD (`meanThdPct`); and
 `summary`: for each, the mean of the window means ("average") and the worst window with its

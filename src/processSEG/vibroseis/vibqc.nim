@@ -156,7 +156,9 @@ type
     ## A limit a signal exceeds.
     lkPhase = "phase"          ## `|phase| > phaseDeg` at a point.
     lkThd = "THD"              ## `THD > thdPct` at a point.
-    lkHarmonic = "harmonic"    ## A harmonic's `100·A_k/A_1 > harmonicPct` at a point.
+    lkHarmonic = "harmonic"
+      ## A harmonic's `100·A_k/A_1 > harmonicPct` at a point (with a THD band,
+      ## only the harmonics inside it there).
     lkForceLow = "force low"   ## The fundamental below `forceLow` at a point.
     lkForceHigh = "force high" ## The fundamental above `forceHigh` at a point.
     lkPeakForce = "peak force" ## The peak above `peakForce` at a point.
@@ -331,6 +333,8 @@ func exceeds(t: SweepTrack, l: VibLimits, span: Slice[float64], m: int): set[Lim
   if t.thdPct[m] > l.thdPct: result.incl lkThd
   if l.harmonicPct == l.harmonicPct and a1 > 0:
     for k in 1 ..< t.harmonics:
+      # (with a band: the harmonics inside it at this point only, as THD)
+      if not t.bandHz.isNaN and float64(k + 1) * t.referenceHz[m] > t.bandHz: break
       if 100 * t.amplitude[k][m] / a1 > l.harmonicPct: result.incl lkHarmonic
   if a1 < l.forceLow: result.incl lkForceLow
   if a1 > l.forceHigh: result.incl lkForceHigh
@@ -434,11 +438,12 @@ type
     summary*: WindowSummary ## The sweep's average and peak of the windows.
 
 proc windowStats*(track: SweepTrack, limits = VibLimits(), windowMs = 500.0,
-    minFill = 0.5): WindowStats =
+    minFill = 0.5, originMs = NaN): WindowStats =
   ## The statistics of `track` per window of `windowMs` (a vibrator
   ## controller's 500 ms), and the sweep's "average" and "peak" of them
   ## (`WindowSummary`). The windows are aligned to the sweep's start
-  ## (`track.extent.startMs`): window `i` is `start + i·windowMs ..< start +
+  ## (`track.extent.startMs`, or `originMs` when given: the true sweep start
+  ## or time break, ms from the rows' first sample): window `i` is `start + i·windowMs ..< start +
   ## (i + 1)·windowMs`. Only the measured points inside the judged part
   ## (`judgedPart(track.extent, limits)`: the tapers or `skipStartMs` and
   ## `skipEndMs`, within `fromMs .. toMs`) count, so a range leaves out the
@@ -463,7 +468,7 @@ proc windowStats*(track: SweepTrack, limits = VibLimits(), windowMs = 500.0,
     meanForce: NaN, minForce: NaN, minForceAtMs: NaN, maxForce: NaN, maxForceAtMs: NaN,
     meanThdPct: NaN, maxThdPct: NaN, maxThdAtMs: NaN, maxPeak: NaN, maxPeakAtMs: NaN)
   result.summary = sum
-  let origin = track.extent.startMs
+  let origin = (if originMs.isNaN: track.extent.startMs else: originMs)
   let span = track.extent.judgedPart(limits)
   if origin.isNaN or span.a.isNaN or span.b.isNaN or track.len < 2: return
   let step = track.timeMs[1] - track.timeMs[0]
@@ -559,6 +564,7 @@ proc fillNaN(t: var SweepTrack) {.raises: [].} =
     for v in s[].mitems: v = NaN
   for v in t.thdCount.mitems: v = 0
   t.lastFundamentalMs = NaN
+  t.bandHz = NaN
   t.fundamentalCut = false
   for a in t.amplitude.mitems:
     for v in a.mitems: v = NaN
