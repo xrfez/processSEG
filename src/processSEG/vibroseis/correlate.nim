@@ -4,16 +4,18 @@
 ##
 ## ```nim
 ## let pilot = generatePilot(linearSweep(8, 80, 8000, 2, initSweepTaper(250, 250)), float32)
-## let plan = initCorrelationPlan(float32, pilot, dtMs = 2, recordSamples = 10001)
+## let plan = initCorrelationPlan(float32, pilot, dtMs = 2, recordSamples = 10000)
 ## var ws = initWorkspace()
 ## ws.reserve(plan.workspaceSize)
-## var correlated = zeros[float32](raw.shape[0], plan.outSamples)   # 6001: 12 s listen
+## var correlated = zeros[float32](raw.shape[0], plan.outSamples)   # 6000: 12 s listen
 ## plan.correlateInto(raw, correlated, meta, ws)
 ## ```
 ##
 ## **Output.** A new block, since the length changes: `outSamples` columns,
-## by default the listen time, `recordSamples − pilot.len + 1` (the lags at
-## which the whole pilot lies inside the record). Column `m` is at the
+## by default the listen time, `recordSamples − pilot.len` (a record of 14000
+## samples after a sweep of 12000 listens 2000 ms: a length is N × dt; the lags at
+## which the whole pilot lies inside the record, 0 to the listen time less one
+## interval; a pilot as long as the record has none). Column `m` is at the
 ## record's time `t0Ms + m·dtMs`: the pilot's own start time (`Pilot.t0Ms`,
 ## possibly a fraction of a sample) is removed exactly, by a phase ramp in
 ## the frequency domain. Lags past the record's end correlate with the
@@ -82,7 +84,7 @@ proc initCorrelationPlan*[T, P: SampleType](_: typedesc[T], pilot: Pilot[P], dtM
     epsPercent = 1.0, normalize = true): CorrelationPlan[T] =
   ## A plan correlating records of up to `recordSamples` samples at `dtMs`
   ## with `pilot`, into `outSamples` columns (0: the listen time,
-  ## `recordSamples − pilot.len + 1`). Raises `ValueError` for a pilot
+  ## `recordSamples − pilot.len`). Raises `ValueError` for a pilot
   ## `validate` rejects, a pilot sampled at another interval (resample it
   ## with `resamplePilot`), a pilot longer than the record (with the default
   ## `outSamples`), `outSamples < 0` or above `recordSamples`, or an
@@ -95,9 +97,9 @@ proc initCorrelationPlan*[T, P: SampleType](_: typedesc[T], pilot: Pilot[P], dtM
     badPlan("the pilot is sampled at " & $pilot.dtMs & " ms, the records at " & $dtMs &
       " ms: resample the pilot first (resamplePilot)")
   if recordSamples < 1: badPlan("recordSamples must be ≥ 1, got " & $recordSamples)
-  let outN = if outSamples == 0: recordSamples - pilot.len + 1 else: outSamples
+  let outN = if outSamples == 0: recordSamples - pilot.len else: outSamples
   if outN < 1:
-    badPlan("the pilot (" & $pilot.len & " samples) is longer than the record (" &
+    badPlan("the pilot (" & $pilot.len & " samples) is not shorter than the record (" &
       $recordSamples & "): no listen time; pass outSamples")
   if outSamples < 0 or outN > recordSamples:
     badPlan("outSamples must be in 0 .. recordSamples, got " & $outSamples)

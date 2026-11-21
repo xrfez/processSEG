@@ -50,11 +50,11 @@ import parseSEG, processSEG
 
 let spec = dbPerOctaveSweep(f1Hz = 6, f2Hz = 96, lengthMs = 8000, dtMs = 2, boostDb = 3,
   taper = initSweepTaper(startMs = 300, endMs = 300, shape = tpBlackman))
-doAssert spec.sweepLen == 4001                       # both ends included
+doAssert spec.sweepLen == 4000                       # 8000 ms at 2 ms: N x dt
 doAssert abs(spec.frequencyAt(0) - 6) < 1e-9 and abs(spec.frequencyAt(8000) - 96) < 1e-9
 
 let pilot = generatePilot(spec, float32)
-doAssert pilot.len == 4001 and pilot.t0Ms == 0 and pilot.sweep.isSome
+doAssert pilot.len == 4000 and pilot.t0Ms == 0 and pilot.sweep.isSome
 
 # Save it as a one-trace SEG-Y (trace code 6, sweep fields in bytes 127-140) ...
 let path = getTempDir() / "guide_pilot.sgy"
@@ -105,7 +105,7 @@ import processSEG
 let fine = generatePilot(linearSweep(8, 120, 6000, 0.5, initSweepTaper(250, 250),
   maxNyquistFraction = 0.25))
 let pilot = fine.resamplePilot(dtMs = 2)
-doAssert pilot.dtMs == 2 and pilot.len == 3001
+doAssert pilot.dtMs == 2 and pilot.len == 3000
 
 # The recorder's filters, as the decimated 2 ms data went through them: a minimum-phase
 # 3 Hz low-cut and 200 Hz high-cut, 18 dB/octave each.
@@ -118,7 +118,7 @@ doAssert matched.len == pilot.len and matched.dtMs == 2
 ## Correlation and sweep deconvolution
 
 A `CorrelationPlan` holds the pilot's spectrum, computed once. The output is a new block
-(the record length changes): by default the listen time, `recordSamples − pilot.len + 1`
+(the record length changes): by default the listen time, `recordSamples − pilot.len`
 columns. Two modes:
 
 - `cmCorrelate` (the default): `X · conj(P)`, the matched filter. A reflection becomes
@@ -138,7 +138,7 @@ const dt = 2.0
 let pilot = generatePilot(linearSweep(10, 80, 4000, dt, initSweepTaper(200, 200)), float32)
 
 # Three uncorrelated records of 6 s: reflectors at 300 and 900 ms, as the sweep arrives.
-const n = 3001
+const n = 3000
 var keys = newSeq[TraceKeys](3)
 var counts = newSeq[int](3)
 var raw = zeros[float32](3, n)
@@ -154,7 +154,7 @@ for r in 0 ..< 3:
 let meta = initChunkMeta(rowsOf(keys, counts), dtMs = dt)
 
 let plan = initCorrelationPlan(float32, pilot, dtMs = dt, recordSamples = n)
-doAssert plan.outSamples == n - pilot.len + 1             # 1001: a 2 s listen time
+doAssert plan.outSamples == n - pilot.len                 # 1000: a 2 s listen time
 var ws = initWorkspace()
 ws.reserve(plan.workspaceSize)
 var correlated = zeros[float32](3, plan.outSamples)

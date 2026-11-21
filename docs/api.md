@@ -99,6 +99,7 @@ value.
 | `m.liveSamples(row, cols)` | The live length of the row in a block `cols` wide. |
 | `m.t0Ms(row)`, `m.sampleTimeMs(row, col)` | The time of the trace's sample 0, and of a column of the block (NaN when `t0Ms` is). |
 | `sameInterval(dtMs, planDtMs): bool` | A block's interval fits a plan's: equal within a relative 1e-9 (a header's 2000 µs / 1000 and a computed 1000 / 500 Hz can differ in the last bit). Every block form checks its meta's `dtMs` with it. |
+| `samplesInLength(lengthMs, dtMs): int`, `lengthOfSamples(samples, dtMs): float64` | A time length is N × dt: 12000 ms at 1 ms is 12000 samples (the last at 11999 ms). `samplesInLength` cuts a length that is not a whole multiple of `dtMs` down to whole samples, with a relative 1e-6 tolerance for float rounding; 0 for a length or interval that is not finite and positive, or a count over 2³¹ − 1. |
 | `m.sub(rows: Slice[int]): ChunkMeta` | The meta of some rows (row 0 is `rows.a`), sharing the view, failed list and file scales: split work with `RowBlock.sub`. |
 | `checkShape(m, samples: Tensor[T])`, `checkShape(m, b: RowBlock[T])` | `ValueError` unless one row per row of `m` (and, for a tensor, rank 2 and C-contiguous). |
 | `SampleType` | parseSEG's `float32 \| float64`, re-exported. |
@@ -555,7 +556,7 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 | `TaperShape` (`tpLinear`, `tpCosine`, `tpCos2`, `tpHamming`, `tpBlackman`, `tpBlackmanHarris`, `tpKaiser`, `tpGaussian`, `tpPower`) | Ramp shapes, each the rising half of its window. |
 | `SweepTaper` (`startMs`, `endMs`, `shape`, `param`); `initSweepTaper(startMs, endMs, shape = tpCos2, param = NaN)`, `noTaper()` | Start and end ramps in ms (0 or NaN: none); `param` is β, σ or the exponent, NaN by default also in an object built by hand: the shape's 6, 0.4 or 2. |
 | `taperWeight(shape, x, param = NaN)` | The ramp `w(x)`, `x` in 0 .. 1. |
-| `applyTaper(x: var openArray[T], dtMs, taper)` | Applies the ramps in place to a sweep of `x.len` samples (`(x.len − 1)·dtMs` ms). |
+| `applyTaper(x: var openArray[T], dtMs, taper)` | Applies the ramps in place to a sweep of `x.len` samples (`x.len·dtMs` ms, a length of N × dt). |
 | `validate(taper)`, `checkFits(taper, sweepMs)` | `ValueError` for bad lengths or parameters, or ramps that overlap (`startMs + endMs > sweepMs`; meeting is allowed). |
 | `segyTaperType(shape \| taper)` | SEG-Y taper type: 1 linear, 2 cos², 3 other. |
 
@@ -567,7 +568,7 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 | `SweepSpec` (`law`, `f1Hz`, `f2Hz`, `lengthMs`, `dtMs`, `boostDb`, `table`, `startPhaseDeg`, `amplitude`, `taper`, `maxNyquistFraction`) | A sweep. |
 | `linearSweep(f1Hz, f2Hz, lengthMs, dtMs, taper = noTaper(), startPhaseDeg = 0, amplitude = 1, maxNyquistFraction = 0.8)`; `dbPerOctaveSweep(..., dtMs, boostDb, ...)`, `dbPerHzSweep(..., dtMs, boostDb, ...)`, `exponentialSweep(...)`, `tableSweep(points, dtMs, ...)` | Validated specs. A dB boost is of the amplitude spectrum, per octave or per Hz, and may add up to 300 dB over the band per octave, 150 dB per Hz. |
 | `validate(spec)` | `ValueError`: frequencies ≤ 0, above `maxNyquistFraction`·Nyquist or Nyquist, a length under one sample, a bad table, boost or taper. |
-| `sweepLen(spec)` | Samples: `lengthMs / dtMs + 1` (both ends); 0 for a spec whose interval or length `validate` rejects. |
+| `sweepLen(spec)` | Samples: `lengthMs / dtMs` (a length is N x dt: the last sample is at `lengthMs - dtMs`); 0 for a spec whose interval or length `validate` rejects. |
 | `sweepSamples(spec, T = float64): seq[T]`, `sweepInto(spec, x: var openArray[T])` | The sweep, `amplitude·taper·sin(φ₀ + 2π∫f)`. |
 | `SweepHarmonic` (`order`, `amp`, `phaseDeg`) | One term of a distorted sweep: `amp·sin(order·φ + rad(phaseDeg))`, `φ` the fundamental's phase in radians (`startPhaseDeg` included), `rad` converting degrees to radians. Order 1, `amp` 1, phase 0 is the fundamental. |
 | `sweepHarmonics(spec, T = float64, harmonics = [], samples = 0): seq[T]`, `sweepHarmonicsInto(spec, x, harmonics = [])` | The sweep plus `harmonics` (empty: `sweepSamples`). `samples` 0 is `sweepLen`; a longer buffer is the sweep and then zeros. A term whose instantaneous frequency `order·f(t)` is at or above Nyquist is left out of that sample (cut, not folded, and not a reason to refuse the call; order 1 is never cut). `ValueError` for an invalid spec, an empty buffer, or a harmonic whose `order` is not finite and > 0 or whose `amp` or `phaseDeg` is not finite. |
@@ -595,7 +596,7 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 | Proc | What |
 |---|---|
 | `CorrelationMode` (`cmCorrelate`, `cmDeconvolve`) | `X·conj(P)`, or `X·conj(P)/(\|P\|² + ε)`. |
-| `initCorrelationPlan(T, pilot, dtMs, recordSamples, outSamples = 0, mode = cmCorrelate, epsPercent = 1, normalize = true)` | A plan for records of up to `recordSamples`; `outSamples` 0 is the listen time `recordSamples − pilot.len + 1`. `ValueError` for a pilot at another `dtMs` (use `resamplePilot`), no listen time, a bad `outSamples` or `epsPercent`. |
+| `initCorrelationPlan(T, pilot, dtMs, recordSamples, outSamples = 0, mode = cmCorrelate, epsPercent = 1, normalize = true)` | A plan for records of up to `recordSamples`; `outSamples` 0 is the listen time `recordSamples − pilot.len`. `ValueError` for a pilot at another `dtMs` (use `resamplePilot`), no listen time, a bad `outSamples` or `epsPercent`. |
 | `recordSamples`, `outSamples`, `pilotSamples`, `dtMs`, `mode`, `nfft`, `scale`, `workspaceSize` | Plan accessors; `scale` is the normalization (1/wavelet peak). |
 | `correlateInto(plan, x: openArray[T], y: var openArray[T], ws)` | One record. |
 | `correlateInto(plan, src, dst: RowBlock[T] \| Tensor[T], meta, ws)`, `checkCorrelate(plan, src, dst, meta)` | All rows but dead and failed ones, each to its live length; column `m` at the record's `t0Ms + m·dtMs` (the pilot's `t0Ms` removed exactly). `ValueError` for shapes, `dtMs`, `firstSample > 0`. |

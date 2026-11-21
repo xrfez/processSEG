@@ -133,6 +133,33 @@ func sameInterval*(dtMs, planDtMs: float64): bool {.inline, raises: [].} =
     doAssert not sameInterval(2.0, 4.0)
   abs(dtMs - planDtMs) <= 1e-9 * planDtMs
 
+func samplesInLength*(lengthMs, dtMs: float64): int {.inline, raises: [].} =
+  ## The number of samples in a time length: `lengthMs / dtMs`, the length
+  ## being N × dt (a record of 12000 ms at 1 ms is 12000 samples, the first at
+  ## 0 ms and the last at 11999 ms). A length that is not a whole multiple of
+  ## `dtMs` is cut down to whole samples (`floor`); a quotient within
+  ## 1e-6 (absolute, in samples) of a whole number is that number (0.25, 0.5, 1, 2 and 4 ms
+  ## intervals give exact counts, whatever the float rounding of the
+  ## division). 0 for a length or interval that is not finite and positive,
+  ## or a count over 2³¹ − 1.
+  runnableExamples:
+    doAssert samplesInLength(12000, 1) == 12000
+    doAssert samplesInLength(12000, 2) == 6000
+    doAssert samplesInLength(12000, 0.5) == 24000
+    doAssert samplesInLength(12000.9, 1) == 12000
+    doAssert samplesInLength(0.7, 1) == 0
+  if not (lengthMs > 0 and lengthMs < Inf and dtMs > 0 and dtMs < Inf): return 0
+  let n = lengthMs / dtMs
+  if n > float64(high(int32)): return 0
+  let r = round(n)
+  if abs(n - r) <= 1e-6: int(r) else: int(floor(n))
+
+func lengthOfSamples*(samples: int, dtMs: float64): float64 {.inline, raises: [].} =
+  ## The time length of `samples` samples, `samples × dtMs` (the inverse of
+  ## `samplesInLength`; 0 for none). The last sample is at `lengthOfSamples(
+  ## samples, dtMs) − dtMs`: a length is N × dt, a range is first .. last.
+  float64(max(samples, 0)) * dtMs
+
 func firstSample*(m: ChunkMeta): int {.inline, raises: [].} =
   ## The trace sample that column 0 of the block holds.
   m.firstSample

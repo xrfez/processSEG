@@ -4,14 +4,16 @@
 ## ```nim
 ## let spec = linearSweep(f1Hz = 8, f2Hz = 80, lengthMs = 8000, dtMs = 2,
 ##   taper = initSweepTaper(250, 250, tpCos2))
-## let x = spec.sweepSamples(float32)     # 4001 samples, t = 0 .. 8000 ms
-## doAssert x.len == 4001 and x[0] == 0
+## let x = spec.sweepSamples(float32)     # 4000 samples: t = 0 .. 7998 ms, a length of 8000 ms
+## doAssert x.len == 4000 and x[0] == 0
 ## doAssert abs(spec.frequencyAt(4000) - 44) < 1e-9
 ## ```
 ##
 ## **Signal.** Sample `j`, at `t = j·dtMs`, is
 ## `amplitude · taper(t) · sin(φ₀ + 2π·∫₀ᵗ f(s) ds)`, for `j` in
-## `0 .. lengthMs / dtMs` (both ends included: `sweepLen` samples). The
+## `0 ..< lengthMs / dtMs` (`sweepLen` samples: a length is N × dt, the last
+## sample is at `lengthMs − dtMs`, and the sweep reaches `f2Hz` at `lengthMs`,
+## one interval after it). The
 ## phase is the integral of the instantaneous frequency `f(t)`, in float64:
 ## in closed form for the linear and table laws (exact to rounding), by
 ## 4-point Gauss–Legendre per sample interval for the others (error below
@@ -59,6 +61,7 @@
 
 import std/math
 import parseSEG
+import ../core/types
 import taper
 
 type
@@ -107,13 +110,13 @@ proc badSweep(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
 
 func sweepLen*(spec: SweepSpec): int {.raises: [].} =
-  ## The number of samples, `lengthMs / dtMs + 1` (a valid spec's length is
+  ## The number of samples, `lengthMs / dtMs` (a valid spec's length is
   ## a whole number of samples); 0 for a spec `validate` rejects for its
   ## length or interval (an interval that is not finite and positive, a
   ## length under one interval, not finite, or of more than 2³¹ samples).
   if not (spec.dtMs > 0 and spec.dtMs < Inf): return 0
   let steps = spec.lengthMs / spec.dtMs
-  if steps >= 1 and steps <= float64(high(int32)): int(round(steps)) + 1 else: 0
+  if steps >= 1 and steps <= float64(high(int32)): spec.lengthMs.samplesInLength(spec.dtMs) else: 0
 
 func nyquistOf(dtMs: float64): float64 {.inline.} = 500 / dtMs
 
@@ -136,7 +139,7 @@ proc validate*(spec: SweepSpec) =
   if steps > float64(high(int32)):
     badSweep("a sweep of " & $spec.lengthMs & " ms at " & $spec.dtMs &
       " ms is over 2³¹ samples")
-  if abs(steps - round(steps)) > 1e-4: # a whole sample to float rounding, at any length
+  if abs(steps - round(steps)) > 1e-6: # a whole sample to float rounding, as `samplesInLength`
     badSweep("lengthMs = " & $spec.lengthMs & " must be a whole number of samples of " &
       $spec.dtMs & " ms")
   if not (spec.maxNyquistFraction > 0 and spec.maxNyquistFraction <= 1):

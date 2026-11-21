@@ -232,4 +232,35 @@ proc main*() =
     doAssertRaises ValueError: discard meta.sub(-1 .. 3)
     doAssertRaises ValueError: discard meta.sub(5 .. 20)
 
+  block a_length_is_n_times_dt:
+    # Broke it by putting back `+ 1` in `sweepLen`: 12001 samples for 12000 ms.
+    for (dt, want) in [(0.25, 48000), (0.5, 24000), (1.0, 12000), (2.0, 6000), (4.0, 3000)]:
+      doAssert samplesInLength(12000, dt) == want, $dt
+      doAssert lengthOfSamples(want, dt) == 12000.0, $dt
+      # the sweep, the pilot built from it and a resampled pilot agree
+      let sp = linearSweep(8, 80, 12000, dt)
+      doAssert sp.sweepLen == want and sp.sweepSamples(float32).len == want
+      doAssert generatePilot(sp, float32).lengthMs == 12000.0
+    # not a whole multiple of dt: cut down to whole samples
+    doAssert samplesInLength(12000.9, 1) == 12000 and samplesInLength(12001.9, 2) == 6000
+    doAssert samplesInLength(0.3, 0.1) == 3 # 0.3 / 0.1 is 2.9999999999999996
+    # nothing to count
+    doAssert samplesInLength(0, 1) == 0 and samplesInLength(NaN, 1) == 0
+    doAssert samplesInLength(1, 0) == 0 and samplesInLength(Inf, 1) == 0
+    doAssert samplesInLength(-5, 1) == 0 and samplesInLength(1e30, 1) == 0
+    doAssert lengthOfSamples(0, 2) == 0.0 and lengthOfSamples(-3, 2) == 0.0
+    # the last sample of that record is at 11999 ms
+    let x = linearSweep(8, 80, 12000, 1).sweepSamples(float64)
+    doAssert x.len == 12000 and x.high == 11999
+
+  block the_tolerance_is_absolute:
+    # A relative tolerance rounded large counts up: 60000.2 ms at 0.25 ms read 240001.
+    doAssert samplesInLength(60000.2, 0.25) == 240000
+    doAssert samplesInLength(11999.99, 1) == 12000 - 1
+    doAssert samplesInLength(9.99995, 1) == 9
+    # the sweep judges it the same way: not a whole number of samples
+    doAssertRaises(ValueError): discard linearSweep(5, 10, 9.99995, 1)
+    doAssertRaises(ValueError): discard linearSweep(5, 10, 11999.99, 1)
+    doAssert linearSweep(5, 10, 10, 1).sweepLen == 10
+
 when isMainModule: main()

@@ -19,7 +19,7 @@ proc main*() =
     g = 9.80665
 
   let spec = linearSweep(8, 80, 6000, dt, initSweepTaper(300, 300, tpCos2))
-  let n = spec.sweepLen + 1000
+  let n = spec.sweepLen + 1001 # a sweep of 6000 samples, a listen time of 1001
   let mr = mass(2450, muKilogram)
   let mb = mass(2600, muPound) # 1179.3 kg
 

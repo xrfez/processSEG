@@ -44,7 +44,7 @@ proc main*() =
     var x = newSeq[float64](n)
     x.addNoise(1.0, 7)
     let plan = initCorrelationPlan(float64, pilot, 2, n, normalize = false)
-    doAssert plan.outSamples == n - pilot.len + 1
+    doAssert plan.outSamples == n - pilot.len # the listen time, a length
     var ws = initWorkspace()
     ws.reserve(plan.workspaceSize)
     var y = newSeq[float64](plan.outSamples)

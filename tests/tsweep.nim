@@ -150,7 +150,7 @@ proc main*() =
     # Linear: the samples are sin of the closed-form phase.
     let lin = linearSweep(8, 80, 8000, 2, startPhaseDeg = 30)
     let x = lin.sweepSamples(float64)
-    for j in [0, 1, 1000, 2500, 4000]:
+    for j in [0, 1, 1000, 2500, 3999]:
       doAssert abs(x[j] - sin(lin.phaseAt(float64(j) * 2))) < 1e-12
     # Exponential through Gauss–Legendre against its closed form (sweepSamples
     # integrates numerically only for dB laws: compare a dB/octave sweep of
@@ -175,13 +175,13 @@ proc main*() =
 
   block lengths_and_amplitude:
     let s = linearSweep(8, 80, 8000, 2, amplitude = 2.5, taper = initSweepTaper(100, 100))
-    doAssert s.sweepLen == 4001
+    doAssert s.sweepLen == 4000 # 8000 ms at 2 ms: N × dt, the last sample at 7998 ms
     let x = s.sweepSamples(float32)
-    doAssert x[0] == 0 and x[^1] == 0
+    doAssert x[0] == 0 and abs(x[^1]) < 2.5 * 0.03 # the ramp ends at 8000 ms, one sample past
     var peak = 0.0
     for v in x: peak = max(peak, abs(float64(v)))
     doAssert peak <= 2.5 and peak > 2.49
-    doAssert linearSweep(8, 80, 0.3, 0.1).sweepLen == 4 # 0.3 / 0.1 is 2.9999999999999996
+    doAssert linearSweep(8, 80, 0.3, 0.1).sweepLen == 3 # 0.3 / 0.1 is 2.9999999999999996
     var buf = newSeq[float64](10)
     doAssertRaises(ValueError): s.sweepInto(buf)
 
@@ -223,7 +223,7 @@ proc main*() =
       doAssertRaises(ValueError): spec.sweepInto(x)
     let ok = SweepSpec(law: slLinear, f1Hz: 10, f2Hz: 80, lengthMs: 8000, dtMs: 2,
       maxNyquistFraction: 0.8)
-    doAssert ok.sweepLen == 4001 and generatePilot(ok, float32).len == 4001
+    doAssert ok.sweepLen == 4000 and generatePilot(ok, float32).len == 4000
 
   block steep_boosts_stay_finite:
     # A boost is bounded by what it adds up to over the band (300 dB for
@@ -266,7 +266,7 @@ proc main*() =
     doAssertRaises(ValueError): discard linearSweep(5, 10, 600000.5, 1, maxNyquistFraction = 1)
     discard linearSweep(5, 10, 600000, 1, maxNyquistFraction = 1)
     # Whole to float rounding (0.1 ms steps) still passes, short and long.
-    doAssert linearSweep(5, 10, 1000 * 0.1, 0.1).sweepLen == 1001
-    doAssert linearSweep(5, 10, 60000 * 0.1, 0.1).sweepLen == 60001
+    doAssert linearSweep(5, 10, 1000 * 0.1, 0.1).sweepLen == 1000
+    doAssert linearSweep(5, 10, 60000 * 0.1, 0.1).sweepLen == 60000
 
 when isMainModule: main()

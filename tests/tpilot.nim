@@ -10,7 +10,7 @@ proc main*() =
   block generated:
     let spec = linearSweep(8, 80, 8000, 2, initSweepTaper(250, 300, tpLinear))
     let p = generatePilot(spec, float32)
-    doAssert p.len == 4001 and p.dtMs == 2 and p.t0Ms == 0 and p.lengthMs == 8000
+    doAssert p.len == 4000 and p.dtMs == 2 and p.t0Ms == 0 and p.lengthMs == 8000
     doAssert p.sweep.isSome and p.sweep.get.f1Hz == 8
     doAssert p.samples == spec.sweepSamples(float32)
 
@@ -118,7 +118,7 @@ proc main*() =
       f.close()
       doAssert p.len == 12001 and p.dtMs == 1 and p.sweep.isNone
       doAssert p.energyAbove(8) > 0.99 and p.energyAbove(110) < 0.01
-      doAssert p.resamplePilot(2).len == 6001
+      doAssert p.resamplePilot(2).len == 6000
 
   block from_row_window_and_t0:
     var keys = @[initTraceKeys()]
@@ -160,7 +160,7 @@ proc main*() =
     anon.sweep = none(SweepSpec)
     doAssertRaises(ValueError): discard anon.resamplePilot(4)
     let cut = fine.resamplePilot(4, bandLimit = true)
-    doAssert cut.len == 1001 and cut.sweep.isNone # no longer the sweep it was
+    doAssert cut.len == 1000 and cut.sweep.isNone # no longer the sweep it was
     # A description the samples contradict does not stop the resampling.
     var wrong = fine
     wrong.sweep = some(linearSweep(80, 800, 4000, 0.5, taper, maxNyquistFraction = 1))
@@ -168,7 +168,7 @@ proc main*() =
     doAssert ok.samples == coarse.samples and ok.sweep.isNone
     # A length that is no whole number of the new samples: resampled, undescribed.
     let odd = fine.resamplePilot(3, bandLimit = true)
-    doAssert odd.len == 1334 and odd.sweep.isNone
+    doAssert odd.len == 1333 and odd.sweep.isNone
     doAssertRaises(ValueError): discard fine.resamplePilot(0)
     doAssertRaises(ValueError): discard anon.resamplePilot(1e-9) # over 2³¹ samples
     doAssertRaises(ValueError): discard fine.resamplePilot(2, cutoffFraction = 0)
@@ -226,7 +226,7 @@ proc main*() =
     let coarse = max(dtMs, p.dtMs)
     let fc = 0.9 * 500 / coarse
     let w = float64(halfWidth) * coarse
-    for j in 0 .. int(floor(p.lengthMs / dtMs * (1 + 1e-9))):
+    for j in 0 ..< samplesInLength(p.lengthMs, dtMs):
       let t = float64(j) * dtMs
       var acc, sum = 0.0
       for i, v in p.samples:

@@ -3,15 +3,15 @@
 ##
 ## ```nim
 ## let taper = initSweepTaper(startMs = 300, endMs = 300, shape = tpCos2)
-## var sweep = newSeq[float64](5001)            # 10 s at 2 ms, t = 0 .. 10000 ms
+## var sweep = newSeq[float64](5000)            # 10 s at 2 ms, t = 0 .. 9998 ms
 ## for j in 0 ..< sweep.len: sweep[j] = 1.0
 ## sweep.applyTaper(dtMs = 2, taper)            # in place
 ## doAssert sweep[0] == 0 and sweep[2500] == 1
 ## ```
 ##
 ## **Time axis.** Sample `j` of the sweep is at `t = j·dtMs`, so a sweep of
-## `n` samples lasts `(n − 1)·dtMs` (its first and last samples are its two
-## ends). The start ramp weights `t < startMs` by `w(t / startMs)`, the end
+## `n` samples lasts `n·dtMs` (a length is N × dt: its last sample is one
+## interval before its end). The start ramp weights `t < startMs` by `w(t / startMs)`, the end
 ## ramp weights `t > T − endMs` by `w((T − t) / endMs)`: tapers are set in
 ## ms, need not be a whole number of samples, and do not depend on `dtMs`
 ## beyond where the samples fall. Each ramp is 1 where it ends.
@@ -159,11 +159,11 @@ proc checkFits*(t: SweepTaper, sweepMs: float64) =
 
 proc applyTaper*[T: SampleType](x: var openArray[T], dtMs: float64, t: SweepTaper) =
   ## Applies the ramps of `t` in place to the sweep `x`, whose sample `j` is
-  ## at `j·dtMs` (the sweep lasts `(x.len − 1)·dtMs`). Raises `ValueError`
+  ## at `j·dtMs` (the sweep lasts `x.len·dtMs`, a length of N × dt). Raises `ValueError`
   ## for a `dtMs` that is not finite and positive, or as `checkFits`.
   if not (dtMs > 0 and dtMs < Inf):
     badTaper("dtMs must be finite and positive, got " & $dtMs)
-  let sweepMs = float64(max(x.len - 1, 0)) * dtMs
+  let sweepMs = float64(max(x.len, 0)) * dtMs
   t.checkFits(sweepMs)
   let s = length(t.startMs)
   let e = length(t.endMs)

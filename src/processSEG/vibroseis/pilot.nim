@@ -7,7 +7,7 @@
 ## let spec = linearSweep(8, 80, lengthMs = 8000, dtMs = 2,
 ##   taper = initSweepTaper(250, 250))
 ## let p = generatePilot(spec, float32)         # samples, dtMs, t0Ms = 0, sweep
-## doAssert p.len == 4001 and p.sweep.isSome
+## doAssert p.len == 4000 and p.sweep.isSome
 ## # Write it with parseSEG (processSEG describes, parseSEG writes: D14):
 ## #   w.writeTrace(p.pilotKeys, p.samples, overrides = spec.sweepOverrides)
 ## ```
@@ -80,8 +80,9 @@ func len*[T](p: Pilot[T]): int {.inline, raises: [].} =
   p.samples.len
 
 func lengthMs*[T](p: Pilot[T]): float64 {.inline, raises: [].} =
-  ## The pilot's duration, `(len − 1)·dtMs`.
-  float64(max(p.samples.len - 1, 0)) * p.dtMs
+  ## The pilot's length in time, `len·dtMs` (N × dt: the last sample is at
+  ## `t0Ms + lengthMs − dtMs`).
+  lengthOfSamples(p.samples.len, p.dtMs)
 
 proc validate*[T](p: Pilot[T]) =
   ## Checks a pilot: at least two samples, all finite, not all zero; a
@@ -334,7 +335,7 @@ proc resamplePilot*[T: SampleType](p: Pilot[T], dtMs: float64, cutoffFraction = 
   let steps = p.lengthMs / dtMs
   if steps > float64(high(int32)):
     badPilot("resampling to " & $dtMs & " ms gives over 2³¹ samples")
-  let n = int(floor(steps * (1 + 1e-9))) + 1
+  let n = max(samplesInLength(p.lengthMs, dtMs), 1)
   var outS = newSeq[T](n)
   let w = float64(halfWidth) * coarse # ms
   let i0b = besselI0(kaiserBeta)

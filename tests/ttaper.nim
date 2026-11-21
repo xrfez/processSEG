@@ -43,11 +43,11 @@ proc main*() =
         prev = w
 
   block apply_lengths_in_ms:
-    var x = newSeq[float64](101) # 0 .. 200 ms at 2 ms
+    var x = newSeq[float64](100) # a length of 200 ms at 2 ms: the last sample is at 198 ms
     for v in x.mitems: v = 1
     x.applyTaper(2, initSweepTaper(20, 40, tpLinear))
     doAssert x[0] == 0 and closeTo(x[5], 0.5) and x[10] == 1
-    doAssert x[100] == 0 and closeTo(x[90], 0.5) and x[80] == 1
+    doAssert closeTo(x[99], 0.05) and closeTo(x[90], 0.5) and x[80] == 1
     # A taper that is not a whole number of samples: 5 ms at 2 ms.
     var y = newSeq[float32](11)
     for v in y.mitems: v = 1
@@ -63,11 +63,11 @@ proc main*() =
     doAssert x == @[1.0, 2.0, 3.0, 4.0]
 
   block overlap_is_refused_meeting_is_not:
-    var x = newSeq[float64](11) # 10 ms at 1 ms
+    var x = newSeq[float64](10) # a length of 10 ms at 1 ms
     for v in x.mitems: v = 1
     doAssertRaises(ValueError): x.applyTaper(1, initSweepTaper(6, 5))
     x.applyTaper(1, initSweepTaper(5, 5, tpLinear))
-    doAssert x[5] == 1 and x[0] == 0 and x[10] == 0 and closeTo(x[4], 0.8)
+    doAssert x[5] == 1 and x[0] == 0 and closeTo(x[9], 0.2) and closeTo(x[4], 0.8)
 
   block bad_arguments:
     doAssertRaises(ValueError): discard initSweepTaper(-1, 0)
