@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.0
 
 - Behaviour change, one rule for lengths: a length in time is N × dt (12000 ms at 1 ms is 12000 samples, the first at 0 ms, the last at 11999 ms). `samplesInLength(lengthMs, dtMs)` and `lengthOfSamples(samples, dtMs)` are the shared helpers (a length that is not a whole multiple of dt is cut down to whole samples).
 - `sweepLen` is `lengthMs / dtMs` (was `+ 1`): a sweep of 8000 ms at 2 ms has 4000 samples, not 4001; the end taper's ramp ends at `lengthMs`, one interval after the last sample. `Pilot.lengthMs` is `len · dtMs` (was `(len − 1) · dtMs`); `resamplePilot` gives `lengthMs / dtMs` samples. `applyTaper` takes the sweep to last `x.len · dtMs`.
