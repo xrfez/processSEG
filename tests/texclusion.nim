@@ -11,7 +11,15 @@
 ## never set, and the trend replaced by each trace's own pick (planted_outside);
 ## steps counted on every line instead of the lines the shot reaches
 ## (steps_fallback); the partial mark never set, and a node with one usable
-## trace judged (nodes_unrotated).
+## trace judged (nodes_unrotated). Review round: offset 0 taken as known
+## (zero_offsets), equal offsets accepted, an edge on the smallest arrival
+## excluding (zero_offsets), SEG-2 component codes ignored and unknown classes
+## made one group (unknown_sensor_classes), the first trend window 7 instead
+## of 2 (trend_area_multiline), weak not judged when the area covers a group
+## (area_covers_group), stations without identity all equal (no_station_ids,
+## unknown_sensor_classes), the short group's reason dropped
+## (few_arrivals_group), the no-offsets reason taken from the XY-derived
+## offsets (trend_area_multiline).
 
 import std/[algorithm, assertions, math, sequtils]
 import processSEG
@@ -86,6 +94,16 @@ proc main*() =
     let edge = on.res.edgeMs
     doAssert edge >= breakMs(alongDist(6)) and edge <= breakMs(alongDist(12)), $edge
     doAssert on.res.groups[0].edge == edge and on.res.offsetOrigin == ooUnknown
+    # Why the model did not apply: no header offsets (not "too few picks").
+    doAssert rnNoOffsets in on.res.reasons and rnFewPicks notin on.res.reasons
+    # The trend follows the breaks near the source (a wide first window clipped the apex
+    # by over 100 ms), the second line's near stations are inside, the clean gather has no
+    # early-break note.
+    for r in 0 ..< ng.g.len:
+      doAssert not on.res.earlyBreak[r], $r
+      if ng.dist[r] < 1500:
+        doAssert abs(on.res.arrival[r] - breakMs(ng.dist[r])) <= 80, $r
+    for k in -3 .. 3: doAssert on.res.inside[ng.row(1, src + k)], $k
     # Line 3 (far from the source) has nothing inside; the near stations of line 1 do.
     doAssert on.insideCount(ng, 2) == 0
     for k in -5 .. 5: doAssert on.res.inside[ng.row(0, src + k)]
@@ -131,8 +149,8 @@ proc main*() =
     let ng = noiseGather()
     let m = ng.run()
     doAssert m.res.rule == arModel and m.res.reasons == {}, $m.res.rule & $m.res.reasons
-    # (0.9 and more on the field records; the trend smooths this small loud zone.)
-    doAssert m.res.agreement >= 0.85, $m.res.agreement
+    doAssert m.res.agreement >= 0.9, $m.res.agreement
+    for r in 0 ..< ng.g.len: doAssert not m.res.earlyBreak[r], $r
     doAssert m.res.edgeMs >= breakMs(alongDist(6)) and m.res.edgeMs <= breakMs(alongDist(12))
     # The model's arrival is finite for every row; no picks of the trace's own are used.
     for r in 0 ..< ng.g.len: doAssert not m.res.arrival[r].isNaN
@@ -514,6 +532,128 @@ proc main*() =
     let np = ng.run()
     doAssert np.res.rule == arRadius and {rnFewPicks} <= np.res.reasons, $np.res.reasons
 
+  block zero_offsets:
+    # SEG-Y's unset offset is 0: all zero, no coordinates, no picks tells nothing, and
+    # nothing is excluded (once, every trace was).
+    var ng = noiseGather()
+    ng.stripPicks()
+    ng.stripSourceXY()
+    ng.stripReceiverXY()
+    for k in ng.g.keys.mitems: k.offset = 0
+    let z = ng.run()
+    doAssert z.res.rule == arNone and z.res.excluded == 0 and rnNoOffsets in z.res.reasons
+    doAssert z.res.judged == ng.g.len
+    let st = ng.run(ExclusionParams(choice: acSteps))
+    doAssert st.res.rule == arNone and rnNoPosition in st.res.reasons and st.res.excluded == 0
+    # An edge equal to the smallest arrival excludes nothing: equal offsets via coordinates.
+    var one = noiseGather(NoiseSpec(lines: 1))
+    one.stripPicks()
+    for k in one.g.keys.mitems:
+      k.offset = NaN
+      k.rcvX = 100
+      k.rcvY = 0
+      k.srcX = 0
+      k.srcY = 0
+    let eq = one.run()
+    doAssert eq.res.excluded == 0 and eq.res.rule != arRadius
+
+    # An edge that lands on the smallest arrival (8 tied traces, 3 of them loud, nothing earlier)
+    # excludes nothing.
+    var tie = noiseGather(NoiseSpec(lines: 1, stations: 30, srcStation: -200))
+    tie.stripPicks()
+    tie.stripSourceXY()
+    tie.stripReceiverXY()
+    for i in 0 ..< 30:
+      tie.g.keys[i].offset = (if i < 8: 100.0 else: 100.0 + 50.0 * float64(i - 7))
+      if i < 3: tie.scaleTrace(i, 20)
+    let tr = tie.run()
+    doAssert tr.res.rule == arRadius and tr.res.excluded == 0, $tr.res.rule & $tr.res.excluded
+
+  block unknown_sensor_classes:
+    # Components 1-4 (as a survey join writes them) with trace code 1: never one flat
+    # group; judged per station on the summed energy of its traces.
+    var nd = nodeGather()
+    for i in 0 ..< nd.nodes:
+      for c in 0 .. 3:
+        nd.g.keys[nodeRow(i, c)].traceCode = 1
+        nd.g.keys[nodeRow(i, c)].component = uint8(c + 1)
+    let off = ExclusionParams(choice: acOff)
+    let u = runOn(nd.g, @[], off)
+    doAssert u.res.groups.len == 1 and u.res.groups[0].units == nd.nodes
+    doAssert rnUnknownSensors in u.res.reasons
+    for q in u.roles: doAssert q.guessed and q.node >= 0
+    for a in u.amps: doAssert not a.noisy and not a.weak
+    # A hot trace makes its station noisy, on all four of its traces.
+    var hot = nd
+    for j in 0 ..< hot.g.cols:
+      hot.g.data[nodeRow(6, 1), j] = hot.g.data[nodeRow(6, 1), j] * 100
+    let h = runOn(hot.g, @[], off)
+    for c in 0 .. 3: doAssert h.amps[nodeRow(6, c)].noisy, $c
+    # SEG-2 style codes in `component` with no trace code are read: pressure and motion.
+    var s2 = nodeGather()
+    for i in 0 ..< s2.nodes:
+      for c in 0 .. 3:
+        s2.g.keys[nodeRow(i, c)].traceCode = 0
+        s2.g.keys[nodeRow(i, c)].component = uint8(11 + c)
+    let k2 = runOn(s2.g, @[], off)
+    doAssert k2.res.groups.len == 2 and rnUnknownSensors notin k2.res.reasons
+    doAssert k2.roles[nodeRow(0, 0)].sensor == scPressure
+    # No point numbers and no coordinates: nothing to sum over, not judged (never flat).
+    var bare = nd
+    for k in bare.g.keys.mitems:
+      k.rcvPoint = NaN
+      k.rcvX = NaN
+      k.rcvY = NaN
+    let b = runOn(bare.g, @[], off)
+    doAssert b.res.groups.len == 0 and b.res.judged == 0
+    for r in 0 ..< bare.g.len: doAssert b.roles[r].group == -1 and b.res.state[r] == nsUnusable
+    doAssert {rnUnknownSensors, rnNoStationIds} <= b.res.reasons
+
+  block area_covers_group:
+    # An area over the whole group leaves no statistics outside: weak is still judged,
+    # against all of the group, and the result says so.
+    var ng = noiseGather()
+    let weakRow = ng.row(0, 3)
+    ng.scaleTrace(weakRow, -25)
+    let r = ng.run(ExclusionParams(choice: acFixedTime, edgeMs: 1e6))
+    doAssert r.res.excluded == ng.g.len and r.res.judged == 0
+    doAssert rnAllInside in r.res.reasons and r.amps[weakRow].weak
+    for a in r.amps: doAssert not a.noisy
+    doAssert not r.res.groups[0].medianDb.isNaN
+
+  block no_station_ids:
+    # Header lines but no point numbers and no coordinates: each row is a station of its
+    # own; counting steps takes 3 either side of each line's nearest station, not whole lines.
+    var ng = noiseGather()
+    ng.stripPicks()
+    ng.stripPoints()
+    ng.stripReceiverXY()
+    let s = ng.run(ExclusionParams(choice: acSteps, steps: 3, stepsOnAllLines: true))
+    doAssert s.res.rule == arSteps
+    for j in 0 ..< 3: doAssert s.insideCount(ng, j) == 7, $j & ": " & $s.insideCount(ng, j)
+    # Unrotated geophones with no station identity are not judged per node, and say so.
+    var nd = nodeGather()
+    for k in nd.g.keys.mitems:
+      k.rcvPoint = NaN
+      k.rcvX = NaN
+      k.rcvY = NaN
+    let n = runOn(nd.g, @[], ExclusionParams(choice: acOff), rotated = nd.rotated)
+    doAssert rnNoStationIds in n.res.reasons
+    for q in n.roles: doAssert q.node == -1
+
+  block few_arrivals_group:
+    # The geophone nodes are 19 usable units (5 are dead), too few for an edge; the
+    # hydrophones (24) give one. The result says so.
+    var nd = nodeGather()
+    for i in 0 ..< 5:
+      for c in 1 .. 3:
+        for j in 0 ..< nd.g.cols: nd.g.data[nodeRow(i, c), j] = 0
+    let f = runOn(nd.g, @[], ExclusionParams(), rotated = nd.rotated)
+    doAssert f.res.rule == arRadius and rnFewArrivals in f.res.reasons, $f.res.rule
+    # Without a short group the reason is absent.
+    let c = runOn(nodeGather().g, @[], ExclusionParams(), rotated = nodeGather().rotated)
+    doAssert rnFewArrivals notin c.res.reasons
+
   block params_errors:
     for p in [ExclusionParams(levelDb: NaN), ExclusionParams(levelDb: -1),
         ExclusionParams(minConfidence: 1.5), ExclusionParams(minFraction: -0.1),
@@ -578,6 +718,24 @@ proc main*() =
     doAssert res.rule == arModel
     doAssert allocsIn(noiseQc(meta, amps, ng.picks, fit, roles, AmplitudeParams(),
       ExclusionParams(), gdCommonSource, res, ws)) == 0
+    # The steps fallback that fits the source XY from the picks allocates nothing either.
+    var xy = noiseGather()
+    xy.stripOffsets()
+    xy.stripSourceXY()
+    let gx = xy.g
+    let metaX = initChunkMeta(gx.rows, gx.dtMs)
+    var fitX: ShotFit
+    fitShot(metaX, xy.picks, ShotFitParams(), fitX)
+    var ampsX = newSeq[TraceAmplitude](gx.len)
+    traceAmplitudeInto(gx.data, metaX, AmplitudeParams(), ampsX, ws)
+    var rolesX = newSeq[TraceRole](gx.len)
+    metaX.traceRolesInto(gdCommonSource, [], rolesX)
+    let stepsP = ExclusionParams(choice: acSteps, steps: 4)
+    noiseQc(metaX, ampsX, xy.picks, fitX, rolesX, AmplitudeParams(), stepsP, gdCommonSource,
+      res, ws)
+    doAssert res.rule == arSteps
+    doAssert allocsIn(noiseQc(metaX, ampsX, xy.picks, fitX, rolesX, AmplitudeParams(), stepsP,
+      gdCommonSource, res, ws)) == 0
     doAssert allocsIn(noiseQc(meta, amps, [], roles, AmplitudeParams(),
       ExclusionParams(choice: acOff), gdCommonSource, res, ws)) == 0
     doAssert allocsIn(noiseQc(meta, amps, [], roles, AmplitudeParams(), ExclusionParams(),

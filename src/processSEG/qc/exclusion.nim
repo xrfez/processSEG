@@ -35,7 +35,11 @@
 ## class comes from SEG-D `sensorType` (1 pressure, 2-9 motion) or the
 ## SEG-Y trace code (11 pressure, 12-14 motion, 15-17 motion rotated to
 ## V/T/R); a record with at most one distinct non-zero component is
-## single-component. A row is rotated when the caller says so (`rotated`,
+## single-component. A multi-component record whose class is unknown is
+## never one flat group: it is judged per station on the summed energy of
+## all its traces (`TraceRole.guessed`, reason `rnUnknownSensors`); a row
+## with no point number or coordinates to tell its station cannot be, and is
+## not judged. A row is rotated when the caller says so (`rotated`,
 ## filled from the file's orientation header) or its SEG-Y code is 15-17;
 ## SEG-D without that header counts as unrotated. Lines come from the far
 ## end's header line, else from its coordinates (a new line where the next
@@ -50,9 +54,10 @@
 ## 1. `arModel`: the refraction model (`qc/shotfit`), when the picks and
 ##    offsets allow it: its expected arrival time at each trace's offset.
 ## 2. `arTrend`: the trend of the first-break picks along each line: a
-##    running median over the ±`trendTraces` neighbours of the confident
-##    picks (widened up to 4 times while fewer than 3 are found), then the
-##    same median over the picks that lie within `clamp(5 % of the trend,
+##    running median over the ±2 neighbours of the confident picks (widened
+##    up to 4 times while fewer than 3 are found: a wider window clips the
+##    apex of the arrival curve at the source), then the same median, over
+##    ±`trendTraces`, of the picks that lie within `clamp(5 % of the trend,
 ##    20, 60)` ms of it. The trace's own pick is not used: a noisy trace
 ##    would place itself outside, and a burst before the break would give
 ##    it an early pick and put it inside.
@@ -89,8 +94,9 @@
 ## is each group's level, for comparing the gathers of a folder.
 ##
 ## **Limits, measured on field and synthetic records.**
-## - A run of 3 or more adjacent traces with a burst before the break and
-##   beyond the visible breaks makes coherent early picks: with the trend
+## - A run of 3 or more adjacent traces with a burst before the break makes
+##   coherent early picks, beyond the visible breaks and (the first window
+##   being short) inside them too: with the trend
 ##   they fall inside the area (the model, which a few dozen false picks do
 ##   not move, judges them).
 ## - An uncorrelated vibroseis record has no first breaks: pass no picks (or
@@ -148,6 +154,10 @@ type
     rnNoLoudness = "no near-source loudness"
     rnOverrideNeedsPicks = "a fixed time needs first breaks"
     rnOverrideNeedsOffsets = "a fixed radius needs offsets"
+    rnFewArrivals = "a group had too few arrivals for an edge"
+    rnAllInside = "the area covers a whole group: weak judged against all of it"
+    rnUnknownSensors = "sensor classes unknown: judged per station on summed energy"
+    rnNoStationIds = "stations not identified: not judged per node"
 
   OffsetOrigin* = enum
     ooUnknown = ""
@@ -180,12 +190,13 @@ type
     node*: int32      ## Motion rows of one node share it; -1 for none.
     line*: int32      ## The far end's line, record-local; -1 unknown.
     station*: float64 ## The far end's position along its line.
+    guessed*: bool    ## Sensor class unknown in a multi-component record: judged per station.
 
   ExclusionParams* = object
     ## What `noiseQc` does; times in ms, distances in offset units.
     choice*: AreaChoice = acAuto
     minConfidence*: float64 = 0.5           ## Picks below it are not used.
-    trendTraces*: int = 7                   ## The trend's running-median half window, in rows.
+    trendTraces*: int = 7                   ## The trend's second running-median half window.
     levelDb*: float64 = 6                   ## The level drop that places the edge.
     edgeMs*: float64 = NaN                  ## `acFixedTime`.
     radius*: float64 = NaN                  ## `acFixedRadius`, offset units.
@@ -218,7 +229,7 @@ type
     segStart: seq[int32]
     segOf, rep, nextMember, nodeFirst, nodeLast: seq[int32]
     uval, uarr, uz, absOff, trendT1, pickMs, coherentMs, trendArr, nbRes: seq[float64]
-    tmp, tmp2, vals, level: seq[float64]
+    tmp, tmp2, vals, level, fpx, fpy, fpt, fbuf: seq[float64]
     srcStation, stepSize: seq[float64]
     edges, edges2: seq[float64]
     uUsable, uNode, seenGroup: seq[bool]
@@ -399,8 +410,9 @@ func nearPoint(k: TraceKeys, d: GatherDomain): float64 {.inline.} =
   if d == gdCommonSource: k.srcPoint else: k.rcvPoint
 
 func offsetOf(k: TraceKeys): float64 =
-  ## |offset|: the header's, else from both stations' coordinates; NaN when unknown.
-  if finite(k.offset): abs(k.offset)
+  ## |offset|: the header's (0 counts as unset), else from both stations' coordinates; NaN
+  ## when unknown.
+  if finite(k.offset) and k.offset != 0: abs(k.offset) # 0 is a header left unset
   elif finite(k.srcX) and finite(k.srcY) and finite(k.rcvX) and finite(k.rcvY):
     hypot(k.rcvX - k.srcX, k.rcvY - k.srcY)
   else: NaN
@@ -415,17 +427,30 @@ func stationKey(k: TraceKeys, d: GatherDomain): StationKey =
 
 # ------------------------------------------------------------------- roles --
 
-func sensorOf(k: TraceKeys): (SensorClass, bool) =
-  ## The row's sensor class and whether its code says rotated.
-  case k.traceCode
-  of 11: (scPressure, false)
-  of 12 .. 14: (scMotion, false)
-  of 15 .. 17: (scMotion, true)
+func sensorOf(k: TraceKeys): (SensorClass, bool, bool) =
+  ## The row's sensor class, whether its code says rotated, and whether the
+  ## class is known (SEG-Y trace code, else a SEG-2 style code in `component`,
+  ## else SEG-D `sensorType`).
+  template byCode(c: int): untyped =
+    case c
+    of 11: (scPressure, false, true)
+    of 12 .. 14: (scMotion, false, true)
+    of 15 .. 17: (scMotion, true, true)
+    else: (scSingle, false, false)
+  let fromTrace = byCode(int(k.traceCode))
+  if fromTrace[2]: fromTrace
   else:
-    case k.sensorType
-    of 1: (scPressure, false)
-    of 2 .. 9: (scMotion, false)
-    else: (scSingle, false)
+    let fromComponent = byCode(int(k.component))
+    if fromComponent[2]: fromComponent
+    else:
+      case k.sensorType
+      of 1: (scPressure, false, true)
+      of 2 .. 9: (scMotion, false, true)
+      else: (scSingle, false, false)
+
+func hasStationId(k: TraceKeys, d: GatherDomain): bool =
+  ## The far end has a point number or coordinates to tell it from another station.
+  finite(farPoint(k, d)) or (finite(farX(k, d)) and finite(farY(k, d)))
 
 func gatherDomainOf*(meta: ChunkMeta): GatherDomain =
   ## `gdCommonReceiver` when every seismic row has the same receiver station
@@ -539,27 +564,38 @@ proc traceRolesInto*(meta: ChunkMeta, domain: GatherDomain, rotated: openArray[b
       if not finite(farLine(k, domain)): lineHeaders = false
       if not finite(farPoint(k, domain)): linePoints = false
       if not (finite(farX(k, domain)) and finite(farY(k, domain))): coords = false
-      let (sensor, codeRotated) = (if multi: sensorOf(k) else: (scSingle, false))
+      var (sensor, codeRotated, known) = (if multi: sensorOf(k) else: (scSingle, false, true))
+      var guessed = false
+      if not known:
+        # A multi-component record of unknown classes is never one flat group: judged per
+        # station on the summed energy of all its traces (as unrotated nodes).
+        sensor = scMotion
+        guessed = true
       let isRot = codeRotated or (rotated.len > 0 and rotated[r])
-      var key = 0
-      case sensor
-      of scSingle: key = 0
-      of scPressure: key = 1
-      of scMotion: key = (if isRot: 3 + int(k.component) else: 2)
-      var g = groupIds.getOrDefault(key, -1)
-      if g < 0:
-        g = int32(groupIds.len)
-        groupIds[key] = g
-      dst[r].sensor = sensor
-      dst[r].rotated = isRot and sensor == scMotion
-      dst[r].group = g
-      if sensor == scMotion:
-        let sk = stationKey(k, domain)
-        var nd = nodeIds.getOrDefault(sk, -1)
-        if nd < 0:
-          nd = int32(nodeIds.len)
-          nodeIds[sk] = nd
-        dst[r].node = nd
+      if guessed and not hasStationId(k, domain):
+        dst[r].guessed = true # nothing to sum over: group -1, not judged
+        dst[r].sensor = scMotion
+      else:
+        var key = 0
+        case sensor
+        of scSingle: key = 0
+        of scPressure: key = 1
+        of scMotion: key = (if isRot: 3 + int(k.component) else: 2)
+        var g = groupIds.getOrDefault(key, -1)
+        if g < 0:
+          g = int32(groupIds.len)
+          groupIds[key] = g
+        dst[r].sensor = sensor
+        dst[r].rotated = isRot and sensor == scMotion
+        dst[r].group = g
+        dst[r].guessed = guessed
+        if sensor == scMotion and hasStationId(k, domain):
+          let sk = stationKey(k, domain)
+          var nd = nodeIds.getOrDefault(sk, -1)
+          if nd < 0:
+            nd = int32(nodeIds.len)
+            nodeIds[sk] = nd
+          dst[r].node = nd
   # Lines: header numbers, else coordinates, else station numbers, else one.
   if live > 0:
     if lineHeaders:
@@ -587,6 +623,11 @@ proc traceRolesInto*(meta: ChunkMeta, domain: GatherDomain, rotated: openArray[b
       let k = meta.keys(r)
       if linePoints:
         dst[r].station = farPoint(k, domain)
+      elif not hasStationId(k, domain):
+        # Nothing tells this far end from the next: one station of its own per row.
+        let rank = counts.getOrDefault(dst[r].line, 0)
+        counts[dst[r].line] = rank + 1
+        dst[r].station = float64(rank)
       else:
         let key = (dst[r].line, stationKey(k, domain))
         var rank = ranks.getOrDefault(key, -1.0)
@@ -702,6 +743,8 @@ proc orderLines(meta: ChunkMeta, roles: openArray[TraceRole], res: var NoiseResu
 func pickOk(q: FirstBreakPick, minConf: float64): bool {.inline.} =
   finite(q.timeMs) and q.confidence >= minConf
 
+const firstPassTraces = 2 ## The first trend's half window (the second pass uses `trendTraces`).
+
 proc windowMedian(res: var NoiseResult, seg, p, k0: int, vals: openArray[float64]): float64 =
   ## The median of the finite `vals` (by row) over the positions `p ± k` of
   ## the line segment `seg`, k = `k0`, doubled up to 4 × `k0` until 3 are found;
@@ -732,7 +775,7 @@ proc trendInto(meta: ChunkMeta, picks: openArray[FirstBreakPick], params: Exclus
     if s.live[r] and pickOk(picks[r], params.minConfidence): s.pickMs[r] = picks[r].timeMs
   for seg in 0 ..< s.segStart.len - 1:
     for p in int(s.segStart[seg]) ..< int(s.segStart[seg + 1]):
-      s.trendT1[s.ordered[p].row] = windowMedian(res, seg, p, params.trendTraces, s.pickMs)
+      s.trendT1[s.ordered[p].row] = windowMedian(res, seg, p, firstPassTraces, s.pickMs)
   for r in 0 ..< n:
     let t1 = s.trendT1[r]
     if finite(t1) and finite(s.pickMs[r]) and
@@ -762,11 +805,12 @@ proc unitArrivals(arr: openArray[float64], res: var NoiseResult) =
 
 proc edgeFor(arr: openArray[float64], roles: openArray[TraceRole], params: ExclusionParams,
     fixed: float64, mask: var seq[bool], edges: var seq[float64], res: var NoiseResult,
-    ws: var Workspace, noLoud: var bool): int =
+    ws: var Workspace, noLoud, fewArr: var bool): int =
   ## Marks `mask[rep]` for the units arriving before the edge: the level
   ## rule per group (`fixed` NaN), or the edge `fixed`. Returns the groups the
   ## rule applied to (20 or more units with an arrival; every group for a
-  ## fixed edge); `edges[g]` is the edge, -Inf for "nothing".
+  ## fixed edge); `edges[g]` is the edge, -Inf for "nothing"; `fewArr` is set when a
+  ## group with usable units had too few arrivals for the rule.
   template s: untyped = res.sc
   let n = arr.len
   mask.fill(n, false)
@@ -805,7 +849,10 @@ proc edgeFor(arr: openArray[float64], roles: openArray[TraceRole], params: Exclu
         var j = top
         while j < m and s.level[j] > base + params.levelDb: inc j
         edge = s.sorted[min(j, m - 1)].b
+        if edge <= s.sorted[0].b: edge = -Inf # no arrival is earlier: nothing to exclude
       inc result
+    elif m + s.tmp2.len > 0:
+      fewArr = true
     edges[g] = edge
     if not edge.isNaN:
       for r in 0 ..< n:
@@ -857,36 +904,37 @@ proc fitSourceXY(meta: ChunkMeta, domain: GatherDomain, params: ExclusionParams,
   ## the distance: a grid search over at most 400 far-end positions, refined
   ## to half a spacing. False without 5 coherent picks with coordinates.
   template s: untyped = res.sc
-  var px, py, pt: seq[float64]
+  s.fpx.setLen 0
+  s.fpy.setLen 0
+  s.fpt.setLen 0
   var all = 0
   for r in 0 ..< meta.len:
     if finite(s.coherentMs[r]) and finite(farX(meta.keys(r), domain)) and
         finite(farY(meta.keys(r), domain)): inc all
   if all < 5: return false
-  let stride = max(1, all div 500)
+  let stride = max(1, (all + 499) div 500)
   var seen = 0
   for r in 0 ..< meta.len:
     if finite(s.coherentMs[r]) and finite(farX(meta.keys(r), domain)) and
         finite(farY(meta.keys(r), domain)):
       if seen mod stride == 0:
-        px.add farX(meta.keys(r), domain)
-        py.add farY(meta.keys(r), domain)
-        pt.add s.coherentMs[r]
+        s.fpx.add farX(meta.keys(r), domain)
+        s.fpy.add farY(meta.keys(r), domain)
+        s.fpt.add s.coherentMs[r]
       inc seen
   var cands = 0
   for r in 0 ..< meta.len:
     if s.live[r] and finite(farX(meta.keys(r), domain)) and finite(farY(meta.keys(r), domain)):
       inc cands
-  let cstride = max(1, cands div 400)
+  let cstride = max(1, (cands + 399) div 400)
   var best = Inf
   var seenC = 0
-  var buf: seq[float64]
   for r in 0 ..< meta.len:
     if s.live[r] and finite(farX(meta.keys(r), domain)) and finite(farY(meta.keys(r), domain)):
       if seenC mod cstride == 0:
         let cx = farX(meta.keys(r), domain)
         let cy = farY(meta.keys(r), domain)
-        let sc = sourceFitScore(px, py, pt, cx, cy, buf)
+        let sc = sourceFitScore(s.fpx, s.fpy, s.fpt, cx, cy, s.fbuf)
         if sc < best:
           best = sc
           sx = cx
@@ -903,7 +951,7 @@ proc fitSourceXY(meta: ChunkMeta, domain: GatherDomain, params: ExclusionParams,
       for dx in [-h, 0.0, h]:
         for dy in [-h, 0.0, h]:
           if dx != 0 or dy != 0:
-            let sc = sourceFitScore(px, py, pt, sx + dx, sy + dy, buf)
+            let sc = sourceFitScore(s.fpx, s.fpy, s.fpt, sx + dx, sy + dy, s.fbuf)
             if sc < best:
               best = sc
               sx += dx
@@ -1016,22 +1064,28 @@ proc judge(roles: openArray[TraceRole], amp: AmplitudeParams, res: var NoiseResu
   for g in 0 ..< res.groups.len:
     var lowest = Inf
     var m = 0
+    var usable = 0
     for r in 0 ..< n:
-      if s.rep[r] == int32(r) and roles[r].group == int32(g) and s.uUsable[r] and
-          not res.inside[r]:
-        lowest = min(lowest, s.uval[r])
-        inc m
-    if m > 0:
+      if s.rep[r] == int32(r) and roles[r].group == int32(g) and s.uUsable[r]:
+        inc usable
+        if not res.inside[r]: inc m
+    # The area covering a whole group leaves no statistics: weak is then judged against
+    # all of the group (noisy needs a unit outside, so there is none).
+    let useAll = m == 0 and usable > 0
+    if useAll: res.reasons.incl rnAllInside
+    template counted(r: int): bool =
+      s.rep[r] == int32(r) and roles[r].group == int32(g) and s.uUsable[r] and
+        (useAll or not res.inside[r])
+    if m > 0 or useAll:
+      for r in 0 ..< n:
+        if counted(r): lowest = min(lowest, s.uval[r])
       s.tmp.setLen 0
       for r in 0 ..< n:
-        if s.rep[r] == int32(r) and roles[r].group == int32(g) and s.uUsable[r] and
-            not res.inside[r]:
-          s.tmp.add s.uval[r] - lowest
+        if counted(r): s.tmp.add s.uval[r] - lowest
       let median = medianOf(s.tmp) + lowest
       var k = 0
       for r in 0 ..< n:
-        if s.rep[r] == int32(r) and roles[r].group == int32(g) and s.uUsable[r] and
-            not res.inside[r]:
+        if counted(r):
           s.tmp[k] = abs(s.uval[r] - median)
           inc k
       let mad = medianOf(s.tmp)
@@ -1177,8 +1231,9 @@ proc noiseImpl(meta: ChunkMeta, amps: var openArray[TraceAmplitude],
   # How the lines were found.
   var headers = n > 0
   var live = 0
-  var withOffsets = 0
-  var withModel = 0
+  var withOffsets, withModel, withHeaderOffsets = 0
+  var offMin = Inf
+  var offMax = -Inf
   s.absOff.fill(n, NaN)
   for r in 0 ..< n:
     if s.live[r]:
@@ -1186,7 +1241,14 @@ proc noiseImpl(meta: ChunkMeta, amps: var openArray[TraceAmplitude],
       let k = meta.keys(r)
       if not finite(farLine(k, domain)): headers = false
       s.absOff[r] = offsetOf(k)
-      if finite(s.absOff[r]): inc withOffsets
+      if finite(s.absOff[r]):
+        inc withOffsets
+        offMin = min(offMin, s.absOff[r])
+        offMax = max(offMax, s.absOff[r])
+      if finite(k.offset) and k.offset != 0: inc withHeaderOffsets
+      if roles[r].guessed: res.reasons.incl rnUnknownSensors
+      if roles[r].sensor == scMotion and not roles[r].rotated and roles[r].node < 0:
+        res.reasons.incl rnNoStationIds
       if hasFit and finite(modelMs[r]): inc withModel
   res.linesFromHeaders = headers and live > 0
   res.lineSource = (if res.linesFromHeaders: lsHeaders
@@ -1199,16 +1261,17 @@ proc noiseImpl(meta: ChunkMeta, amps: var openArray[TraceAmplitude],
       if all: lsCoordinates else: lsStations)
   let minArr = max(params.minArrivals, int(ceil(params.minFraction * float64(live))))
   let havePicks = picks.len == n and n > 0
-  let offsetsOk = withOffsets * 2 > live
+  let offsetsOk = withOffsets * 2 > live and offMax > offMin       # equal offsets tell nothing
   let modelOk = hasFit and withModel * 2 > live and fitUsed >= minArr
   var coherent = 0
   if havePicks: coherent = trendInto(meta, picks, params, res)
   let trendOk = havePicks and coherent >= minArr
-  var noLoud = false
+  var noLoud, fewArr = false
   var applied = 0
   var timeEdge = false
   template adopt(arr: openArray[float64], ruleName: AreaRule, fixedEdge: float64) =
-    applied = edgeFor(arr, roles, params, fixedEdge, res.inside, s.edges, res, ws, noLoud)
+    applied = edgeFor(arr, roles, params, fixedEdge, res.inside, s.edges, res, ws, noLoud,
+      fewArr)
     if applied > 0:
       res.rule = ruleName
       for r in 0 ..< n: res.arrival[r] = arr[r]
@@ -1235,7 +1298,7 @@ proc noiseImpl(meta: ChunkMeta, amps: var openArray[TraceAmplitude],
       else: res.reasons.incl rnFewTraces
     else:
       if not hasFit: res.reasons.incl rnNoPicks
-      elif not offsetsOk: res.reasons.incl rnNoOffsets
+      elif withHeaderOffsets * 2 <= live: res.reasons.incl rnNoOffsets
       else: res.reasons.incl rnFewPicks
     if res.rule == arNone and trendOk:
       adopt(s.trendArr, arTrend, NaN)
@@ -1263,11 +1326,12 @@ proc noiseImpl(meta: ChunkMeta, amps: var openArray[TraceAmplitude],
           if not finite(res.radius): res.radius = s.edges[g]
         elif not finite(res.edgeMs): res.edgeMs = s.edges[g]
     if noLoud: res.reasons.incl rnNoLoudness
+    if fewArr: res.reasons.incl rnFewArrivals
   # Model and trend both there: how much their areas agree.
   if params.choice == acAuto and res.rule == arModel and trendOk:
-    var dummy = false
+    var dummy, dummy2 = false
     s.inside2.setLen n
-    discard edgeFor(s.trendArr, roles, params, NaN, s.inside2, s.edges2, res, ws, dummy)
+    discard edgeFor(s.trendArr, roles, params, NaN, s.inside2, s.edges2, res, ws, dummy, dummy2)
     var agree = 0
     var total = 0
     for r in 0 ..< n:
