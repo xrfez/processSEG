@@ -450,7 +450,7 @@ calling thread, in trace order).
 
 | step | median |
 |---|---|
-| `pickInto` (energy ratio, whole trace) | 75 ms |
-| `noiseQc`, automatic (model, 618 traces not judged) | 3.2 ms (4.3 % of the pick) |
-| `noiseQc`, station steps | 2.3 ms (3.0 %) |
+| `pickInto` (energy ratio, whole trace) | 73 ms |
+| `noiseQc`, automatic (model, 618 traces not judged; the pick trend fitted too, for the agreement) | 2.6 ms (3.6 % of the pick) |
+| `noiseQc`, station steps | 1.7 ms (2.4 %) |
 | `traceRolesInto` | 0.09 ms |

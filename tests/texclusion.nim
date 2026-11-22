@@ -11,17 +11,28 @@
 ## never set, and the trend replaced by each trace's own pick (planted_outside);
 ## steps counted on every line instead of the lines the shot reaches
 ## (steps_fallback); the partial mark never set, and a node with one usable
-## trace judged (nodes_unrotated). Review round: offset 0 taken as known
-## (zero_offsets), equal offsets accepted, an edge on the smallest arrival
-## excluding (zero_offsets), SEG-2 component codes ignored and unknown classes
-## made one group (unknown_sensor_classes), the first trend window 7 instead
-## of 2 (trend_area_multiline), weak not judged when the area covers a group
+## trace judged (nodes_unrotated). Later: offset 0 taken as known
+## (zero_offsets), equal offsets accepted (zero_offsets), SEG-2 component
+## codes ignored and unknown classes made one group (unknown_sensor_classes),
+## weak not judged when the area covers a group
 ## (area_covers_group), stations without identity all equal (no_station_ids,
 ## unknown_sensor_classes), the short group's reason dropped
 ## (few_arrivals_group), the no-offsets reason taken from the XY-derived
-## offsets (trend_area_multiline).
+## offsets (trend_area_multiline). Then, the trend made a valley fit
+## per line: each piece of it removed in turn (the notch cut, the lines' vote on the
+## apex, the outliers' rejection: trend_bursts; the apex taken at a line's first pick:
+## trend_area_multiline; the half of the picks a piece needs: trend_early_picks; the
+## pieces: trend_moveout) and
+## the level maximum searched over all arrivals (trend_bursts); the old trend of running
+## medians fails trend_moveout (agreement 0.83 at 50 ms per station) and trend_bursts;
+## tied units outside (zero_offsets), unrotated components without a station judged
+## (unrotated_without_stations), every 0 offset unset (zero_offset_real), their state
+## "no usable samples" (unrotated_without_stations), the level of a group none of whose
+## units were judged (area_covers_group), the model's missing header offsets reported
+## as "no offsets" (trend_area_multiline), the early-break note inside the area
+## (trend_bursts).
 
-import std/[algorithm, assertions, math, sequtils]
+import std/[algorithm, assertions, math, random, sequtils]
 import processSEG
 import parseSEG
 import utils/[allocs, noisegather]
@@ -61,6 +72,14 @@ proc insideCount(r: Run, ng: NoiseGather, line: int): int =
   for i in 0 ..< ng.spec.stations:
     if r.res.inside[ng.row(line, i)]: inc result
 
+proc oneRun(r: Run, ng: NoiseGather, line: int): bool =
+  ## The inside stations of a line are one run (or none).
+  var runs = 0
+  for i in 0 ..< ng.spec.stations:
+    if r.res.inside[ng.row(line, i)] and (i == 0 or not r.res.inside[ng.row(line, i - 1)]):
+      inc runs
+  runs <= 1
+
 proc main*() =
   const src = 24 # the source's station on line 0
 
@@ -95,14 +114,15 @@ proc main*() =
     doAssert edge >= breakMs(alongDist(6)) and edge <= breakMs(alongDist(12)), $edge
     doAssert on.res.groups[0].edge == edge and on.res.offsetOrigin == ooUnknown
     # Why the model did not apply: no header offsets (not "too few picks").
-    doAssert rnNoOffsets in on.res.reasons and rnFewPicks notin on.res.reasons
+    doAssert rnNoHeaderOffsets in on.res.reasons and rnFewPicks notin on.res.reasons
+    doAssert rnNoOffsets notin on.res.reasons # the radius would have had the XY offsets
     # The trend follows the breaks near the source (a wide first window clipped the apex
     # by over 100 ms), the second line's near stations are inside, the clean gather has no
     # early-break note.
     for r in 0 ..< ng.g.len:
       doAssert not on.res.earlyBreak[r], $r
       if ng.dist[r] < 1500:
-        doAssert abs(on.res.arrival[r] - breakMs(ng.dist[r])) <= 80, $r
+        doAssert abs(on.res.arrival[r] - breakMs(ng.dist[r])) <= 2.5, $r
     for k in -3 .. 3: doAssert on.res.inside[ng.row(1, src + k)], $k
     # Line 3 (far from the source) has nothing inside; the near stations of line 1 do.
     doAssert on.insideCount(ng, 2) == 0
@@ -307,29 +327,118 @@ proc main*() =
     # A trace inside the area is not compared at all.
     doAssert r.res.neighbourState[ng.row(0, src)] == nbInArea
 
-  block burst_run_limit:
-    # 5 adjacent burst traces beyond the visible breaks (the end of line 3): with the trend
-    # they get early picks that agree with each other, fall inside the area and are not
-    # judged; with the model, which a few false picks do not move, they are judged.
-    var ng = noiseGather()
-    for i in 0 .. 4: ng.plantBurst(ng.row(2, i))
-    var trendOnly = ng
-    trendOnly.stripOffsets()
-    let t = trendOnly.run()
-    doAssert t.res.rule == arTrend
-    var insideT, noisyT = 0
-    for i in 0 .. 4:
-      if t.res.inside[ng.row(2, i)]: inc insideT
-      if t.amps[ng.row(2, i)].noisy: inc noisyT
-    doAssert insideT >= 3 and noisyT <= 2, $insideT & " " & $noisyT
-    let m = ng.run()
+  block trend_moveout:
+    # The trend needs no moveout per station: from 14 to 80 ms per station (spacings 110
+    # to 640), one line or three, a clean gather without offsets gets the trend, the
+    # near-source traces inside, none of them noisy, the arrival within the picks' own
+    # noise (±2 ms) of the true break near the source, no early-break note, and the
+    # model's area (with offsets) on at least 90 % of the traces.
+    for lines in [1, 3]:
+      for spacing in [110.0, 220.0, 300.0, 400.0, 500.0, 600.0, 640.0]:
+        let ng = noiseGather(NoiseSpec(lines: lines, spacing: spacing, cols: 1500))
+        var t = ng
+        t.stripOffsets()
+        let tr = t.run()
+        let m = ng.run()
+        let what = $lines & " lines, " & $spacing
+        doAssert tr.res.rule == arTrend and m.res.rule == arModel, what
+        doAssert m.res.agreement >= 0.9, what & ": " & $m.res.agreement
+        var trendNear, modelNear = 0
+        for r in 0 ..< ng.g.len:
+          let d = ng.dist[r]
+          doAssert not tr.res.earlyBreak[r], what & ": " & $r
+          if d < 1800:
+            doAssert tr.res.inside[r] or (spacing < 220 and d > 1300), what & ": " & $r
+            doAssert not tr.amps[r].noisy, what & ": " & $r
+          if tr.res.inside[r] or (ng.line[r] == 0 and abs(ng.station[r] - src) <= 3):
+            doAssert abs(tr.res.arrival[r] - breakMs(d)) <= 2.5, what & ": " & $r & " " &
+              $tr.res.arrival[r] & " " & $breakMs(d)
+          if d < 2500:
+            if tr.amps[r].noisy: inc trendNear
+            if m.amps[r].noisy: inc modelNear
+        # Just beyond the edge the two areas end alike.
+        doAssert trendNear <= modelNear + 2, what & ": " & $trendNear & " " & $modelNear
+
+  block trend_bursts:
+    # Runs of 3 and 5 adjacent traces with a burst before the break (confident early picks,
+    # 20 dB) beyond the near-source zone, within the visible breaks and beyond them, on the
+    # source's line and the next two: judged, noisy, with the early-break note; the trend
+    # near the source is not moved. Where a run sits within the near-source zone it is
+    # inside, not judged, and its state says so.
+    for (spacing, line, first) in [(220.0, 0, 34), (220.0, 0, 8), (220.0, 0, 0), (220.0, 1, 30),
+        (220.0, 1, 14), (220.0, 1, 0), (220.0, 2, 20), (400.0, 0, 34), (400.0, 1, 30),
+        (400.0, 1, 14), (400.0, 2, 20)].items:
+      for k in [3, 5]:
+        var ng = noiseGather(NoiseSpec(spacing: spacing, cols: 1500))
+        ng.stripOffsets()
+        for i in 0 ..< k: ng.plantBurst(ng.row(line, first + i))
+        let r = ng.run()
+        let what = $spacing & " line " & $line & " from " & $first & " × " & $k
+        doAssert r.res.rule == arTrend, what
+        doAssert r.res.edgeMs >= breakMs(alongDist(6)) and r.res.edgeMs <= breakMs(alongDist(12)),
+          what & ": " & $r.res.edgeMs
+        for i in 0 ..< k:
+          let b = ng.row(line, first + i)
+          doAssert r.res.state[b] == nsJudged and r.amps[b].noisy and r.res.earlyBreak[b],
+            what & ": " & $i & " " & $r.res.state[b]
+        for i in -3 .. 3:
+          let q = ng.row(0, src + i)
+          doAssert abs(r.res.arrival[q] - breakMs(ng.dist[q])) <= 2.5, what & ": " & $i
+        for j in 0 ..< 3: doAssert r.oneRun(ng, j), what & ": line " & $j
+    # Within the zone (stations 4 to 6 from the source, 400 apart: breaks at 234 to 330 ms,
+    # the edge near 260): the one in the zone is inside, not judged, with the note; the two
+    # beyond are judged and noisy.
+    var nz = noiseGather(NoiseSpec(spacing: 400, cols: 1500))
+    nz.stripOffsets()
+    for i in 4 .. 6: nz.plantBurst(nz.row(0, src + i))
+    let z = nz.run()
+    let inZone = nz.row(0, src + 4)
+    doAssert z.res.state[inZone] == nsInArea and z.res.earlyBreak[inZone]
+    doAssert not z.amps[inZone].noisy
+    for i in 5 .. 6:
+      let b = nz.row(0, src + i)
+      doAssert z.res.state[b] == nsJudged and z.amps[b].noisy, $i
+    # With offsets the model judges them too.
+    var withOff = noiseGather()
+    for i in 0 .. 4: withOff.plantBurst(withOff.row(2, i))
+    let m = withOff.run()
     doAssert m.res.rule == arModel
-    var judged = 0
     for i in 0 .. 4:
-      if m.res.state[ng.row(2, i)] == nsJudged and m.amps[ng.row(2, i)].noisy: inc judged
-    doAssert judged == 5, $judged
-    # The area itself held: the near stations are still inside and line 3's far side is not.
-    doAssert t.res.edgeMs >= breakMs(alongDist(6))
+      doAssert m.res.state[withOff.row(2, i)] == nsJudged and m.amps[withOff.row(2, i)].noisy
+
+  block trend_early_picks:
+    # Confident picks far earlier than the apex (20 ms; the apex is at 71) on three
+    # adjacent far stations of the source's line do not drag the apex: the trend near the
+    # source still follows the breaks. A gather whose picks are random (an uncorrelated
+    # record picked anyway) has no trend: too few consistent picks, the next rule, and why.
+    var ng = noiseGather()
+    ng.stripOffsets()
+    for i in 40 .. 42:
+      ng.picks[ng.row(0, i)] = FirstBreakPick(timeMs: 20, col: 0, snrDb: 25, confidence: 1)
+    let e = ng.run()
+    doAssert e.res.rule == arTrend
+    var apex = 0
+    for i in 0 ..< ng.spec.stations:
+      if e.res.arrival[ng.row(0, i)] < e.res.arrival[ng.row(0, apex)]: apex = i
+    doAssert apex == src, $apex
+    for i in -5 .. 5:
+      let q = ng.row(0, src + i)
+      doAssert abs(e.res.arrival[q] - breakMs(ng.dist[q])) <= 2.5, $i
+    for i in 40 .. 42: doAssert not e.res.inside[ng.row(0, i)]
+    var rnd = noiseGather()
+    rnd.stripOffsets()
+    var rng = initRand(17)
+    for q in rnd.picks.mitems:
+      q = FirstBreakPick(timeMs: rng.rand(1400.0), col: 0, snrDb: 20, confidence: 1)
+    let x = rnd.run()
+    doAssert x.res.rule == arRadius and rnFewPicks in x.res.reasons, $x.res.rule
+    # Only a few picks: the same.
+    var few = noiseGather()
+    few.stripOffsets()
+    for r in 0 ..< few.g.len:
+      if abs(few.station[r] - src) > 2 or few.line[r] != 0: few.picks[r].confidence = 0
+    let f = few.run()
+    doAssert f.res.rule == arRadius and rnFewPicks in f.res.reasons
 
   block receiver_gather:
     var rg = noiseGather().receiverGather()
@@ -557,8 +666,9 @@ proc main*() =
     let eq = one.run()
     doAssert eq.res.excluded == 0 and eq.res.rule != arRadius
 
-    # An edge that lands on the smallest arrival (8 tied traces, 3 of them loud, nothing earlier)
-    # excludes nothing.
+    # An edge that lands on the smallest arrival, tied by 8 traces (3 of them loud): the
+    # tied ones are inside, the loud ones not noisy (once, nothing was excluded and they
+    # were).
     var tie = noiseGather(NoiseSpec(lines: 1, stations: 30, srcStation: -200))
     tie.stripPicks()
     tie.stripSourceXY()
@@ -567,7 +677,73 @@ proc main*() =
       tie.g.keys[i].offset = (if i < 8: 100.0 else: 100.0 + 50.0 * float64(i - 7))
       if i < 3: tie.scaleTrace(i, 20)
     let tr = tie.run()
-    doAssert tr.res.rule == arRadius and tr.res.excluded == 0, $tr.res.rule & $tr.res.excluded
+    doAssert tr.res.rule == arRadius and tr.res.excluded == 8, $tr.res.rule & $tr.res.excluded
+    for i in 0 ..< 8: doAssert tr.res.inside[i] and not tr.amps[i].noisy, $i
+    # The trend ties too (a flat bottom of equal picks): with 5 tied at the apex and the
+    # nearest 3 loud, the tied ones are inside.
+    var flat = noiseGather(NoiseSpec(lines: 1, spacing: 110))
+    flat.stripOffsets()
+    var lv: seq[float64]
+    let a0 = flat.run(ExclusionParams(choice: acOff))
+    for i in 0 ..< 48:
+      if abs(i - src) > 20: lv.add a0.amps[i].rmsDb
+    let base = median(lv)
+    for i in 0 ..< 48:
+      if abs(i - src) > 1: flat.scaleTrace(i, base - a0.amps[i].rmsDb)
+      if abs(i - src) <= 2: flat.picks[i].timeMs = 70
+    let ft = flat.run()
+    doAssert ft.res.rule == arTrend
+    for i in -2 .. 2: doAssert ft.res.inside[src + i] and not ft.amps[src + i].noisy, $i
+    # Every arrival the same tells nothing apart: nothing inside.
+    var same = noiseGather(NoiseSpec(lines: 1))
+    same.stripPicks()
+    same.stripSourceXY()
+    same.stripReceiverXY()
+    for i in 0 ..< 48:
+      same.g.keys[i].offset = 300
+      if i < 3: same.scaleTrace(i, 20)
+    let sm = same.run()
+    doAssert sm.res.excluded == 0
+
+  block zero_offset_real:
+    # The source at a station (no coordinates, header offsets, no picks): that one trace's
+    # offset 0 is real, so it is the nearest, inside and not noisy (once it was taken as
+    # unset, judged and called noisy). A 0 on more rows than one station has stays unset.
+    var ng = noiseGather(NoiseSpec(srcOffLine: 0))
+    ng.stripPicks()
+    ng.stripSourceXY()
+    ng.stripReceiverXY()
+    let s0 = ng.row(0, src)
+    doAssert ng.g.keys[s0].offset == 0
+    let r = ng.run()
+    doAssert r.res.rule == arRadius and r.res.arrival[s0] == 0
+    doAssert r.res.inside[s0] and r.res.state[s0] == nsInArea and not r.amps[s0].noisy
+    var two = ng
+    two.g.keys[ng.row(1, src)].offset = 0
+    let t2 = two.run()
+    doAssert t2.res.arrival[s0].isNaN and t2.res.arrival[ng.row(1, src)].isNaN
+
+  block unrotated_without_stations:
+    # Unrotated geophones (codes 12-14) with no point number or coordinates: nothing tells
+    # one node from another, and components of different nodes are never compared, so they
+    # are not judged ("sensor or station unknown"); the hydrophones are. Oriented nodes
+    # (the vertical 12 dB above the horizontals) once made every vertical noisy.
+    var nd = nodeGather(rotatedToVTR = true)
+    for k in nd.g.keys.mitems:
+      if k.traceCode >= 15:
+        k.traceCode -= 3
+        k.component = uint8(k.traceCode)
+      k.rcvPoint = NaN
+      k.rcvX = NaN
+      k.rcvY = NaN
+    let u = runOn(nd.g, @[], ExclusionParams(choice: acOff))
+    doAssert rnNoStationIds in u.res.reasons and u.res.groups.len == 1
+    for i in 0 ..< nd.nodes:
+      doAssert u.res.state[nodeRow(i, 0)] == nsJudged
+      for c in 1 .. 3:
+        let q = nodeRow(i, c)
+        doAssert u.roles[q].group == -1 and u.res.state[q] == nsUngrouped
+        doAssert u.res.neighbourState[q] == nbUngrouped and not u.amps[q].noisy
 
   block unknown_sensor_classes:
     # Components 1-4 (as a survey join writes them) with trace code 1: never one flat
@@ -606,7 +782,7 @@ proc main*() =
       k.rcvY = NaN
     let b = runOn(bare.g, @[], off)
     doAssert b.res.groups.len == 0 and b.res.judged == 0
-    for r in 0 ..< bare.g.len: doAssert b.roles[r].group == -1 and b.res.state[r] == nsUnusable
+    for r in 0 ..< bare.g.len: doAssert b.roles[r].group == -1 and b.res.state[r] == nsUngrouped
     doAssert {rnUnknownSensors, rnNoStationIds} <= b.res.reasons
 
   block area_covers_group:
@@ -619,7 +795,8 @@ proc main*() =
     doAssert r.res.excluded == ng.g.len and r.res.judged == 0
     doAssert rnAllInside in r.res.reasons and r.amps[weakRow].weak
     for a in r.amps: doAssert not a.noisy
-    doAssert not r.res.groups[0].medianDb.isNaN
+    # No unit was judged: the group has no level of judged units to compare across gathers.
+    doAssert r.res.groups[0].medianDb.isNaN and r.res.groups[0].madDb.isNaN
 
   block no_station_ids:
     # Header lines but no point numbers and no coordinates: each row is a station of its

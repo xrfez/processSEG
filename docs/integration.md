@@ -667,20 +667,28 @@ echo res.rule, " ", res.reasons, " ", res.excluded, " not judged"
   confidence 0.5 and more are used. Pass no picks for an uncorrelated vibroseis record (its
   picks are random), or those of its correlated version.
 - **What to show.** `res.rule` and `res.reasons` say how the area was set and why the rules
-  before it did not apply ("no first breaks", "too few coherent first breaks", "no offsets",
-  "no source position along any line"); `res.offsetOrigin` is what the caller told
+  before it did not apply ("no first breaks", "too few coherent first breaks", "no header
+  offsets for the model", "no offsets", "no source position along any line");
+  `res.offsetOrigin` is what the caller told
   (`ooHeaders`, `ooSurvey`) for the wording. `res.edgeMs` (or `res.radius`, or
   `res.steps`), `res.lines` and `res.linesReached` give the numbers; `res.arrival` and
   `res.inside` draw the area; `res.state[row]` says "judged", "not judged: inside the
-  exclusion area", "not judged: no usable samples" or "not judged: node incomplete": a
-  trace that was not judged must not be shown as good. `res.louder` and `res.neighbourState`
-  are the second finding, `res.earlyBreak` a note on a trace whose own pick is earlier than
-  the area's edge, `res.partial` a node judged on 2 of 3 components.
+  exclusion area", "not judged: no usable samples", "not judged: node incomplete" or "not
+  judged: sensor or station unknown" (unrotated geophones with no point number or
+  coordinates): a trace that was not judged must not be shown as good. `res.louder` and
+  `res.neighbourState` are the second finding, `res.earlyBreak` a note on a trace whose own
+  pick is earlier than the area's edge (inside the area: than its own arrival; a burst
+  before the break), `res.partial` a node judged on 2 of 3 components.
+- **The trend.** Without offsets the area follows the picks along each line as a valley:
+  earliest at the station nearest the source and later away from it on either side, fitted
+  to the picks consistent with that within pick noise. It needs no moveout or window
+  setting, and the area is one run of stations around each line's apex, so a burst run far
+  from the source is judged, not taken into the area. `res.arrival` is that valley.
 - **Receiver gathers.** The same call with `gdCommonReceiver`: the far end is the source,
   lines are source lines, and the shots too close to the receiver are the excluded ones. The
   outliers within one receiver gather are shots; a noisy receiver raises its whole gather,
   which only a comparison across gathers shows: `res.groups[g].medianDb` is each gather's
-  level for that comparison over a folder.
+  level for that comparison over a folder (NaN when the area covered the whole group).
 - **Components.** The hydrophone is its own group; unrotated node geophones are judged per
   node on the energy of their motion traces (`res.groups`, `partial`); rotated geophones one
   group per component. Pass `rotated` from the file's orientation header (`traceOrientation`:
@@ -689,7 +697,7 @@ echo res.rule, " ", res.reasons, " ", res.excluded, " not judged"
   `acFixedTime` (`edgeMs`), `acFixedRadius` (`radius`), `acSteps` (`steps` stations either
   side of the source on each line, those the shot reaches unless `stepsOnAllLines`) or
   `acOff` (every trace judged: `recordAmplitude`'s result).
-- **Cost.** About 4 % of the first-break pick on a shot of 4000 traces (bench/bexclusion).
+- **Cost.** About 3.6 % of the first-break pick on a shot of 4000 traces (bench/bexclusion).
 
 ## Batch results: brute stack
 
