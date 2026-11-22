@@ -65,6 +65,7 @@
 ## - `processSEG/qc/fold`: fold maps of a survey: its bin grid (`surveyGrid`), pre-plot and actual fold (`preplotFold`, `addFold`, `foldDifference`);
 ## - `processSEG/qc/record`: field records against the XPS (`recordCompleteness`, `summarize`);
 ## - `processSEG/qc/amplitude`: amplitude QC per trace and per record (`traceAmplitudeInto`, `recordAmplitude`);
+## - `processSEG/qc/exclusion`: noisy and weak traces outside the exclusion area near the source, nodes and components, louder than neighbours (`noiseQc`, `traceRolesInto`);
 ## - `processSEG/synth`: synthetic traces and gathers (`ricker`, `addSinusoid`, `addRicker`,
 ##   `addNoise`, `linearMs`, `hyperbolicMs`, `addLinear`, `addHyperbola`).
 
@@ -77,7 +78,7 @@ import processSEG/core/pool
 import processSEG/velocity/[model, formats, moveout]
 import processSEG/statics/elevation
 import processSEG/stack/[nmo, binning, stack]
-import processSEG/qc/[geometry, firstbreak, snr, shotfit, fold, record, amplitude]
+import processSEG/qc/[geometry, firstbreak, snr, shotfit, fold, record, amplitude, exclusion]
 import processSEG/vibroseis/[taper, sweep, pilot, correlate, vstack, sweeptrack]
 import processSEG/vibroseis/[crosscorrelate, vibqc, recfilter]
 import processSEG/continuous/slice
@@ -89,4 +90,4 @@ export types, rows, workspace, basic, mute, plan, spectrum, hilbert, spectrogram
     formats, moveout, elevation, nmo, binning, stack, batch, geometry, firstbreak, snr,
     shotfit, filescales
 export taper, sweep, pilot, correlate, vstack, slice, patch, fold, record, amplitude, units,
-    calibrate, sweeptrack, crosscorrelate, vibqc, recfilter, synth
+    calibrate, sweeptrack, crosscorrelate, vibqc, recfilter, synth, exclusion

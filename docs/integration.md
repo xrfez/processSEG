@@ -641,6 +641,56 @@ processSEG's QC modules score this automatically (experimental for land data):
   out by cross-correlation with the neighbours; `fit.suspect[row]` and `asymmetryMs` (a
   misplaced source).
 
+## Noisy traces and the exclusion area
+
+`recordAmplitude` judges every trace of a record against one median, so the loud traces near
+the source of a shot read as noisy, and the components of a node or the hydrophone mix with
+the geophones. `noiseQc` (`processSEG/qc/exclusion`) takes the exclusion area out of that
+judgement; the viewer's record QC job calls it in place of `recordAmplitude`. One record
+(a gather) at a time:
+
+```nim
+let domain = gatherDomainOf(meta)                      # or the gather kind parseSEG reports
+var roles = newSeq[TraceRole](meta.len)
+meta.traceRolesInto(domain, rotated, roles)            # rotated: from traceOrientation, or []
+# picks and fit: the first-break overlay's, when it has them
+var res: NoiseResult
+ws.reserve(noiseWorkspace(meta.len))
+noiseQc(meta, amps, picks, fit, roles, AmplitudeParams(), params, domain, res, ws)
+echo res.rule, " ", res.reasons, " ", res.excluded, " not judged"
+```
+
+- **One pick and one fit.** The overlay's job keeps the record's `picks` (`pickInto`) and
+  its `ShotFit` (`fitShot(meta, picks, ...)`); pass both to the `fit` overload so a record is
+  neither picked nor fitted twice. Without a fit the other overload fits the shot itself.
+  Picks made with the overlay's own settings (guided, band-passed) are fine: only picks of
+  confidence 0.5 and more are used. Pass no picks for an uncorrelated vibroseis record (its
+  picks are random), or those of its correlated version.
+- **What to show.** `res.rule` and `res.reasons` say how the area was set and why the rules
+  before it did not apply ("no first breaks", "too few coherent first breaks", "no offsets",
+  "no source position along any line"); `res.offsetOrigin` is what the caller told
+  (`ooHeaders`, `ooSurvey`) for the wording. `res.edgeMs` (or `res.radius`, or
+  `res.steps`), `res.lines` and `res.linesReached` give the numbers; `res.arrival` and
+  `res.inside` draw the area; `res.state[row]` says "judged", "not judged: inside the
+  exclusion area", "not judged: no usable samples" or "not judged: node incomplete": a
+  trace that was not judged must not be shown as good. `res.louder` and `res.neighbourState`
+  are the second finding, `res.earlyBreak` a note on a trace whose own pick is earlier than
+  the area's edge, `res.partial` a node judged on 2 of 3 components.
+- **Receiver gathers.** The same call with `gdCommonReceiver`: the far end is the source,
+  lines are source lines, and the shots too close to the receiver are the excluded ones. The
+  outliers within one receiver gather are shots; a noisy receiver raises its whole gather,
+  which only a comparison across gathers shows: `res.groups[g].medianDb` is each gather's
+  level for that comparison over a folder.
+- **Components.** The hydrophone is its own group; unrotated node geophones are judged per
+  node on the energy of their motion traces (`res.groups`, `partial`); rotated geophones one
+  group per component. Pass `rotated` from the file's orientation header (`traceOrientation`:
+  rotated when `rotationApplied != 0`); SEG-Y codes 15-17 are rotated by definition.
+- **Overrides.** `ExclusionParams.choice` is `acAuto` (model, trend, radius, steps, none),
+  `acFixedTime` (`edgeMs`), `acFixedRadius` (`radius`), `acSteps` (`steps` stations either
+  side of the source on each line, those the shot reaches unless `stepsOnAllLines`) or
+  `acOff` (every trace judged: `recordAmplitude`'s result).
+- **Cost.** About 4 % of the first-break pick on a shot of 4000 traces (bench/bexclusion).
+
 ## Batch results: brute stack
 
 `bruteStack(f, T, [traces,] binning, velocity, opts, progress)` (`processSEG/batch`) reads

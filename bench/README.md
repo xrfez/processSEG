@@ -441,3 +441,16 @@ parseSEG's prefetcher; the calling thread stacks), 2026-11-13, medians:
 
 The result is the same bit for bit for any number of workers (the stacking stays on the
 calling thread, in trace order).
+
+### bexclusion: the exclusion area against the pick it follows
+
+2026-11-22, AMD Ryzen 9 3950X (32 threads), linux/amd64, Nim 2.4.2,
+`-d:danger --opt:speed`: one shot of 4000 traces × 4000 float32 (4 lines of 1000 stations).
+`noiseQc` takes the picks and the `ShotFit` the first-break overlay already has.
+
+| step | median |
+|---|---|
+| `pickInto` (energy ratio, whole trace) | 75 ms |
+| `noiseQc`, automatic (model, 618 traces not judged) | 3.2 ms (4.3 % of the pick) |
+| `noiseQc`, station steps | 2.3 ms (3.0 %) |
+| `traceRolesInto` | 0.09 ms |

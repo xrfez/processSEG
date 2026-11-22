@@ -58,6 +58,11 @@
 ## (1.4826·MAD)`; `afWeak` below `−outlierZ`, `afNoisy` above `outlierZ`
 ## (with MAD 0, any difference from the median is an outlier). Give it one
 ## record at a time: a whole line of shots mixes near and far records.
+## The traces near the source of a shot are loud for physical reasons, and
+## records of several components or sensor kinds mix incomparable levels, so
+## this judgement flags them: for such records use `qc/exclusion.noiseQc`,
+## which leaves the near-source zone out, compares like with like and
+## replaces `afWeak`, `afNoisy` and `robustZ` of the record.
 ##
 ## **SNR.** For an SNR per trace use `qc/snr.windowSnrInto` on the same
 ## block and windows (a signal window after the first break, a noise window

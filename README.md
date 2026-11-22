@@ -37,7 +37,8 @@ with no hidden allocation and no hidden threads.
   X records generated from either (roll, shift, static edges), automatic bin grids,
   pre-plot and actual fold maps (offset classes, azimuth sectors) and their difference,
   field records checked against the XPS by station (missing, unlisted, mismatched records),
-  and amplitude QC per trace and record (dead, clipped, spiky, DC, weak, noisy traces).
+  and amplitude QC per trace and record (dead, clipped, spiky, DC, weak, noisy traces, the
+  noisy test leaving out an exclusion area near the source).
 
 float32 and float64 throughout; units are ms, Hz, dB and distance units per second, and
 amplitudes are as recorded until calibrated to V, m/s, m/s², Pa or N.

@@ -278,3 +278,58 @@ doAssert amps[30].flags == {afNoisy}
 doAssert amps[40].flags == {afSpiky} and amps[40].spikes == 1
 doAssert rec.flagged == 4 and rec.traces == traces - 1
 ```
+
+### Noisy traces outside the exclusion area
+
+The traces near the source of a shot are loud for physical reasons, so `recordAmplitude`
+calls them noisy. `noiseQc` (`qc/exclusion`) leaves an **exclusion area** around the source
+out of the noise test (a receiver gather: the shots too close to the receiver). The area is
+set by the first rule that applies, and the result says which and why the earlier ones did
+not: the refraction model (`fitShot`), the trend of the first-break picks along each line, a
+radius from the offsets (a survey, or the header coordinates), a count of stations either
+side of the source, else every trace is judged. The edge is where the level stops depending
+on the arrival time (a drop of 6 dB); the user can give a time, a radius or a step count
+instead. Weak traces are judged everywhere. A trace louder than its neighbours on its own
+line is a second finding (`res.louder`). The hydrophone is its own group, unrotated node
+geophones are judged per node on their summed energy, rotated components one group each.
+
+```nim
+import std/[math, random]
+import parseSEG, processSEG
+
+const (stations, cols, dtMs) = (60, 500, 2.0)
+var keys = newSeq[TraceKeys](stations)
+var counts = newSeq[int](stations)
+for r, k in keys.mpairs:
+  k = initTraceKeys()
+  (k.channel, k.t0Ms, k.status) = (float64(r + 1), 0.0, tsLive)
+  (k.srcX, k.srcY, k.rcvX, k.rcvY) = (1500.0, 0.0, 50.0 * float64(r), 0.0)
+  k.offset = abs(k.rcvX - k.srcX)
+  counts[r] = cols
+var samples = zeros[float32](stations, cols)
+var rng = initRand(11)
+for r in 0 ..< stations:
+  # 20 dB louder near the source, and a field record's scatter.
+  let level = (1 + 9 * exp(-((keys[r].offset / 300) ^ 2))) * pow(10.0, rng.gauss(0, 1.0) / 20)
+  for j in 0 ..< cols: samples[r, j] = float32(0.05 * level * rng.gauss(0, 1.0))
+for j in 0 ..< cols: samples[52, j] *= 30         # a noisy station, far out
+
+let meta = initChunkMeta(rowsOf(keys, counts), dtMs)
+var amps = newSeq[TraceAmplitude](stations)
+var ws = initWorkspace()
+ws.reserve(traceAmplitudeWorkspace(cols) + recordAmplitudeWorkspace(stations) +
+  noiseWorkspace(stations))
+traceAmplitudeInto(samples, meta, AmplitudeParams(), amps, ws)
+let rec = recordAmplitude(amps, AmplitudeParams(), ws)   # the near traces read as noisy
+doAssert rec.counts[afNoisy] > 3
+
+var roles = newSeq[TraceRole](stations)
+meta.traceRolesInto(gatherDomainOf(meta), [], roles)     # no rotation told
+var res: NoiseResult
+noiseQc(meta, amps, [], roles, AmplitudeParams(), ExclusionParams(offsetOrigin: ooHeaders),
+  gdCommonSource, res, ws)                               # no picks: the radius, from the offsets
+doAssert res.rule == arRadius and res.excluded > 10      # the area, set by the offsets
+doAssert res.inside[30] and not res.inside[52]
+doAssert afNoisy notin amps[30].flags                    # near the source: not judged
+doAssert amps[52].flags == {afNoisy} and res.louder[52]  # far out: noisy and louder than its neighbours
+```
