@@ -30,7 +30,11 @@
 ## "no usable samples" (unrotated_without_stations), the level of a group none of whose
 ## units were judged (area_covers_group), the model's missing header offsets reported
 ## as "no offsets" (trend_area_multiline), the early-break note inside the area
-## (trend_bursts).
+## (trend_bursts). The trend then left the automatic chain (`acTrend` only): the
+## trend back in it (trend_area_multiline), the model's physical check dropped, and its
+## check of times rising with offset alone (model_not_physical), the record of one far
+## station not told (one_far_station), a line of one station given steps
+## (one_far_station), the reason for no position dropped (uncorrelated_no_picks).
 
 import std/[algorithm, assertions, math, random, sequtils]
 import processSEG
@@ -106,16 +110,18 @@ proc main*() =
 
   block trend_area_multiline:
     var ng = noiseGather()
-    ng.stripOffsets() # no offsets: the model cannot apply, the trend does
-    let on = ng.run()
+    ng.stripOffsets() # no offsets: the model cannot apply; the trend, chosen, does
+    let on = ng.run(ExclusionParams(choice: acTrend))
     doAssert on.res.rule == arTrend, $on.res.rule
     doAssert on.res.linesFromHeaders and on.res.lineSource == lsHeaders and on.res.lines == 3
     let edge = on.res.edgeMs
     doAssert edge >= breakMs(alongDist(6)) and edge <= breakMs(alongDist(12)), $edge
     doAssert on.res.groups[0].edge == edge and on.res.offsetOrigin == ooUnknown
-    # Why the model did not apply: no header offsets (not "too few picks").
-    doAssert rnNoHeaderOffsets in on.res.reasons and rnFewPicks notin on.res.reasons
-    doAssert rnNoOffsets notin on.res.reasons # the radius would have had the XY offsets
+    # Automatic, the trend is not chosen: no header offsets for the model (not "too few
+    # picks"), so the radius from the coordinates.
+    let au = ng.run()
+    doAssert au.res.rule == arRadius and rnNoHeaderOffsets in au.res.reasons
+    doAssert rnFewPicks notin au.res.reasons and rnNoOffsets notin au.res.reasons
     # The trend follows the breaks near the source (a wide first window clipped the apex
     # by over 100 ms), the second line's near stations are inside, the clean gather has no
     # early-break note.
@@ -169,7 +175,9 @@ proc main*() =
     let ng = noiseGather()
     let m = ng.run()
     doAssert m.res.rule == arModel and m.res.reasons == {}, $m.res.rule & $m.res.reasons
-    doAssert m.res.agreement >= 0.9, $m.res.agreement
+    doAssert m.res.agreement.isNaN # automatic: no trend to compare with
+    let tr = ng.run(ExclusionParams(choice: acTrend))
+    doAssert tr.res.rule == arTrend and tr.res.agreement >= 0.9, $tr.res.agreement
     for r in 0 ..< ng.g.len: doAssert not m.res.earlyBreak[r], $r
     doAssert m.res.edgeMs >= breakMs(alongDist(6)) and m.res.edgeMs <= breakMs(alongDist(12))
     # The model's arrival is finite for every row; no picks of the trace's own are used.
@@ -261,7 +269,7 @@ proc main*() =
     # Needs picks / offsets.
     ng.stripPicks()
     let np = ng.run(ExclusionParams(choice: acFixedTime, edgeMs: 100))
-    doAssert np.res.rule == arNone and np.res.reasons == {rnOverrideNeedsPicks}
+    doAssert np.res.rule == arNone and np.res.reasons == {rnNoPicks, rnOverrideNeedsModel}
     doAssert np.res.excluded == 0
     ng.stripOffsets()
     ng.stripSourceXY()
@@ -276,9 +284,9 @@ proc main*() =
     ng.plantHum(hum)
     ng.plantBroadband(bb)
     ng.plantBurst(burst)
-    for params in [ExclusionParams(), ExclusionParams(choice: acAuto, steps: 8)]:
+    for params in [ExclusionParams(), ExclusionParams(choice: acTrend)]:
       var cmp = ng
-      if params.steps == 8: cmp.stripOffsets() # the trend instead of the model
+      if params.choice == acTrend: cmp.stripOffsets() # the trend instead of the model
       let r = cmp.run(params)
       for t in [hum, bb, burst]:
         doAssert r.amps[t].noisy and r.res.state[t] == nsJudged and not r.res.inside[t], $t
@@ -338,11 +346,12 @@ proc main*() =
         let ng = noiseGather(NoiseSpec(lines: lines, spacing: spacing, cols: 1500))
         var t = ng
         t.stripOffsets()
-        let tr = t.run()
+        let tr = t.run(ExclusionParams(choice: acTrend))
         let m = ng.run()
+        let both = ng.run(ExclusionParams(choice: acTrend))
         let what = $lines & " lines, " & $spacing
         doAssert tr.res.rule == arTrend and m.res.rule == arModel, what
-        doAssert m.res.agreement >= 0.9, what & ": " & $m.res.agreement
+        doAssert both.res.agreement >= 0.9, what & ": " & $both.res.agreement
         var trendNear, modelNear = 0
         for r in 0 ..< ng.g.len:
           let d = ng.dist[r]
@@ -372,7 +381,7 @@ proc main*() =
         var ng = noiseGather(NoiseSpec(spacing: spacing, cols: 1500))
         ng.stripOffsets()
         for i in 0 ..< k: ng.plantBurst(ng.row(line, first + i))
-        let r = ng.run()
+        let r = ng.run(ExclusionParams(choice: acTrend))
         let what = $spacing & " line " & $line & " from " & $first & " × " & $k
         doAssert r.res.rule == arTrend, what
         doAssert r.res.edgeMs >= breakMs(alongDist(6)) and r.res.edgeMs <= breakMs(alongDist(12)),
@@ -391,7 +400,7 @@ proc main*() =
     var nz = noiseGather(NoiseSpec(spacing: 400, cols: 1500))
     nz.stripOffsets()
     for i in 4 .. 6: nz.plantBurst(nz.row(0, src + i))
-    let z = nz.run()
+    let z = nz.run(ExclusionParams(choice: acTrend))
     let inZone = nz.row(0, src + 4)
     doAssert z.res.state[inZone] == nsInArea and z.res.earlyBreak[inZone]
     doAssert not z.amps[inZone].noisy
@@ -415,7 +424,7 @@ proc main*() =
     ng.stripOffsets()
     for i in 40 .. 42:
       ng.picks[ng.row(0, i)] = FirstBreakPick(timeMs: 20, col: 0, snrDb: 25, confidence: 1)
-    let e = ng.run()
+    let e = ng.run(ExclusionParams(choice: acTrend))
     doAssert e.res.rule == arTrend
     var apex = 0
     for i in 0 ..< ng.spec.stations:
@@ -430,15 +439,15 @@ proc main*() =
     var rng = initRand(17)
     for q in rnd.picks.mitems:
       q = FirstBreakPick(timeMs: rng.rand(1400.0), col: 0, snrDb: 20, confidence: 1)
-    let x = rnd.run()
-    doAssert x.res.rule == arRadius and rnFewPicks in x.res.reasons, $x.res.rule
+    let x = rnd.run(ExclusionParams(choice: acTrend))
+    doAssert x.res.rule == arNone and rnFewPicks in x.res.reasons, $x.res.rule
     # Only a few picks: the same.
     var few = noiseGather()
     few.stripOffsets()
     for r in 0 ..< few.g.len:
       if abs(few.station[r] - src) > 2 or few.line[r] != 0: few.picks[r].confidence = 0
-    let f = few.run()
-    doAssert f.res.rule == arRadius and rnFewPicks in f.res.reasons
+    let f = few.run(ExclusionParams(choice: acTrend))
+    doAssert f.res.rule == arNone and rnFewPicks in f.res.reasons
 
   block receiver_gather:
     var rg = noiseGather().receiverGather()
@@ -691,7 +700,7 @@ proc main*() =
     for i in 0 ..< 48:
       if abs(i - src) > 1: flat.scaleTrace(i, base - a0.amps[i].rmsDb)
       if abs(i - src) <= 2: flat.picks[i].timeMs = 70
-    let ft = flat.run()
+    let ft = flat.run(ExclusionParams(choice: acTrend))
     doAssert ft.res.rule == arTrend
     for i in -2 .. 2: doAssert ft.res.inside[src + i] and not ft.amps[src + i].noisy, $i
     # Every arrival the same tells nothing apart: nothing inside.
@@ -744,6 +753,90 @@ proc main*() =
         let q = nodeRow(i, c)
         doAssert u.roles[q].group == -1 and u.res.state[q] == nsUngrouped
         doAssert u.res.neighbourState[q] == nbUngrouped and not u.amps[q].noisy
+
+  block model_not_physical:
+    # One line, its confident picks 7 stations either side of the source, and a run of 6
+    # bursts just past the last on one side: the L1 fit of the refraction model tilts until
+    # its time falls with offset. That model is refused, the reason given, and the radius
+    # (the offsets) sets the area: the near traces inside, not noisy.
+    for (spacing, runLen) in [(500.0, 6), (400.0, 8)]:
+      var ng = noiseGather(NoiseSpec(lines: 1, spacing: spacing, cols: 1500))
+      var last = src
+      for i in src ..< 48:
+        if ng.picks[ng.row(0, i)].confidence >= 0.5: last = i
+      for i in 0 ..< runLen: ng.plantBurst(ng.row(0, last + 1 + i))
+      let meta = initChunkMeta(ng.g.rows, ng.g.dtMs)
+      var fit: ShotFit
+      fitShot(meta, ng.picks, ShotFitParams(), fit)
+      doAssert fit.modelMs[0] < fit.modelMs[src], "the fixture would not tilt the fit"
+      let r = ng.run()
+      doAssert r.res.rule == arRadius and rnBadModel in r.res.reasons, $r.res.rule
+      for i in -2 .. 2:
+        doAssert r.res.inside[ng.row(0, src + i)] and not r.amps[ng.row(0, src + i)].noisy
+      doAssert not r.res.inside[ng.row(0, 0)] and not r.res.inside[ng.row(0, 47)]
+      # A fixed time needs the model too.
+      let ft = ng.run(ExclusionParams(choice: acFixedTime, edgeMs: 200))
+      doAssert ft.res.rule == arNone and {rnBadModel, rnOverrideNeedsModel} <= ft.res.reasons
+    # A caller's fit with positive velocities whose times fall with offset, or with a
+    # time that is not finite, is refused the same way.
+    let ng = noiseGather()
+    let g = ng.g
+    let meta = initChunkMeta(g.rows, g.dtMs)
+    var fit: ShotFit
+    fitShot(meta, ng.picks, ShotFitParams(), fit)
+    doAssert fit.v1 > 0
+    var amps = newSeq[TraceAmplitude](g.len)
+    var ws = initWorkspace()
+    ws.reserve(traceAmplitudeWorkspace(g.cols) + noiseWorkspace(g.len))
+    traceAmplitudeInto(g.data, meta, AmplitudeParams(), amps, ws)
+    var roles = newSeq[TraceRole](g.len)
+    meta.traceRolesInto(gdCommonSource, [], roles)
+    var res: NoiseResult
+    for bad in 0 .. 1:
+      var f2 = fit
+      for r in 0 ..< g.len:
+        f2.modelMs[r] = (if bad == 0: 2000 - fit.modelMs[r] elif r == 5: Inf else: fit.modelMs[r])
+      noiseQc(meta, amps, ng.picks, f2, roles, AmplitudeParams(), ExclusionParams(),
+        gdCommonSource, res, ws)
+      doAssert res.rule == arRadius and rnBadModel in res.reasons, $bad
+
+  block one_far_station:
+    # Every trace at one receiver station, one source (an uncorrelated sweep record with a
+    # station but no coordinates): no area, said so; counting steps on every line does
+    # not put the record inside.
+    var g = uncorrelatedGather()
+    for k in g.keys.mitems:
+      k.rcvLine = 1001
+      k.rcvPoint = 105
+      k.srcLine = 2001
+      k.srcPoint = 7
+    for params in [ExclusionParams(), ExclusionParams(choice: acSteps),
+        ExclusionParams(choice: acSteps, stepsOnAllLines: true)]:
+      let r = runOn(g, @[], params)
+      doAssert r.res.rule == arNone and rnOneStation in r.res.reasons, $r.res.reasons
+      doAssert r.res.excluded == 0 and r.res.judged == g.len
+    # A line all of whose traces carry one station number gets no steps (counted on every
+    # line, it once went inside whole); the others get theirs.
+    var ng = noiseGather()
+    ng.stripPicks()
+    for i in 0 ..< 48: ng.g.keys[ng.row(2, i)].rcvPoint = 500
+    let s = ng.run(ExclusionParams(choice: acSteps, stepsOnAllLines: true))
+    doAssert s.res.rule == arSteps and s.insideCount(ng, 2) == 0
+    doAssert s.insideCount(ng, 0) == 17 and s.insideCount(ng, 1) == 17
+
+  block picks_without_geometry:
+    # Picks, but no offsets, no coordinates, no line or point numbers: the automatic area
+    # has nothing to stand on and every trace is judged, with the reasons.
+    var ng = noiseGather()
+    ng.stripOffsets()
+    ng.stripSourceXY()
+    ng.stripReceiverXY()
+    ng.stripLines()
+    ng.stripPoints()
+    let r = ng.run()
+    doAssert r.res.rule == arNone and r.res.excluded == 0 and r.res.judged == ng.g.len
+    doAssert {rnNoHeaderOffsets, rnNoOffsets, rnNoPosition} <= r.res.reasons, $r.res.reasons
+    doAssert r.res.lineSource == lsUnknown
 
   block unknown_sensor_classes:
     # Components 1-4 (as a survey join writes them) with trace code 1: never one flat

@@ -679,11 +679,19 @@ echo res.rule, " ", res.reasons, " ", res.excluded, " not judged"
   `res.neighbourState` are the second finding, `res.earlyBreak` a note on a trace whose own
   pick is earlier than the area's edge (inside the area: than its own arrival; a burst
   before the break), `res.partial` a node judged on 2 of 3 components.
-- **The trend.** Without offsets the area follows the picks along each line as a valley:
-  earliest at the station nearest the source and later away from it on either side, fitted
-  to the picks consistent with that within pick noise. It needs no moveout or window
-  setting, and the area is one run of stations around each line's apex, so a burst run far
-  from the source is judged, not taken into the area. `res.arrival` is that valley.
+- **The automatic area** is the refraction model (refused when the fit is not physical:
+  velocities not positive, times falling with offset), else a radius from the offsets
+  (survey, header offsets or header coordinates), else station steps, else every trace
+  judged, with the reasons. Picks with no offsets, coordinates or station numbers give no
+  area. A record whose far ends are all at one station has none either ("every far end at
+  one station").
+- **The trend (experimental).** `acTrend` follows the picks along each line, without
+  offsets, as a valley: earliest at the station nearest the source and later away from it
+  on either side. It is never chosen automatically: a late confident noise pick at a
+  flank's outer end makes it ramp up to that pick (the line's near traces then fall
+  outside), a run of 6 or more burst picks just past the last visible break can take a
+  flank and cut the true apex, and its vote between lines trusts station numbers that need
+  not run along the line. Offer it only as an explicit choice.
 - **Receiver gathers.** The same call with `gdCommonReceiver`: the far end is the source,
   lines are source lines, and the shots too close to the receiver are the excluded ones. The
   outliers within one receiver gather are shots; a noisy receiver raises its whole gather,
@@ -693,11 +701,11 @@ echo res.rule, " ", res.reasons, " ", res.excluded, " not judged"
   node on the energy of their motion traces (`res.groups`, `partial`); rotated geophones one
   group per component. Pass `rotated` from the file's orientation header (`traceOrientation`:
   rotated when `rotationApplied != 0`); SEG-Y codes 15-17 are rotated by definition.
-- **Overrides.** `ExclusionParams.choice` is `acAuto` (model, trend, radius, steps, none),
-  `acFixedTime` (`edgeMs`), `acFixedRadius` (`radius`), `acSteps` (`steps` stations either
+- **Overrides.** `ExclusionParams.choice` is `acAuto` (model, radius, steps, none),
+  `acFixedTime` (`edgeMs`, on the model's arrival), `acFixedRadius` (`radius`), `acSteps` (`steps` stations either
   side of the source on each line, those the shot reaches unless `stepsOnAllLines`) or
-  `acOff` (every trace judged: `recordAmplitude`'s result).
-- **Cost.** About 3.6 % of the first-break pick on a shot of 4000 traces (bench/bexclusion).
+  `acOff` (every trace judged: `recordAmplitude`'s result), or `acTrend` (experimental).
+- **Cost.** About 4 % of the first-break pick on a shot of 4000 traces (bench/bexclusion).
 
 ## Batch results: brute stack
 

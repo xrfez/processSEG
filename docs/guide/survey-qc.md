@@ -285,11 +285,11 @@ The traces near the source of a shot are loud for physical reasons, so `recordAm
 calls them noisy. `noiseQc` (`qc/exclusion`) leaves an **exclusion area** around the source
 out of the noise test (a receiver gather: the shots too close to the receiver). The area is
 set by the first rule that applies, and the result says which and why the earlier ones did
-not: the refraction model (`fitShot`), the trend of the first-break picks along each line, a
-radius from the offsets (a survey, or the header coordinates), a count of stations either
-side of the source, else every trace is judged. The edge is where the level stops depending
-on the arrival time (a drop of 6 dB); the user can give a time, a radius or a step count
-instead. Weak traces are judged everywhere. A trace louder than its neighbours on its own
+not: the refraction model (`fitShot`, when it is physical), a radius from the offsets (a
+survey, the header offsets or the header coordinates), a count of stations either side of
+the source, else every trace is judged. The edge is where the level stops depending on the
+arrival time (a drop of 6 dB); the user can give a time, a radius or a step count instead,
+or choose the experimental trend of the first-break picks along each line (`acTrend`). Weak traces are judged everywhere. A trace louder than its neighbours on its own
 line is a second finding (`res.louder`). The hydrophone is its own group, unrotated node
 geophones are judged per node on their summed energy, rotated components one group each.
 

@@ -51,50 +51,54 @@
 ## else from its station numbers (a number going backwards or jumping 10
 ## typical steps), else the record is one line.
 ##
-## **The area.** The first rule that applies sets it, and `NoiseResult.rule`
-## and `reasons` say which and why the earlier ones did not apply:
+## **The area.** `acAuto` (the default) takes the first rule that applies,
+## and `NoiseResult.rule` and `reasons` say which and why the earlier ones
+## did not:
 ##
 ## 1. `arModel`: the refraction model (`qc/shotfit`), when the picks and
-##    offsets allow it: its expected arrival time at each trace's offset.
-## 2. `arTrend`: the trend of the confident first-break picks along each
-##    line, fitted to what is known of a first break: it is earliest at the
-##    station nearest the source and does not decrease away from it on
-##    either side (a *valley*; a line the source does not reach is monotone
-##    from its near end). Per line, in station order, cut into pieces where
-##    more than `trendTraces` stations have no confident pick:
-##    - the *consistent* picks are the most that, read away from one apex on
-##      either side, never step back by more than `clamp(5 % of the pick,
-##      20, 60)` ms (pick noise: there is no window and no moveout to
-##      tune); the others are outliers, such as the early picks a burst
-##      before the break gives;
-##    - a burst run that took the apex is cut off (a *notch*: the step out
-##      of it more than 5 times steeper than the flank after it, where a
-##      true apex, of any moveout, rises into its flanks as steeply as they
-##      go on), and the fit is made again;
-##    - on a gather of several lines, the lines whose valley has both flanks
-##      vote for the source's station; a line whose apex is in doubt by up
-##      to 5 picks takes the one nearest that vote;
-##    - each flank's least-absolute-deviation non-decreasing fit, from the
-##      apex outward, is the arrival of its consistent picks; a trace
-##      without one gets the line between the nearest two of its piece, or,
-##      within `trendTraces` stations of a piece's end, the end's value;
-##      else none.
-##
-##    A piece needs more than `trendTraces` consistent picks, and at least
-##    half of its picks, for a trend (random picks have none). On one line
-##    the trend has no apex clipping beyond the picks' noise, and the area
-##    is one run of stations around the apex: a burst run far from the
-##    source is never inside. The trace's own pick is not used: a noisy
-##    trace would place itself outside, and a burst before the break would
-##    give it an early pick and put it inside.
-## 3. `arRadius`: the offsets alone, from a survey or from header
-##    coordinates (`offsetOrigin` records which).
-## 4. `arSteps`: `steps` stations either side of the station nearest the
+##    header offsets allow it and the fit is physical (positive, finite
+##    velocities; finite times that do not fall as |offset| grows: a run of
+##    burst picks can tilt the L1 fit until the far end is earlier,
+##    `rnBadModel`): its expected arrival time at each trace's offset.
+## 2. `arRadius`: the offsets alone, from a survey, the header offsets or
+##    the header coordinates (`offsetOrigin` records which).
+## 3. `arSteps`: `steps` stations either side of the station nearest the
 ##    source, counted on each line separately, on the lines the shot reaches
-##    (`stepsOnAllLines`: every line).
-## 5. `arNone`: every trace is judged, as `recordAmplitude` does.
+##    (`stepsOnAllLines`: every line). A line all of whose traces are at one
+##    station has no steps; a record whose far ends are all at one station
+##    has no area (`rnOneStation`).
+## 4. `arNone`: every trace is judged, as `recordAmplitude` does.
 ##
-## Rules 1 to 3 place the *edge* where the level stops depending on arrival:
+## **The trend (experimental, `acTrend`, never chosen automatically).**
+## `arTrend` follows the confident first-break picks along each line, with
+## no offsets: a *valley* earliest at the station nearest the source and not
+## decreasing away from it on either side (a line the source does not reach
+## is monotone from its near end). Per line, in station order, cut into
+## pieces where more than `trendTraces` stations have no confident pick: the
+## most picks that, read away from one apex, never step back by more than
+## `clamp(5 % of the pick, 20, 60)` ms; a burst run that took the apex cut
+## off as a *notch* (a step out of it more than 5 times steeper than the
+## flank after it) and the fit made again; on several lines, the apex of a
+## line in doubt by up to 5 picks moved to the one nearest the other lines'
+## vote; then each flank's least-absolute-deviation non-decreasing fit from
+## the apex outward. A trace without a consistent pick gets the line between
+## the nearest two of its piece, or within `trendTraces` stations of a
+## piece's end the end's value, else none. A piece needs more than
+## `trendTraces` consistent picks and at least half of its picks. On clean
+## synthetic gathers it follows the breaks within the picks' noise at 14 to
+## 80 ms of moveout per station and judges burst runs of 3 to 5 beyond the
+## near-source zone. **Known failures**, on field records and synthetic
+## attacks: a late confident noise pick at a flank's outer end counts as
+## consistent (the valley only bounds steps back), so the trend ramps up to
+## it across the stations between and the near traces of that line fall
+## outside; a run of 6 or more burst picks just past the last visible break
+## can win the flank and have the true apex cut as a notch (on one line or
+## several); the vote trusts station numbers, which need not run along the
+## line (ranks in record order, snake order, numbering shifted per line).
+## With the model also there, `agreement` is the share of traces on which
+## the two areas agree.
+##
+## The model, the radius and the trend place the *edge* where the level stops depending on arrival:
 ## the traces of a group are sorted by arrival; `L` is the median level of
 ## the later half (and of the traces without an arrival); a running median
 ## of the level over ±max(5, n/20) traces is followed to its maximum within
@@ -104,7 +108,7 @@
 ## dB). Units arriving before the edge are *inside*: not judged noisy (those
 ## arriving at the edge too, unless every arrival of the group is the same).
 ## Fewer than 20 units with an arrival is too few for the rule. The user may
-## instead give a fixed time (`acFixedTime`, on the model or trend arrival),
+## instead give a fixed time (`acFixedTime`, on the model's arrival),
 ## a fixed radius (`acFixedRadius`), a step count (`acSteps`), or turn the
 ## area off (`acOff`).
 ##
@@ -132,17 +136,11 @@
 ## coordinates or is unknown.
 ##
 ## **Limits, measured on field and synthetic records.**
-## - A run of adjacent traces with a burst before the break, within the
-##   near-source zone, may outvote the few picks between it and the apex:
-##   it is then inside (not judged; the early-break note where its pick is
-##   off the trend), as the zone is. Runs of 3 to 5 beyond the zone are
-##   judged, on the source's line and on the others (measured at 14 to 80
-##   ms of moveout per station). On a gather of one line, a run at the end
-##   of the visible breaks that outvotes the picks next to it can take the
-##   apex (on several lines their vote settles it).
+## - Picks without offsets, coordinates or station numbers give no
+##   automatic area: every trace is judged and the reasons say why (the
+##   trend may be chosen, with its failures above).
 ## - Lines unknown (no line numbers, coordinates or station numbers): the
-##   record is one line, so a patch of several lines gets one valley, along
-##   the line it fits best.
+##   record is one line (for the trend: one valley for a patch of several).
 ## - A loud zone of fewer than about 4 units is not resolved by the edge
 ##   (its running median spans ±5).
 ## - An uncorrelated vibroseis record has no first breaks: pass no picks (or
@@ -181,6 +179,7 @@ type
     acFixedRadius = "fixed radius"
     acSteps = "station steps"
     acOff = "off"
+    acTrend = "first-break trend (experimental)" ## Never chosen by acAuto (module doc).
 
   AreaRule* = enum
     arModel = "refraction model"
@@ -198,13 +197,15 @@ type
     rnNoPosition = "no source position along any line"
     rnFewTraces = "too few usable traces"
     rnNoLoudness = "no near-source loudness"
-    rnOverrideNeedsPicks = "a fixed time needs first breaks"
+    rnOverrideNeedsModel = "a fixed time needs the refraction model (first breaks, offsets)"
     rnOverrideNeedsOffsets = "a fixed radius needs offsets"
     rnFewArrivals = "a group had too few arrivals for an edge"
     rnAllInside = "the area covers a whole group: weak judged against all of it"
     rnUnknownSensors = "sensor classes unknown: judged per station on summed energy"
     rnNoStationIds = "stations not identified: not judged per node"
     rnNoHeaderOffsets = "no header offsets for the model"
+    rnBadModel = "the refraction model is not physical"
+    rnOneStation = "every far end at one station"
 
   OffsetOrigin* = enum
     ooUnknown = ""
@@ -302,7 +303,7 @@ type
     lines*, linesReached*: int          ## Lines found; lines with a unit inside the area.
     linesFromHeaders*: bool             ## False: from coordinates, station numbers or one line.
     lineSource*: LineSource
-    agreement*: float64                 ## Model and trend both applied: share agreeing.
+    agreement*: float64                 ## `acTrend` with a model: share agreeing; NaN else.
     excluded*, judged*, notJudged*: int ## Traces (rows).
     arrival*: seq[float64]              ## Per row: the rule's arrival; NaN: none.
     inside*: seq[bool]
@@ -1351,6 +1352,7 @@ proc stepsInside(meta: ChunkMeta, roles: openArray[TraceRole], domain: GatherDom
           if d < bd:
             bd = d
             pos = s.ordered[p].b
+    if s.ordered[a].b == s.ordered[b - 1].b: pos = NaN # one station: no steps along it
     s.srcStation[seg] = pos
     any = any or finite(pos)
     # The most common station increment.
@@ -1564,10 +1566,45 @@ proc zeroOffsetsSet(meta: ChunkMeta, domain: GatherDomain, res: NoiseResult): bo
       elif stationKey(k, domain) != stationKey(meta.keys(first), domain): return false
   true
 
+proc modelSane(meta: ChunkMeta, modelMs: openArray[float64], v1, v2, interceptMs: float64,
+    res: var NoiseResult): bool =
+  ## A physical refraction model: positive finite velocities (`v2` NaN for one segment),
+  ## a finite intercept, finite model times, and times that do not fall (by more than
+  ## 1 ms) as |offset| grows. Burst picks can tilt an L1 fit until the far end is earlier.
+  if not (finite(v1) and v1 > 0) or not (v2.isNaN or (finite(v2) and v2 > 0)) or
+      not finite(interceptMs):
+    return false
+  template s: untyped = res.sc
+  s.sorted.setLen 0
+  for r in 0 ..< meta.len:
+    if not modelMs[r].isNaN:
+      if not finite(modelMs[r]): return false
+      let o = meta.keys(r).offset
+      if finite(o): s.sorted.add SortKey(b: abs(o), row: int32(r))
+  heapSort(s.sorted)
+  var top = -Inf
+  for key in s.sorted:
+    let t = modelMs[key.row]
+    if t < top - 1.0: return false
+    top = max(top, t)
+  true
+
+proc oneFarStation(meta: ChunkMeta, domain: GatherDomain, roles: openArray[TraceRole]): bool =
+  ## Every judged row's far end is the same identified station (a record of one receiver
+  ## and one source, as an uncorrelated vibroseis sweep record without geometry).
+  var first = -1
+  for r in 0 ..< meta.len:
+    if roles[r].group >= 0:
+      let k = meta.keys(r)
+      if not hasStationId(k, domain): return false
+      if first < 0: first = r
+      elif stationKey(k, domain) != stationKey(meta.keys(first), domain): return false
+  first >= 0
+
 proc noiseImpl(meta: ChunkMeta, amps: var openArray[TraceAmplitude],
     picks: openArray[FirstBreakPick], hasFit: bool, fitUsed: int, modelMs: openArray[float64],
-    roles: openArray[TraceRole], amp: AmplitudeParams, params: ExclusionParams,
-    domain: GatherDomain, res: var NoiseResult, ws: var Workspace) =
+    v1, v2, interceptMs: float64, roles: openArray[TraceRole], amp: AmplitudeParams,
+    params: ExclusionParams, domain: GatherDomain, res: var NoiseResult, ws: var Workspace) =
   template s: untyped = res.sc
   let n = meta.len
   res.domain = domain
@@ -1626,7 +1663,9 @@ proc noiseImpl(meta: ChunkMeta, amps: var openArray[TraceAmplitude],
   let minArr = max(params.minArrivals, int(ceil(params.minFraction * float64(live))))
   let havePicks = picks.len == n and n > 0
   let offsetsOk = withOffsets * 2 > live and offMax > offMin       # equal offsets tell nothing
-  let modelOk = hasFit and withModel * 2 > live and fitUsed >= minArr
+  let sane = hasFit and modelSane(meta, modelMs, v1, v2, interceptMs, res)
+  let modelOk = hasFit and withModel * 2 > live and fitUsed >= minArr and sane
+  let oneStation = oneFarStation(meta, domain, roles)
   var coherent = 0
   if havePicks: coherent = trendInto(meta, picks, params, res)
   let trendOk = havePicks and coherent >= minArr
@@ -1639,48 +1678,52 @@ proc noiseImpl(meta: ChunkMeta, amps: var openArray[TraceAmplitude],
     if applied > 0:
       res.rule = ruleName
       for r in 0 ..< n: res.arrival[r] = arr[r]
-  case params.choice
-  of acOff: discard
-  of acSteps:
-    if stepsInside(meta, roles, domain, params, trendOk or coherent >= 5, res, res.inside):
+  template modelReason() =
+    if not hasFit: res.reasons.incl rnNoPicks
+    elif withHeaderOffsets * 2 <= live: res.reasons.incl rnNoHeaderOffsets
+    elif fitUsed < minArr or withModel * 2 <= live: res.reasons.incl rnFewPicks
+    elif not sane: res.reasons.incl rnBadModel
+  template steps() =
+    if oneStation: res.reasons.incl rnOneStation
+    elif stepsInside(meta, roles, domain, params, trendOk or coherent >= 5, res, res.inside):
       res.rule = arSteps
       res.steps = params.steps
     else:
       res.reasons.incl rnNoPosition
+  case params.choice
+  of acOff: discard
+  of acSteps: steps()
+  of acTrend:
+    if trendOk:
+      adopt(s.trendArr, arTrend, NaN)
+      if res.rule == arTrend: timeEdge = true
+      else: res.reasons.incl rnFewTraces
+    else:
+      res.reasons.incl (if havePicks: rnFewPicks else: rnNoPicks)
   of acFixedTime:
     if modelOk: adopt(modelMs, arFixedTime, params.edgeMs)
-    elif trendOk: adopt(s.trendArr, arFixedTime, params.edgeMs)
-    else: res.reasons.incl rnOverrideNeedsPicks
+    else:
+      modelReason()
+      res.reasons.incl rnOverrideNeedsModel
     timeEdge = res.rule == arFixedTime
   of acFixedRadius:
     if offsetsOk: adopt(s.absOff, arFixedRadius, params.radius)
     else: res.reasons.incl rnOverrideNeedsOffsets
   of acAuto:
+    # The model, the radius, the steps, else every trace judged (the trend is never
+    # chosen here: an explicit, experimental choice).
     if modelOk:
       adopt(modelMs, arModel, NaN)
       if res.rule == arModel: timeEdge = true
       else: res.reasons.incl rnFewTraces
     else:
-      if not hasFit: res.reasons.incl rnNoPicks
-      elif withHeaderOffsets * 2 <= live: res.reasons.incl rnNoHeaderOffsets
-      else: res.reasons.incl rnFewPicks
-    if res.rule == arNone and trendOk:
-      adopt(s.trendArr, arTrend, NaN)
-      if res.rule == arTrend: timeEdge = true
-      else: res.reasons.incl rnFewTraces
-    elif res.rule == arNone:
-      res.reasons.incl (if havePicks: rnFewPicks else: rnNoPicks)
+      modelReason()
     if res.rule == arNone and offsetsOk:
       adopt(s.absOff, arRadius, NaN)
       if res.rule != arRadius: res.reasons.incl rnFewTraces
     elif res.rule == arNone:
       res.reasons.incl rnNoOffsets
-    if res.rule == arNone:
-      if stepsInside(meta, roles, domain, params, trendOk or coherent >= 5, res, res.inside):
-        res.rule = arSteps
-        res.steps = params.steps
-      else:
-        res.reasons.incl rnNoPosition
+    if res.rule == arNone: steps()
   if res.rule == arModel or res.rule == arTrend or res.rule == arFixedTime or
       res.rule == arRadius or res.rule == arFixedRadius:
     for g in 0 ..< res.groups.len: res.groups[g].edge = s.edges[g]
@@ -1691,11 +1734,11 @@ proc noiseImpl(meta: ChunkMeta, amps: var openArray[TraceAmplitude],
         elif not finite(res.edgeMs): res.edgeMs = s.edges[g]
     if noLoud: res.reasons.incl rnNoLoudness
     if fewArr: res.reasons.incl rnFewArrivals
-  # Model and trend both there: how much their areas agree.
-  if params.choice == acAuto and res.rule == arModel and trendOk:
+  # The trend chosen and the model there too: how much their areas agree.
+  if res.rule == arTrend and modelOk:
     var dummy, dummy2 = false
     s.inside2.setLen n
-    discard edgeFor(s.trendArr, roles, params, NaN, s.inside2, s.edges2, res, ws, dummy, dummy2)
+    discard edgeFor(modelMs, roles, params, NaN, s.inside2, s.edges2, res, ws, dummy, dummy2)
     var agree = 0
     var total = 0
     for r in 0 ..< n:
@@ -1737,7 +1780,8 @@ proc noiseQc*(meta: ChunkMeta, amps: var openArray[TraceAmplitude],
   checkInputs(meta, amps, picks, roles, amp, params, ws)
   if fit.modelMs.len != meta.len:
     badNoise("fit holds " & $fit.modelMs.len & " model times for " & $meta.len & " rows")
-  noiseImpl(meta, amps, picks, true, fit.used, fit.modelMs, roles, amp, params, domain, res, ws)
+  noiseImpl(meta, amps, picks, true, fit.used, fit.modelMs, fit.v1, fit.v2, fit.interceptMs,
+    roles, amp, params, domain, res, ws)
 
 proc noiseQc*(meta: ChunkMeta, amps: var openArray[TraceAmplitude],
     picks: openArray[FirstBreakPick], roles: openArray[TraceRole], amp: AmplitudeParams,
@@ -1747,7 +1791,7 @@ proc noiseQc*(meta: ChunkMeta, amps: var openArray[TraceAmplitude],
   checkInputs(meta, amps, picks, roles, amp, params, ws)
   if picks.len == meta.len and picks.len > 0:
     fitShot(meta, picks, ShotFitParams(minConfidence: params.minConfidence), res.sc.fit)
-    noiseImpl(meta, amps, picks, true, res.sc.fit.used, res.sc.fit.modelMs, roles, amp, params,
-      domain, res, ws)
+    noiseImpl(meta, amps, picks, true, res.sc.fit.used, res.sc.fit.modelMs, res.sc.fit.v1,
+      res.sc.fit.v2, res.sc.fit.interceptMs, roles, amp, params, domain, res, ws)
   else:
-    noiseImpl(meta, amps, picks, false, 0, [], roles, amp, params, domain, res, ws)
+    noiseImpl(meta, amps, picks, false, 0, [], NaN, NaN, NaN, roles, amp, params, domain, res, ws)
