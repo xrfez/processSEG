@@ -591,6 +591,19 @@ Data in: a parseSEG `SurveyGeometry` (X records) and one field record's traces (
 | `InstrumentFilter` (`highCutHz`, `highSlopeDbPerOctave`, `lowCutHz`, `lowSlopeDbPerOctave`, `phase: IirPhase = ipMinimum`) | A recorder's filters as Butterworth responses (SEG-Y bytes 141-152). |
 | `applyInstrumentFilter(pilot, filter)` | The pilot through the recorder's filters from rest (causal for minimum phase), same length. |
 
+## vibroseis/recfilter: a reference through a recorder's filter
+
+| Item | Description |
+|---|---|
+| `RecordingFilter` (`kind: RecFilterKind` = `rfkNone` / `rfkLinearPhase` / `rfkMinimumPhase`; `taps`; `highCutHz`, `highSlopeDbPerOctave`, `lowCutHz`, `lowSlopeDbPerOctave` (0 Hz = off); `coefficients`; `family: RecFilterFamily` = `rffButterworth` / `rffChebyshev`; `highOrder`, `lowOrder`; `rippleDb`; `shiftSamples`) | A recorder's filter and its bulk delay, all typed by the caller. Linear phase: a symmetric FIR of `taps` coefficients designed from the cutoffs and roll-offs. Minimum phase: typed FIR `coefficients`, or a Butterworth/Chebyshev cascade of the given orders. `shiftSamples`: whole samples moved earlier after filtering. |
+| `applyRecordingFilter(pilot, filter)` | The pilot through the filter from rest, then shifted: the pilot's length, `dtMs` and `t0Ms`, the ring-out brought in by a positive shift kept, zeros shifted in by a negative one. `rfkNone` returns the pilot unchanged. `ValueError` as `checkFilter`, or when the output is not finite. |
+| `checkFilter(filter, dtMs, samples = 0)` | `ValueError` saying what is wrong (cutoff not below Nyquist, low-cut not below high-cut, slope, order, ripple, taps, coefficients, a shift of `samples` or more). |
+| `linearPhaseTaps(filter, dtMs)`, `linearDelaySamples(taps)`, `linearShiftSamples(taps)`, `coefficientsSymmetric(coefficients)` | The designed coefficients of a linear-phase filter; its delay `(taps − 1)/2` and the whole shift that backs it out, `floor((taps − 1)/2)` (an even count leaves half a sample); whether typed coefficients are symmetric. Typed `coefficients` replace the design under either kind. A low-cut below about `2·fs/taps` Hz cannot be designed with that many taps. |
+| `responseAt(filter, dtMs, hz): Complex64` | The complex gain of the whole filter at `hz` (shift not included). |
+| `bulkDelaySamples(filter, dtMs, fromHz, toHz)`, `suggestedShift(...)` | The least-squares delay over a band (exact for linear phase; the high-cut alone for a family) and it rounded: a suggestion for a minimum-phase filter, whose delay depends on frequency. |
+| `maxDesignTaps` (2047), `maxCoefficients` (16384), `maxOrder` (32), `minRippleDb` (0.001), `maxRippleDb` (12), `maxSlopeDbPerOctave` (1000) | The limits `checkFilter` enforces. |
+| `shiftResidualDeg(filter, dtMs, fromHz, toHz, shiftSamples)` | Mean and peak `\|phase\|` in degrees the filter leaves in the band after the shift. |
+
 ## vibroseis/correlate: correlation and sweep deconvolution
 
 | Proc | What |

@@ -29,7 +29,9 @@
 ## phase. `applyInstrumentFilter` passes a pilot through the same filter
 ## (`InstrumentFilter`: Butterworth high-cut and optional low-cut, minimum
 ## or zero phase (`filter/iir`'s `IirPhase`), as SEG-Y trace bytes 141-152
-## describe the recorder's filters), so that it matches the data.
+## describe the recorder's filters), so that it matches the data. A filter
+## typed in full (linear-phase taps, minimum-phase coefficients or families,
+## and the delay backed out) is `vibroseis/recfilter`.
 ##
 ## **Headers.** `sweepOverrides` gives the SEG-Y sweep fields of a spec, for
 ## parseSEG's `writeTrace` (`trace.` fields) or `HeaderEditor.setFileField`

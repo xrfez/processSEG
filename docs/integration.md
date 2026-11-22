@@ -396,6 +396,18 @@ For the viewer:
 - One sensitivity holds in the sensor's flat band, above its natural frequency; no response
   correction is made below it.
 
+## A generated reference through the recorder's filter
+
+A generated reference holds no filter; a recorded one went through the recorder's. For a
+generated reference that must match recorded data, `applyRecordingFilter(pilot, filter)`
+(`vibroseis/recfilter`) passes it through a `RecordingFilter` the user types (linear-phase
+taps and cutoffs, or minimum-phase coefficients or a Butterworth/Chebyshev family) and backs
+out the bulk delay by `shiftSamples` whole samples. Nothing is taken from headers: a header's
+cutoff and slope do not give a minimum-phase filter's type, order or delay. The result has
+the pilot's samples and start time; `rfkNone` leaves it untouched. `suggestedShift` and
+`shiftResidualDeg` help the user choose and judge the shift. Apply it only to a generated
+reference: one stored from a record was filtered by the recorder already.
+
 ## Vibrator signature analysis
 
 For start-up tests and QC of vibrator wirelines: per unit a reference (the pilot), ground

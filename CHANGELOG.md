@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `vibroseis/recfilter`: a reference through a recorder's filter with its bulk delay backed out. `RecordingFilter` (`rfkNone`; `rfkLinearPhase` with `taps`, cutoffs and roll-offs; `rfkMinimumPhase` with typed `coefficients` or a Butterworth/Chebyshev `family`, orders, cutoffs and `rippleDb`; `shiftSamples`, whole samples), `applyRecordingFilter` (`rfkNone` returns the pilot bit for bit; the length and `t0Ms` are kept), `checkFilter`, `linearPhaseTaps`, `linearDelaySamples`, `responseAt`, `bulkDelaySamples`, `suggestedShift`, `shiftResidualDeg`. Nothing is read from headers: every parameter is the caller's. Typed `coefficients` replace the design under either kind; `linearShiftSamples`, `coefficientsSymmetric`, `minRippleDb`. A non-finite output and a ripple below 0.001 dB are refused.
+
 ## 0.9.0
 
 - Behaviour change, one rule for lengths: a length in time is N × dt (12000 ms at 1 ms is 12000 samples, the first at 0 ms, the last at 11999 ms). `samplesInLength(lengthMs, dtMs)` and `lengthOfSamples(samples, dtMs)` are the shared helpers (a length that is not a whole multiple of dt is cut down to whole samples).

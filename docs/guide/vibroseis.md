@@ -94,6 +94,28 @@ synthetic one did not, which leaves the filter's phase in the correlated data.
 `applyInstrumentFilter` passes the pilot through an `InstrumentFilter` described as
 Butterworth responses (the SEG-Y trace bytes 141-152 give the corners and slopes).
 
+**A reference through the recorder's filter.** `applyRecordingFilter` does the same for a
+`RecordingFilter` whose every parameter you give (nothing is read from headers): a linear-phase
+FIR (`taps`, cutoffs, roll-offs), or a minimum-phase filter (typed `coefficients`, or a
+Butterworth/Chebyshev `family` with orders, cutoffs and ripple), then the recorder's bulk delay
+backed out as `shiftSamples` whole samples. A linear-phase filter's delay is exactly
+`(taps − 1)/2` (an even tap count leaves half a sample that no whole shift removes). A
+minimum-phase filter's delay depends on frequency; `suggestedShift` estimates it, but the
+recorder's own number is what matches the data, to the sample (one sample is 79 degrees at
+220 Hz at 1 ms). The result keeps the pilot's samples and start time; the filter's ring-out
+past the end is cut after the shift. Only a generated reference needs this: a reference taken
+from a recorded trace already went through the filter.
+
+```nim
+import processSEG
+
+let pilot = generatePilot(linearSweep(6, 200, 12000, 2, initSweepTaper(250, 250)))
+let f = RecordingFilter(kind: rfkMinimumPhase, family: rffButterworth,
+  highCutHz: 207, highOrder: 6, shiftSamples: 1)
+let simulated = pilot.applyRecordingFilter(f)   # same length and start time
+doAssert simulated.len == pilot.len and simulated.t0Ms == pilot.t0Ms
+```
+
 **Start time.** A recorded pilot can start a fraction of a sample after the time break
 (`Pilot.t0Ms`). Correlation removes that start time exactly, so the output's time axis is
 the record's.
