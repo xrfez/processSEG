@@ -79,8 +79,8 @@ import processSEG/core/pool
 import processSEG/velocity/[model, formats, moveout]
 import processSEG/statics/elevation
 import processSEG/stack/[nmo, binning, stack]
-import processSEG/qc/[geometry, firstbreak, snr, shotfit, breakfit, fold, record,
-  amplitude, exclusion]
+import processSEG/qc/[geometry, firstbreak, snr, shotfit, breakfit, fold, record]
+import processSEG/qc/[amplitude, exclusion]
 import processSEG/vibroseis/[taper, sweep, pilot, correlate, vstack, sweeptrack]
 import processSEG/vibroseis/[crosscorrelate, vibqc, recfilter]
 import processSEG/continuous/slice
