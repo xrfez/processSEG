@@ -11,6 +11,7 @@
 ## pool.traceAmplitudeInto(raw, meta, AmplitudeParams(), amps) # amplitude QC
 ## pool.pickInto(picker, raw, meta, picks)       # first breaks
 ## pool.averageSpectrogramInto(sg, raw, meta, amp) # averaged spectrogram
+## pool.fkAmplitudeInto(fk, raw, meta, 0, amp)   # f-k amplitude
 ## ```
 ##
 ## **Workers.** The threads start once, in `newProcessPool`, sleep on a
@@ -53,6 +54,8 @@ import ../vibroseis/correlate
 import ../qc/[amplitude, firstbreak]
 from ../fft/plan import fftLanes
 import ../fft/spectrogram
+from ../fft/fk import FkPlan
+import ../fft/fk as fk
 from ../filter/iir import iirLanes
 
 type
@@ -601,3 +604,99 @@ proc averageSpectrogramInto*[T: SampleType](p: ProcessPool, sg: SpectrogramPlan[
   ## used. The plan stays usable.
   meta.checkShape(samples)
   p.averageSpectrogramInto(sg, rowBlock(samples), meta, amp, rows)
+# ----------------------------------------------------------------------- f-k --
+
+type
+  FkCtx[T: SampleType] = object
+    plan: ptr FkPlan[T]
+    src: RowBlock[T]
+    meta: ChunkMeta
+    firstCol: int
+    live: ptr UncheckedArray[int]
+    specRe, specIm: ptr UncheckedArray[T]
+    amp: ptr UncheckedArray[float64]
+    extreme: bool
+    scratch: WorkspaceSize
+    queue: RowQueue
+
+proc fkTimeJob[T](ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
+    gcsafe, raises: [].} =
+  let c = cast[ptr FkCtx[T]](ctx)
+  try:
+    ws.reserve(c.scratch)
+  except ValueError as e:
+    raiseAssert "checked by fkAmplitudeInto: " & e.msg
+  c.queue.eachRun(span):
+    fk.fkTimeRun(c.plan[], c.src, c.meta, c.firstCol, c.live, span.a,
+      span.b - span.a + 1, c.specRe, c.specIm, ws)
+
+proc fkFreqJob[T](ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
+    gcsafe, raises: [].} =
+  let c = cast[ptr FkCtx[T]](ctx)
+  try:
+    ws.reserve(c.scratch)
+  except ValueError as e:
+    raiseAssert "checked by fkAmplitudeInto: " & e.msg
+  c.queue.eachRun(span):
+    fk.fkFreqRun(c.plan[], c.specRe, c.specIm, span.a, span.b - span.a + 1,
+      c.amp, c.extreme, ws)
+
+proc fkAmplitudeInto*[T: SampleType](p: ProcessPool, plan: FkPlan[T],
+    b: RowBlock[T], meta: ChunkMeta, firstCol: int, amp: var openArray[float64],
+    rows = 0 .. int.high): int =
+  ## `FkPlan.fkAmplitudeInto` with the time FFTs split across the workers in
+  ## runs of `fftLanes` traces and the spatial pass split by frequency, the
+  ## modulus with that pass. Blocks until both passes are done. The same
+  ## values, bit for bit, for any worker count: the float64 `hypot` decision
+  ## is made once for the whole window before the jobs start, and each worker
+  ## writes disjoint traces of the spectrum, then disjoint frequency rows of
+  ## `amp`, with its own workspace. Raises `ValueError` as the serial form
+  ## does, on this thread, before any job starts. A wrong `amp` length is an
+  ## `AssertionDefect`. No `stop` (the call runs to the end). Returns the
+  ## live rows used.
+  doAssert p.state != nil, "a ProcessPool must come from newProcessPool"
+  meta.checkShape(b)
+  if not sameInterval(meta.dtMs, fk.dtMs(plan)):
+    raise newException(ValueError, "the rows' interval " & $meta.dtMs &
+      " ms is not the plan's " & $(fk.dtMs(plan)) & " ms")
+  if firstCol < 0:
+    raise newException(ValueError, "firstCol must be ≥ 0, got " & $firstCol)
+  let nFreq = fk.nFreq(plan)
+  let nK = fk.nK(plan)
+  doAssert amp.len == nK * nFreq, "amp needs nK·nFreq values"
+  let nSamples = fk.samples(plan)
+  let entered = fk.fkRows(meta, b.cols, firstCol, nSamples, rows)
+  if entered != fk.traces(plan):
+    raise newException(ValueError, "the window has " & $entered &
+      " live rows, the plan was built for " & $fk.traces(plan))
+  var liveRows = newSeq[int](entered)
+  var n = 0
+  let lo = max(rows.a, 0)
+  let hi = min(rows.b, meta.len - 1)
+  for r in lo .. hi:
+    if meta.isLive(r) and meta.liveSamples(r, b.cols) > firstCol:
+      liveRows[n] = r
+      inc n
+  doAssert n == entered, "live rows changed under the check"
+  var spec = newSeqUninit[T](2 * entered * nFreq)
+  var ctx = FkCtx[T](plan: addr plan, src: b, meta: meta, firstCol: firstCol,
+    live: cast[ptr UncheckedArray[int]](addr liveRows[0]),
+    specRe: cast[ptr UncheckedArray[T]](addr spec[0]),
+    specIm: cast[ptr UncheckedArray[T]](addr spec[entered * nFreq]),
+    amp: cast[ptr UncheckedArray[float64]](addr amp[0]),
+    extreme: fk.fkLeavesRange(b, meta, firstCol, nSamples, rows),
+    scratch: fk.fkPoolScratch(plan))
+  ctx.queue.reset(entered, nSamples, sizeof(T), fftLanes)
+  acquire p.state.call
+  run(p.state, fkTimeJob[T], addr ctx)
+  ctx.queue.reset(nFreq, nK, sizeof(T), 1)
+  run(p.state, fkFreqJob[T], addr ctx)
+  release p.state.call
+  entered
+
+proc fkAmplitudeInto*[T: SampleType](p: ProcessPool, plan: FkPlan[T],
+    samples: Tensor[T], meta: ChunkMeta, firstCol: int,
+    amp: var openArray[float64], rows = 0 .. int.high): int =
+  ## `fkAmplitudeInto` on a `[rows, cols]` tensor. Returns the live rows used.
+  meta.checkShape(samples)
+  p.fkAmplitudeInto(plan, rowBlock(samples), meta, firstCol, amp, rows)

@@ -11,6 +11,15 @@
 ## `pool_average_drops_extreme_float64` failed before the pool called
 ## `averagedRow`: workers 1 used 4 instead of 2 (the 1e200 and 1e-200 rows
 ## were kept).
+## f-k amplitude matches `FkPlan.fkAmplitudeInto` bit for bit.
+##
+## Fail-first: `fk_pool_matches` failed while the time pass wrote lane 0 of
+## every trace (`laneX[j * fftLanes + 0]`): `bad < 0` workers 1 float32
+## traces 7 samples 32 differ at 0. `fk_pool_hypot` failed while pass 2
+## always called `modulusInto`: hypot path differs at 17, pool
+## 1.0000000000000002e+150 (fcNormal), serial 1e+150 (fcNormal).
+## `fk_pool_errors` failed while a 1-live-row window did not raise:
+## `serialMsg.len > 0 and serialMsg == poolMsg`.
 
 import std/[assertions, math]
 import processSEG
@@ -405,5 +414,127 @@ proc main*() =
       for k in 0 ..< got.len:
         doAssert got[k] == refAmp[k], "workers " & $w & " bin " & $k &
           " " & $got[k] & " vs " & $refAmp[k]
+  proc firstDiff(a, b: openArray[float64]): int =
+    result = -1
+    for i in 0 ..< a.len:
+      if cast[uint64](a[i]) != cast[uint64](b[i]): return i
+
+  proc fillFk[T](g: var SynthGather[T]) =
+    let cols = g.data.shape[1]
+    for r in 0 ..< g.data.shape[0]:
+      for j in 0 ..< cols:
+        g.data[r, j] = T(sin(0.17 * float64(j) + 0.31 * float64(r)) +
+          0.05 * float64(r - j))
+
+  proc checkFk[T](pool: ProcessPool, traces, samples, firstCol: int,
+      rows: Slice[int], deadAt = -1, shortAt = -1) =
+    let cols = firstCol + samples
+    var g = cmpGather[T](0, newSeq[float64](traces + 1), cols, dtMs = 2)
+    fillFk(g)
+    g.keys[0].status = tsDead
+    if deadAt > 0: g.keys[deadAt].status = tsDead
+    if shortAt > 0: g.setLive(shortAt, firstCol)
+    let meta = initChunkMeta(g.rows, dtMs = 2)
+    let entered = fkRows(meta, cols, firstCol, samples, rows)
+    let plan = initFkPlan(T, 2, traces = entered, samples = samples, taperFraction = 0.1)
+    var ws = initWorkspace()
+    ws.reserve(plan)
+    var want = newSeq[float64](plan.nK * plan.nFreq)
+    var got = newSeq[float64](want.len)
+    for i in 0 ..< want.len:
+      want[i] = -1
+      got[i] = -1
+    let nSer = plan.fkAmplitudeInto(g.data, meta, firstCol, want, ws, rows)
+    let nPool = pool.fkAmplitudeInto(plan, g.data, meta, firstCol, got, rows)
+    doAssert nSer == nPool and nPool == entered
+    let bad = firstDiff(want, got)
+    doAssert bad < 0, "workers " & $pool.workers & " " & $T & " traces " &
+      $traces & " samples " & $samples & " differ at " & $bad
+    for i in 0 ..< got.len: got[i] = -1
+    let nBlock = pool.fkAmplitudeInto(plan, rowBlock(g.data), meta, firstCol, got, rows)
+    doAssert nBlock == entered
+    doAssert firstDiff(want, got) < 0
+
+  block fk_pool_matches:
+    for workers in [1, 2, 3, 8]:
+      var pool = newProcessPool(workers)
+      for samples in [32, 64]:
+        for traces in [7, 8, 9, 17]:
+          checkFk[float32](pool, traces, samples, 0, 0 .. int.high)
+          checkFk[float64](pool, traces, samples, 0, 0 .. int.high)
+      checkFk[float64](pool, 9, 32, 4, 0 .. int.high, shortAt = 3)
+      checkFk[float32](pool, 9, 40, 0, 1 .. 8, deadAt = 2)
+      checkFk[float64](pool, 17, 2048, 0, 0 .. int.high)
+      checkFk[float32](pool, 200, 512, 0, 0 .. int.high)
+      checkFk[float64](pool, 200, 512, 0, 0 .. int.high)
+
+  block fk_pool_hypot:
+    const cols = 32
+    var g = cmpGather[float64](0, newSeq[float64](8), cols, dtMs = 2)
+    fillFk(g)
+    g.data[2, 3] = 1e150
+    let meta = initChunkMeta(g.rows, dtMs = 2)
+    let plan = initFkPlan(float64, 2, traces = 8, samples = cols, taperFraction = 0)
+    var ws = initWorkspace()
+    ws.reserve(plan)
+    var want = newSeq[float64](plan.nK * plan.nFreq)
+    var pool = newProcessPool(2)
+    var got = newSeq[float64](want.len)
+    doAssert plan.fkAmplitudeInto(g.data, meta, 0, want, ws) == 8
+    doAssert pool.fkAmplitudeInto(plan, g.data, meta, 0, got) == 8
+    let bad = firstDiff(want, got)
+    doAssert bad < 0, "hypot path differs at " & $bad & " pool " & $got[bad] &
+      " (" & $classify(got[bad]) & ") serial " & $want[bad] &
+      " (" & $classify(want[bad]) & ")"
+    for a in got:
+      doAssert classify(a) notin {fcInf, fcNegInf, fcNan}
+    g.data[2, 3] = 0
+    g.data[1, 0] = 1e150
+    for i in 0 ..< want.len:
+      want[i] = -1
+      got[i] = -1
+    let win = cols - 8
+    let plan2 = initFkPlan(float64, 2, traces = 8, samples = win, taperFraction = 0)
+    ws.reserve(plan2)
+    want.setLen(plan2.nK * plan2.nFreq)
+    got.setLen(want.len)
+    doAssert plan2.fkAmplitudeInto(g.data, meta, 8, want, ws) == 8
+    doAssert pool.fkAmplitudeInto(plan2, g.data, meta, 8, got) == 8
+    doAssert firstDiff(want, got) < 0
+
+  block fk_pool_errors:
+    var g = cmpGather[float64](0, newSeq[float64](6), 32, dtMs = 2)
+    fillFk(g)
+    for r in 1 .. 5: g.keys[r].status = tsDead
+    let meta = initChunkMeta(g.rows, dtMs = 2)
+    doAssert fkRows(meta, 32, 0, 32) == 1
+    let plan = initFkPlan(float64, 2, traces = 4, samples = 32)
+    var ws = initWorkspace()
+    ws.reserve(plan)
+    var amp = newSeq[float64](plan.nK * plan.nFreq)
+    var pool = newProcessPool(2)
+    var serialMsg, poolMsg = ""
+    try: discard plan.fkAmplitudeInto(g.data, meta, 0, amp, ws)
+    except ValueError as e: serialMsg = e.msg
+    try: discard pool.fkAmplitudeInto(plan, g.data, meta, 0, amp)
+    except ValueError as e: poolMsg = e.msg
+    doAssert serialMsg.len > 0 and serialMsg == poolMsg
+    try: discard plan.fkAmplitudeInto(g.data, meta, -1, amp, ws)
+    except ValueError as e: serialMsg = e.msg
+    try: discard pool.fkAmplitudeInto(plan, g.data, meta, -1, amp)
+    except ValueError as e: poolMsg = e.msg
+    doAssert serialMsg.len > 0 and serialMsg == poolMsg
+    let other = initChunkMeta(g.rows, dtMs = 4)
+    try: discard plan.fkAmplitudeInto(g.data, other, 0, amp, ws)
+    except ValueError as e: serialMsg = e.msg
+    try: discard pool.fkAmplitudeInto(plan, g.data, other, 0, amp)
+    except ValueError as e: poolMsg = e.msg
+    doAssert serialMsg.len > 0 and serialMsg == poolMsg
+    var short = newSeq[float64](3)
+    doAssertRaises AssertionDefect:
+      discard pool.fkAmplitudeInto(plan, g.data, meta, 0, short)
+    var dead: ProcessPool
+    doAssertRaises AssertionDefect:
+      discard dead.fkAmplitudeInto(plan, g.data, meta, 0, amp)
 
 when isMainModule: main()

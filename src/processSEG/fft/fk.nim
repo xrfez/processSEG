@@ -342,3 +342,163 @@ proc fkAmplitudeInto*[T: SampleType](p: FkPlan[T], samples: Tensor[T],
   ## plan and the workspace stay usable.
   meta.checkShape(samples)
   p.fkAmplitudeInto(rowBlock(samples), meta, firstCol, amp, ws, rows, stop)
+
+# --------------------------------------------------------- pool pieces --
+#
+# `ProcessPool.fkAmplitudeInto` calls these. The serial body above is left
+# as it is, so its speed does not change; the pieces repeat its lane and
+# modulus steps so the bits stay the same.
+
+func timeLaneAt[T](p: FkPlan[T]): int {.inline.} =
+  fftScratch(p).elems(T)
+
+func timeLaneElems[T](p: FkPlan[T]): int {.inline.} =
+  fftLanes * (p.timeFft.len + 2 * p.timeFft.bins)
+
+func freqBufAt[T](p: FkPlan[T]): int {.inline.} =
+  p.spaceFft.workspaceSize(batched = false).elems(T)
+
+func freqBufElems[T](p: FkPlan[T]): int {.inline.} =
+  2 * p.spaceFft.len + 4 * p.spaceFft.bins
+
+func modulusAt[T](p: FkPlan[T]): int {.inline.} =
+  when T is float32: 0
+  else: freqBufAt(p) + freqBufElems(p)
+
+func fkPoolScratch*[T: SampleType](p: FkPlan[T]): WorkspaceSize {.raises: [].} =
+  ## Scratch one worker of `ProcessPool.fkAmplitudeInto` reserves: the time
+  ## lanes or the spatial pass, plus the float64 modulus buffers. Not the
+  ## shared spectrum panel. For the pool.
+  let pass1 = timeLaneAt(p) + timeLaneElems(p)
+  let pass2 = freqBufAt(p) + freqBufElems(p)
+  let nK = p.spaceFft.len
+  when T is float32:
+    WorkspaceSize(f32: max(pass1, pass2), f64: 3 * nK)
+  else:
+    WorkspaceSize(f64: max(pass1, pass2 + 3 * nK))
+
+func fkLeavesRange*[T: SampleType](b: RowBlock[T], meta: ChunkMeta, firstCol,
+    nSamples: int, rows: Slice[int]): bool {.raises: [].} =
+  ## True when a float64 sample that enters the window leaves the range
+  ## `fkAmplitudeInto` measures with `hypot`. False for float32, and for a
+  ## window whose samples stay in range. The pool decides this once, on the
+  ## caller, before its jobs, over the same samples the serial form scans.
+  when T is float64:
+    let lo = max(rows.a, 0)
+    let hi = min(rows.b, b.len - 1)
+    for r in lo .. hi:
+      if meta.isLive(r):
+        let live = meta.liveSamples(r, b.cols)
+        if live > firstCol:
+          let last = min(live, firstCol + nSamples)
+          let src = b.rowPtr(r)
+          if leavesFloat64Range(cast[ptr UncheckedArray[float64]](
+              addr src[firstCol]), last - firstCol):
+            return true
+  false
+
+proc fkTimeRun*[T: SampleType](p: FkPlan[T], b: RowBlock[T], meta: ChunkMeta,
+    firstCol: int, live: ptr UncheckedArray[int], firstTrace, count: int,
+    specRe, specIm: ptr UncheckedArray[T], ws: var Workspace) {.raises: [].} =
+  ## One run of the time pass, for `ProcessPool.fkAmplitudeInto`. Traces
+  ## `firstTrace ..< firstTrace + count` of `live` (row indices of traces
+  ## that enter, in order) go into the shared spectrum, trace-major.
+  ## `firstTrace` is a multiple of `fftLanes`. A short tail is zero-padded
+  ## and transformed with `forwardLanes`, the serial path, not `forward`.
+  ## `ws` must hold `fkPoolScratch`. Nothing allocates.
+  doAssert firstTrace mod fftLanes == 0, "a time run starts on a lane"
+  let nFreq = p.timeFft.bins
+  let nTime = p.timeFft.len
+  let buf = ws.scratch(T, timeLaneElems(p), timeLaneAt(p))
+  var o = 0
+  template take(n: int): ptr UncheckedArray[T] =
+    let q = cast[ptr UncheckedArray[T]](addr buf[o])
+    o += n
+    q
+  let laneX = take(nTime * fftLanes)
+  let laneRe = take(nFreq * fftLanes)
+  let laneIm = take(nFreq * fftLanes)
+  var done = 0
+  while done < count:
+    let lane = min(fftLanes, count - done)
+    zeroMem(laneX, nTime * fftLanes * sizeof(T))
+    for l in 0 ..< lane:
+      let ti = firstTrace + done + l
+      let r = live[ti]
+      let src = b.rowPtr(r)
+      let last = min(meta.liveSamples(r, b.cols), firstCol + p.samples)
+      let tw = p.traceW[ti]
+      {.push boundChecks: off.}
+      for j in 0 ..< last - firstCol:
+        laneX[j * fftLanes + l] = src[firstCol + j] * p.timeW[j] * tw
+      {.pop.}
+    p.timeFft.forwardLanes(laneX.toOpenArray(0, nTime * fftLanes - 1),
+      laneRe.toOpenArray(0, nFreq * fftLanes - 1),
+      laneIm.toOpenArray(0, nFreq * fftLanes - 1), ws)
+    for l in 0 ..< lane:
+      let ti = firstTrace + done + l
+      {.push boundChecks: off.}
+      for k in 0 ..< nFreq:
+        specRe[ti * nFreq + k] = laneRe[k * fftLanes + l]
+        specIm[ti * nFreq + k] = laneIm[k * fftLanes + l]
+      {.pop.}
+    done += lane
+
+proc fkFreqRun*[T: SampleType](p: FkPlan[T], specRe, specIm: ptr UncheckedArray[T],
+    firstFreq, count: int, amp: ptr UncheckedArray[float64], extreme: bool,
+    ws: var Workspace) {.raises: [].} =
+  ## One run of the spatial pass, for `ProcessPool.fkAmplitudeInto`.
+  ## Frequencies `firstFreq ..< firstFreq + count` of the shared spectrum,
+  ## then the modulus into `amp` (frequency fastest). `extreme` is the
+  ## window's float64 `hypot` decision, already made for the whole window.
+  ## `ws` must hold `fkPoolScratch`. Nothing allocates.
+  let nFreq = p.timeFft.bins
+  let nK = p.spaceFft.len
+  let sBins = p.spaceFft.bins
+  let traces = p.traces
+  let buf = ws.scratch(T, freqBufElems(p), freqBufAt(p))
+  var o = 0
+  template take(n: int): ptr UncheckedArray[T] =
+    let q = cast[ptr UncheckedArray[T]](addr buf[o])
+    o += n
+    q
+  let spatA = take(nK)
+  let spatB = take(nK)
+  let ar = take(sBins)
+  let ai = take(sBins)
+  let br = take(sBins)
+  let bi = take(sBins)
+  let at = modulusAt(p)
+  let re64 = ws.scratch(float64, nK, at)
+  let im64 = ws.scratch(float64, nK, at + nK)
+  let mag = ws.scratch(float64, nK, at + 2 * nK)
+  let half = nK div 2
+  for jf in firstFreq ..< firstFreq + count:
+    zeroMem(spatA, nK * sizeof(T))
+    zeroMem(spatB, nK * sizeof(T))
+    {.push boundChecks: off.}
+    for t in 0 ..< traces:
+      spatA[t] = specRe[t * nFreq + jf]
+      spatB[t] = specIm[t * nFreq + jf]
+    {.pop.}
+    p.spaceFft.forward(spatA.toOpenArray(0, nK - 1),
+      ar.toOpenArray(0, sBins - 1), ai.toOpenArray(0, sBins - 1), ws)
+    p.spaceFft.forward(spatB.toOpenArray(0, nK - 1),
+      br.toOpenArray(0, sBins - 1), bi.toOpenArray(0, sBins - 1), ws)
+    for ik in 0 ..< nK:
+      let raw = half - ik
+      let sk = if raw >= 0: raw else: raw + nK
+      if sk <= half:
+        re64[ik] = float64(ar[sk]) - float64(bi[sk])
+        im64[ik] = float64(ai[sk]) + float64(br[sk])
+      else:
+        let k = nK - sk
+        re64[ik] = float64(ar[k]) + float64(bi[k])
+        im64[ik] = float64(br[k]) - float64(ai[k])
+    when T is float64:
+      if extreme: hypotModulus(re64, im64, mag, nK)
+      else: modulusInto(re64, im64, mag, nK)
+    else:
+      modulusInto(re64, im64, mag, nK)
+    for ik in 0 ..< nK:
+      amp[ik * nFreq + jf] = mag[ik]

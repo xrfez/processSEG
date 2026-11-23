@@ -247,7 +247,8 @@ auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guid
 | `FkAxes` (`nFreq`, `nK`, `dfHz`, `dkPerTrace`); `FkPlan[T]`; `initFkPlan(T, dtMs, traces, samples, taperFraction = 0.1)` | f-k of `traces` live rows by `samples` columns. Tukey both axes. Time padded to `nextFastLen(samples)`, traces to `nextFastLen(2·traces)`. `ValueError` for fewer than 4 traces, fewer than 8 samples, a bad `dtMs` or taper. |
 | `plan.axes`, `plan.nFreq`, `plan.nK`, `plan.dfHz`, `plan.dkPerTrace`, `plan.traces`, `plan.samples`, `plan.dtMs`, `plan.workspaceSize` | Axes (zero k at `nK div 2`, positive k is later on later traces) and scratch. `dkPerTrace` is cycles per trace; cycles/km stay in the viewer. |
 | `fkRows(meta, cols, firstCol, nCols, rows = 0 .. high(int)): int` | Live rows that enter the window: the `traces` to build the plan for. |
-| `plan.fkAmplitudeInto(b \| samples, meta, firstCol, amp, ws, rows = 0 .. high(int), stop: StopCheck = nil): int` | Unscaled modulus, `nK·nFreq`, frequency fastest. Returns the live rows used, or `Stopped` when `stop` said to abandon (`amp` then unspecified). Checked once per trace that enters and once per frequency of the spatial pass; nil never stops. The plan and the workspace stay usable. `ValueError` when the live count is not the plan's. A wrong `amp` length is an `AssertionDefect` (every other Into kernel), not the `ValueError` the audit suggested. |
+| `plan.fkAmplitudeInto(b \| samples, meta, firstCol, amp, ws, rows = 0 .. high(int), stop: StopCheck = nil): int` | Unscaled modulus, `nK·nFreq`, frequency fastest. Returns the live rows used, or `Stopped` when `stop` said to abandon (`amp` then unspecified). Checked once per trace that enters and once per frequency of the spatial pass; nil never stops. The plan and the workspace stay usable. `ValueError` when the live count is not the plan's. A wrong `amp` length is an `AssertionDefect` (every other Into kernel), not the `ValueError` the audit suggested. The pool form is `fkAmplitudeInto(pool, plan, ...)` (no workspace, no stop). |
+| `fkPoolScratch(plan)`; `fkLeavesRange(b, meta, firstCol, nSamples, rows)`; `fkTimeRun(...)`; `fkFreqRun(...)` | The pieces `ProcessPool.fkAmplitudeInto` calls. Not a second way to run the transform. |
 
 ## filter/design: `FilterSpec`
 
@@ -577,6 +578,7 @@ The last time a trace's signal is still up, in ms. `blockLevels` is the largest 
 | `correlateInto(pool, plan: CorrelationPlan[T], src, dst: RowBlock[T] \| Tensor[T], meta)` | Vibroseis correlation with the rows split across the workers; checks as `checkCorrelate` on the caller's thread. |
 | `traceAmplitudeInto(pool, b \| samples, meta, params, dst)` | Amplitude QC (`qc/amplitude`) with the rows split across the workers, each reserving `traceAmplitudeWorkspace`. |
 | `pickInto(pool, plan: FirstBreakPlan[T], b \| samples, meta, dst)` | First-break picking (`qc/firstbreak`) with the rows split across the workers; checks as `checkPick` on the caller's thread. |
+| `fkAmplitudeInto(pool, plan: FkPlan[T], b \| samples, meta, firstCol, amp, rows = 0 .. high(int)): int` | f-k modulus (`fft/fk`) with the time pass split in runs of `fftLanes` traces and the spatial pass split by frequency. Same bits as `plan.fkAmplitudeInto` for any worker count, including a float64 window measured with `hypot` (decided once, before the jobs). `ValueError` as the serial form, on the caller, before any job. No `stop`. Returns the live rows used. |
 
 ## adapters: metas from parseSEG reads
 

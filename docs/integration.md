@@ -823,7 +823,7 @@ The viewer does not build these itself. Each call fills a buffer the viewer alre
 | Picture | Call |
 |---|---|
 | dB of an amplitude, 0 dB at a reference | `toDbInto(amp, db, dbAbsolute, refAmplitude = reference)` (peak-relative stays `toDbInto(amp, db)`; the reference argument is ignored then) |
-| f-k of a gather | `fkRows` to size it, `initFkPlan`, `plan.fkAmplitudeInto`; then `toDbInto`. Pass `stop` to abandon between traces and between frequency passes (`Stopped` when abandoned, `amp` unspecified; otherwise the live rows used; nil never stops). Positive k is later on later traces. `dkPerTrace` is cycles per live trace that entered |
+| f-k of a gather | `fkRows` to size it, `initFkPlan`, `plan.fkAmplitudeInto`; then `toDbInto`. Pass `stop` to abandon between traces and between frequency passes (`Stopped` when abandoned, `amp` unspecified; otherwise the live rows used; nil never stops). `pool.fkAmplitudeInto` is the same bits with those two passes split across the pool's workers (no workspace, no stop; the call runs to the end). Positive k is later on later traces. `dkPerTrace` is cycles per live trace that entered |
 | Envelope, phase and instantaneous Hz | `hp.analyticInto(x, dtMs, env, phaseDeg, hz, ws)` — one Hilbert, not `envelopeInto` beside `hilbertInto`. `hz` is right up to Nyquist (mean of the two one-sample phase steps), NaN at the ends and under the floor |
 | Mean of angles in degrees (phase difference, QC) | `circularMeanDeg(angles)`: `(meanDeg, resultant)`, NaN skipped, `(NaN, 0)` for none, `meanDeg` NaN when they cancel |
 | Phase unwrapped along the bins on screen | `unwrapPhaseInto(phaseDeg, shown, dst)`. A hidden bin is not crossed |
