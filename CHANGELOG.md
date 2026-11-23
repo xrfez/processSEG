@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `qc/signalend`: where a trace's signal ends. `blockLevels`, `lastLoudMs`, `signalEndMs`, `RippleFraction`. `levels` and `timesMs` of different lengths raise `ValueError`; an empty pair is NaN.
+
 ## 0.11.0
 
 - `vibroseis/matchpeak`: the correlation envelope's peak, its time shift and the phase turn there. `MatchVerdict`, `Match`, `peakAt`, `matchOf`, `rotationOf`, `rotationOfInto`; constants `NoClearMatch`, `ClearPeakToSidelobe`, `SidelobeGapMs`, `MinSidelobeSpanMs`, `PreciseShiftPeakToSidelobe`, `PreciseShiftMatch`. Parallel arrays of different length raise `ValueError`.
