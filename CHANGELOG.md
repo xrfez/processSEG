@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `vibroseis/sweepedge`: the top frequency of a reference sweep, read from its samples, with the reading's uncertainty. `TopReading`, `TopReason` (`trNone`, `trNoSweep`, `trTaperShort`, `trNoTop`, `trNotSure`), `notBefore`, `Weighed`, `weighShapes`, `readTop`, `UncertainFraction`. Parallel arrays of different length raise `ValueError`.
 - `qc/signalend`: where a trace's signal ends. `blockLevels`, `lastLoudMs`, `signalEndMs`, `RippleFraction`. `levels` and `timesMs` of different lengths raise `ValueError`; an empty pair is NaN.
 
 ## 0.11.0

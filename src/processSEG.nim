@@ -54,6 +54,8 @@
 ## - `processSEG/vibroseis/vstack`: `RecordStack`, vertical and diversity stacks of repeated records;
 ## - `processSEG/vibroseis/sweeptrack`: vibrator signals against sweep time: phase, fundamental,
 ##   harmonics, THD, peak and frequency (`SweepTrackPlan`, `trackInto`);
+## - `processSEG/vibroseis/sweepedge`: the top frequency of a reference sweep (`readTop`,
+##   `TopReading`, `TopReason`);
 ## - `processSEG/vibroseis/recfilter`: a reference through a recorder's filter, its bulk delay backed out
 ##   (`RecordingFilter`, `applyRecordingFilter`, `suggestedShift`);
 ## - `processSEG/vibroseis/crosscorrelate`: a signal against its reference: correlation over lags,
@@ -86,7 +88,7 @@ import processSEG/statics/elevation
 import processSEG/stack/[nmo, binning, stack]
 import processSEG/qc/[geometry, firstbreak, snr, shotfit, breakfit, fold, record]
 import processSEG/qc/[amplitude, exclusion, signalend]
-import processSEG/vibroseis/[taper, sweep, pilot, correlate, vstack, sweeptrack]
+import processSEG/vibroseis/[taper, sweep, pilot, correlate, vstack, sweeptrack, sweepedge]
 import processSEG/vibroseis/[crosscorrelate, matchpeak, vibqc, recfilter]
 import processSEG/continuous/slice
 import processSEG/survey/patch
@@ -97,5 +99,5 @@ export types, rows, workspace, basic, mute, plan, spectrum, hilbert, spectrogram
     formats, moveout, elevation, nmo, binning, stack, batch, geometry, firstbreak, snr,
     shotfit, breakfit, filescales
 export taper, sweep, pilot, correlate, vstack, slice, patch, fold, record, amplitude, units,
-    calibrate, sweeptrack, crosscorrelate, matchpeak, vibqc, recfilter, synth, exclusion,
-    signalend
+    calibrate, sweeptrack, sweepedge, crosscorrelate, matchpeak, vibqc, recfilter, synth,
+    exclusion, signalend
