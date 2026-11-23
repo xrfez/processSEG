@@ -437,17 +437,20 @@ const avgBatchRows = 16 # fixed: the sum's order must not follow the worker coun
 
 proc ensureAvgScratch(s: ptr PoolState, elems, slots: int) =
   ## Grows the pool's partial buffer to `elems` float64 and `slots` counts.
-  ## The caller holds `s.call`. A no-op when it already fits.
+  ## The caller holds `s.call`. A no-op when it already fits. The new block
+  ## is allocated before the old one is freed, so a failed allocation leaves
+  ## the pool holding the block it still owns.
   if elems > s.partialCap:
-    if s.partialRaw != nil: deallocShared s.partialRaw
     let raw = allocShared0(elems * sizeof(float64) + 64)
     let aligned = (cast[int](raw) + 63) and not 63
+    if s.partialRaw != nil: deallocShared s.partialRaw
     s.partialRaw = raw
     s.partial = cast[ptr UncheckedArray[float64]](aligned)
     s.partialCap = elems
   if slots > s.countsCap:
+    let counts = cast[ptr UncheckedArray[int]](allocShared0(slots * sizeof(int)))
     if s.counts != nil: deallocShared s.counts
-    s.counts = cast[ptr UncheckedArray[int]](allocShared0(slots * sizeof(int)))
+    s.counts = counts
     s.countsCap = slots
 
 proc addSquares(src: ptr UncheckedArray[float64],
