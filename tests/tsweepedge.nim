@@ -464,11 +464,11 @@ proc srcReadTop(x: openArray[float32]; dtMs: float64; track: SweepTrack;
 
 proc sentence(w: TopReason): string =
   case w
-  of trNone: ""
-  of trNoSweep: "the reference has no sweep to read"
-  of trTaperShort: "the end taper of the sweep is too short or too noisy to be fitted"
-  of trNoTop: "the sweep's frequency law gives no top"
-  of trNotSure: "the end of the sweep is not sure enough"
+  of tpNone: ""
+  of tpNoSweep: "the reference has no sweep to read"
+  of tpTaperShort: "the end taper of the sweep is too short or too noisy to be fitted"
+  of tpNoTop: "the sweep's frequency law gives no top"
+  of tpNotSure: "the end of the sweep is not sure enough"
 
 func sameFloat(a, b: float64): bool =
   a == b or (a.isNaN and b.isNaN)
@@ -505,12 +505,12 @@ proc bareTrack(n: int; f: float64): SweepTrack =
 
 proc main*() =
   block sentences:
-    doAssert sentence(trNone) == ""
-    doAssert sentence(trNoSweep) == "the reference has no sweep to read"
-    doAssert sentence(trTaperShort) ==
+    doAssert sentence(tpNone) == ""
+    doAssert sentence(tpNoSweep) == "the reference has no sweep to read"
+    doAssert sentence(tpTaperShort) ==
       "the end taper of the sweep is too short or too noisy to be fitted"
-    doAssert sentence(trNoTop) == "the sweep's frequency law gives no top"
-    doAssert sentence(trNotSure) == "the end of the sweep is not sure enough"
+    doAssert sentence(tpNoTop) == "the sweep's frequency law gives no top"
+    doAssert sentence(tpNotSure) == "the end of the sweep is not sure enough"
 
   block not_before:
     # Kept at or past the last fitted point: later in time, or earlier.
@@ -653,7 +653,7 @@ proc main*() =
     let cr = tracked(cx, clean.dtMs)
     let got = readTop(cx, clean.dtMs, cr.track, cr.extent)
     doAssert got.hz > 70 and got.hz < 90, "a linear sweep's top, got " & $got.hz
-    doAssert got.why == trNone
+    doAssert got.why == tpNone
 
     var rng = initRand(7)
     for i in 0 ..< 4:
@@ -668,11 +668,11 @@ proc main*() =
         x.setLen(x.len * 3 div 4)
       finish("rand " & $i, spec, x)
 
-    doAssert trNone in seen
-    doAssert trNoSweep in seen
-    doAssert trTaperShort in seen
-    doAssert trNoTop in seen
-    doAssert trNotSure in seen
+    doAssert tpNone in seen
+    doAssert tpNoSweep in seen
+    doAssert tpTaperShort in seen
+    doAssert tpNoTop in seen
+    doAssert tpNotSure in seen
 
     var bad = bareTrack(5, 10.0)
     bad.referenceHz.setLen(4)

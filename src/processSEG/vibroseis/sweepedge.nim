@@ -56,11 +56,11 @@ type
   TopReason* = enum
     ## Why a reading is uncertain, or why there is none. The sentence for a
     ## value is its comment.
-    trNone ## No sentence: the reading is sure enough.
-    trNoSweep ## the reference has no sweep to read
-    trTaperShort ## the end taper of the sweep is too short or too noisy to be fitted
-    trNoTop ## the sweep's frequency law gives no top
-    trNotSure ## the end of the sweep is not sure enough
+    tpNone ## No sentence: the reading is sure enough.
+    tpNoSweep ## the reference has no sweep to read
+    tpTaperShort ## the end taper of the sweep is too short or too noisy to be fitted
+    tpNoTop ## the sweep's frequency law gives no top
+    tpNotSure ## the end of the sweep is not sure enough
 
   TopReading* = object
     ## `hz` NaN: no reading. `endMs` is where the sweep is taken to end (its top-frequency end).
@@ -70,7 +70,7 @@ type
     endMs*: float64 = NaN
     lastMs*: float64 = NaN  ## the last point of the fall that was fitted
     rateHzS*: float64 = NaN ## the sweep's rate at its end, Hz per second
-    why*: TopReason         ## `trNone` when the reading is sure enough
+    why*: TopReason         ## `tpNone` when the reading is sure enough
 
 proc badParams(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
@@ -262,7 +262,7 @@ proc readTop*(x: openArray[float32]; dtMs: float64; track: SweepTrack;
   if track.timeMs.len != track.referenceHz.len:
     badParams("readTop: " & $track.timeMs.len & " timeMs, " &
       $track.referenceHz.len & " referenceHz")
-  result = TopReading(hz: NaN, why: trNoSweep)
+  result = TopReading(hz: NaN, why: tpNoSweep)
   let n = x.len
   if n < 64 or not (dtMs > 0): return
   var ts, fs: seq[float64] = @[]
@@ -454,7 +454,7 @@ proc readTop*(x: openArray[float32]; dtMs: float64; track: SweepTrack;
           sqrt((1.0 + 3.0 * (root - p.t0) ^ 2 / (p.h * p.h)) / neff)
   var tEnd = NaN
   var sigT = Inf
-  var why = trNone
+  var why = tpNone
   if nFit >= 4 and bestSse < Inf:
     let weighed = weighShapes(roots, sses, floors, rootSe, tt.len, kCorr, tLast, dir)
     let (bestAt, se2, spread) = (weighed.best, weighed.seSq, weighed.spread)
@@ -479,10 +479,10 @@ proc readTop*(x: openArray[float32]; dtMs: float64; track: SweepTrack;
     tEnd = if step or abs(scanLast - tEdge) <= 2.5 * width: tEdge else: scanLast
     sigT = max(0.5 * width, abs(scanLast - tEdge))
     if not (step or abs(scanLast - tEdge) <= 2.5 * width):
-      why = trTaperShort
+      why = tpTaperShort
   let est = law.hz(tEnd)
   if not (est > 0 and est < Inf):
-    result.why = trNoTop
+    result.why = tpNoTop
     return
   # the law taken beyond the points it was fitted to: a tenth of the change over that stretch,
   # times its length over the fitted one, is counted as error (a law of another form than the
@@ -492,6 +492,6 @@ proc readTop*(x: openArray[float32]; dtMs: float64; track: SweepTrack;
   let u = Coverage * sqrt(law.sd(tEnd) ^ 2 + extra ^ 2 + (law.rate(tEnd) * sigT) ^ 2)
   result = TopReading(hz: est, uncertaintyHz: u, endMs: tEnd * 1000, lastMs: tLast * 1000,
     rateHzS: law.rate(tEnd))
-  if why != trNone or u > UncertainFraction * est:
+  if why != tpNone or u > UncertainFraction * est:
     result.uncertain = true
-    result.why = if why != trNone: why else: trNotSure
+    result.why = if why != tpNone: why else: tpNotSure
