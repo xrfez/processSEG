@@ -323,6 +323,8 @@ auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guid
 |---|---|
 | `ShiftInterp` (`siLinear`, `siCubic`: 4-point Catmull-Rom) | Interpolation of fractional shifts (statics, LMO, NMO). |
 | `shiftSamples(x, shift, interp = siLinear)` | `x[j]` becomes the old `x[j + shift]`, zero outside; a NaN shift leaves `x` alone. |
+| `placedWhole(stored, wholeSamples)` | `stored` placed `wholeSamples` later: that many zeros before it; a negative number drops that many first samples. A new trace, longer or shorter (empty when the drop covers `stored`). A positive amount is later, not earlier as in `shiftSamples`. |
+| `placedSinc(stored, shiftMs, dtMs)` | `stored` moved later by `shiftMs`, a fraction of a sample included: Kaiser-windowed sinc, 24 taps each side, beta 8, zeros outside `stored` (nothing wraps). Longer by the shift, shorter when negative. A non-positive `dtMs`, an empty `stored`, or a NaN `shiftMs` returns a copy of `stored`. A fraction below 1e-9 above a whole sample is `placedWhole`. 100.3 ms at 1 ms is not snapped to 100. |
 
 ## core/timeshift: whole-sample shift
 

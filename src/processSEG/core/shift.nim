@@ -14,6 +14,13 @@
 ## A shift there and back loses the samples moved out of the row.
 ## A viewer's length-keeping shift by whole samples is `timeShift`
 ## (`core/timeshift`), not this interpolator.
+##
+## A stored trace placed later, longer or shorter than it was, is not a
+## mode of `shiftSamples`: that one stays in place and keeps the length.
+## `placedWhole` moves by whole samples and `placedSinc` by a
+## Kaiser-windowed sinc; both return a new trace. A positive amount places
+## the stored samples later (zeros before them), the opposite sign from
+## `shiftSamples`.
 
 import std/math
 import parseSEG
@@ -151,3 +158,81 @@ proc shiftSamples*[T: SampleType](x: var openArray[T], shift: float64,
   if someLo > 0: zeroMem(p, someLo * sizeof(T))
   if someHi < n: zeroMem(addr p[someHi], (n - someHi) * sizeof(T))
   {.pop.}
+
+const SincHalf = 24 # taps each side of the Kaiser-windowed sinc
+
+# Thirty terms of (x/(2k))^2. Not `vibroseis/kaiser.besselI0`: that series
+# multiplies by (x*x/4)/k^2 and stops early, and the two differ (1 ulp at
+# beta*sqrt(1-r*r) for r = 0.00008, and in the window weights) on the
+# arguments used here (beta 8, r in [0, 1)).
+func besselI0(x: float64): float64 =
+  var term = 1.0
+  result = 1.0
+  for k in 1 .. 30:
+    term *= (x / (2 * float64(k))) ^ 2
+    result += term
+
+func placedWhole*[T: SampleType](stored: openArray[T],
+    wholeSamples: int): seq[T] {.raises: [].} =
+  ## `stored` starting `wholeSamples` after the first sample (zeros before
+  ## it); a negative number drops that many of its first samples. Longer by
+  ## a positive shift, shorter by a negative one, empty when the drop covers
+  ## `stored`.
+  if wholeSamples >= 0:
+    result = newSeq[T](wholeSamples + stored.len)
+    for i, v in stored: result[wholeSamples + i] = v
+  else:
+    let drop = min(-wholeSamples, stored.len)
+    result = newSeq[T](stored.len - drop)
+    for i in 0 ..< result.len: result[i] = stored[drop + i]
+
+func placedSinc*[T: SampleType](stored: openArray[T], shiftMs,
+    dtMs: float64): seq[T] {.raises: [].} =
+  ## `stored` moved later by `shiftMs`, a fraction of a sample included.
+  ## Each output sample is a Kaiser-windowed sinc (24 taps each side, beta 8)
+  ## of the stored samples around the time it lies at, so 100.3 ms at 1 ms
+  ## lands at 100.3 ms, not at 100. Samples outside `stored` are zero, so
+  ## nothing wraps. Longer by the shift, shorter when it is negative.
+  ## A `dtMs` that is not positive, an empty `stored`, or a NaN `shiftMs`
+  ## returns a copy of `stored`. A fraction below 1e-9 above a whole number
+  ## of samples is `placedWhole` at that whole number.
+  if not (dtMs > 0) or stored.len == 0 or shiftMs.isNaN: return @stored
+  let d = shiftMs / dtMs
+  let whole = int(floor(d))
+  let frac = d - float64(whole)
+  if frac < 1e-9: return placedWhole(stored, whole)
+  let n = max(0, stored.len + int(ceil(d)))
+  result = newSeq[T](n)
+  let beta = 8.0
+  let norm = besselI0(beta)
+  var taps = newSeq[float64](2 * SincHalf + 1)
+  for i in 0 .. 2 * SincHalf:
+    let m = i - SincHalf
+    let x = float64(m) - frac
+    let r = abs(x) / float64(SincHalf)
+    if r < 1:
+      let w = besselI0(beta * sqrt(1 - r * r)) / norm
+      taps[i] = (if abs(x) < 1e-12: 1.0 else: sin(PI * x) / (PI * x)) * w
+  # k = j - whole - (i - SincHalf) runs from j - whole + SincHalf down
+  # to j - whole - SincHalf. Inside [lo, hi) every tap is in `stored`, so
+  # the same products are added in the same order with the range test
+  # left out.
+  let lo = min(n, max(0, whole + SincHalf))
+  let hi = min(n, stored.len + whole - SincHalf)
+  template addGuarded(j: int) =
+    var sum = 0.0
+    for i in 0 .. 2 * SincHalf:
+      let k = j - whole - (i - SincHalf)
+      if k >= 0 and k < stored.len: sum += float64(stored[k]) * taps[i]
+    result[j] = T(sum)
+  for j in 0 ..< lo: addGuarded(j)
+  if hi > lo:
+    {.push boundChecks: off, overflowChecks: off.}
+    for j in lo ..< hi:
+      var sum = 0.0
+      for i in 0 .. 2 * SincHalf:
+        let k = j - whole - (i - SincHalf)
+        sum += float64(stored[k]) * taps[i]
+      result[j] = T(sum)
+    {.pop.}
+  for j in max(hi, lo) ..< n: addGuarded(j)
