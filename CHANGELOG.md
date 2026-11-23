@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.12.0
 
 - `core/shift`: `placedWhole` and `placedSinc` place a stored trace later by whole samples or a Kaiser-windowed sinc (24 taps each side, beta 8), returning a longer or shorter trace. A non-positive interval, an empty trace, or a shift that is NaN, infinite or beyond the range of a sample count returns a copy of the stored samples. Not a mode of `shiftSamples` (that one stays in place; a positive shift there moves samples earlier).
 - `vibroseis/sweepedge`: the top frequency of a reference sweep, read from its samples, with the reading's uncertainty. `TopReading`, `TopReason` (`tpNone`, `tpNoSweep`, `tpTaperShort`, `tpNoTop`, `tpNotSure`), `notBefore`, `Weighed`, `weighShapes`, `readTop`, `UncertainFraction`. Parallel arrays of different length raise `ValueError`.
