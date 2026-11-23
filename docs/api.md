@@ -722,7 +722,7 @@ lags is no peak.
 | `Match` (`verdict`, `match`, `shiftMs`, `rotationDeg`, `at`, `offset`, `sidelobe`, `about`) | The reading: `match` at most 1 (NaN for `mvNothing`); `shiftMs` NaN unless `mvClear`; `rotationDeg` NaN until `rotationOf`; `at` is -1 for none; `offset` within half a sample; `about` when the shift is only good to a millisecond. |
 | `peakAt(y, i)` | The parabola through `y[i-1]`, `y[i]`, `y[i+1]`: offset from `i` (within half a sample) and height. A flat top, or `i` at an end, is the sample itself. `ValueError` when `i` is outside `0 ..< y.len` (an empty `y` too). |
 | `matchOf(envelope, lagsMs)` | The match and the shift. NaN samples are skipped. The clear test comes before the end test, so a weak peak on the last lag is `mvWeak`, not `mvNoPeak`. `ValueError` when the arrays differ in length. |
-| `rotationOf(c, dtMs, at, offset)`, `rotationOfInto(c, dtMs, at, offset, ws)` | The phase turn in degrees of the float32 correlation `c` (lag 0 in the middle) at sample `at`, taken `offset` towards the next sample. NaN when it cannot be read. `rotationOf` allocates; `rotationOfInto` uses `ws` for the Hilbert scratch (the plan and the analytic buffers are still allocated). |
+| `rotationOf(c, dtMs, at, offset)`, `rotationOfInto(c, dtMs, at, offset, ws)` | The phase turn in degrees of the float32 correlation `c` (lag 0 in the middle) at sample `at`, taken `offset` towards the next sample. NaN when it cannot be read, including a `dtMs` that is not finite or not greater than 0. `rotationOf` allocates; `rotationOfInto` uses `ws` for the Hilbert scratch (the plan and the analytic buffers are still allocated). |
 
 ## vibroseis/vibqc: vibrator QC of a record
 

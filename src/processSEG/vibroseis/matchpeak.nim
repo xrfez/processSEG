@@ -140,6 +140,7 @@ proc matchOf*(envelope, lagsMs: openArray[float64]): Match =
 proc rotationPhase(c: openArray[float32], dtMs: float64, at: int, offset: float64,
     ws: var Workspace): float64 =
   result = NaN
+  if not (dtMs > 0 and dtMs < Inf): return
   if c.len < 2 or at notin 0 ..< c.len: return
   let near = if offset < 0: at - 1 elif offset > 0: at + 1 else: at
   if near notin 0 ..< c.len: return
@@ -157,7 +158,8 @@ proc rotationOf*(c: openArray[float32], dtMs: float64, at: int, offset: float64)
   ## The phase turn (degrees) of the correlation `c` (float32, over every lag,
   ## lag 0 in the middle) at its peak: the argument of its analytic signal at
   ## sample `at`, taken `offset` (within half a sample) towards the next one
-  ## by its phase's step. NaN when it cannot be read. Allocates a Hilbert plan,
+  ## by its phase's step. NaN when it cannot be read, including a `dtMs` that
+  ## is not finite or not greater than 0. Allocates a Hilbert plan,
   ## a workspace and the analytic buffers. `rotationOfInto` takes the caller's
   ## workspace for the transform scratch.
   var ws = initWorkspace()
@@ -167,5 +169,6 @@ proc rotationOfInto*(c: openArray[float32], dtMs: float64, at: int, offset: floa
     ws: var Workspace): float64 =
   ## `rotationOf` using `ws` for the Hilbert scratch, grown to the plan's
   ## `workspaceSize` when it does not already fit. The Hilbert plan and the
-  ## analytic buffers are still allocated. NaN when the phase cannot be read.
+  ## analytic buffers are still allocated. NaN when the phase cannot be read,
+  ## including a `dtMs` that is not finite or not greater than 0.
   result = rotationPhase(c, dtMs, at, offset, ws)

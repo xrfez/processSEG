@@ -9,6 +9,8 @@
 ## and again when `rotationOfInto` did the same.
 ## `peak_out_of_range` failed when `peakAt` read `y[i]` before the range guard
 ## (IndexDefect, not ValueError) for empty, -1 and `len`.
+## `rotation_bad_dt` failed when the `dtMs` guard before `analyticInto` was
+## removed (AssertionDefect, not NaN) for 0, -1, Inf and NaN.
 
 import std/[assertions, math, random]
 import processSEG
@@ -279,5 +281,14 @@ proc main*() =
       let want = srcRotationOf(c, 2.0, at, offset)
       doAssert eq(rotationOf(c, 2.0, at, offset), want), "trial " & $trial
       doAssert eq(rotationOfInto(c, 2.0, at, offset, ws), want), "into " & $trial
+
+  block rotation_bad_dt:
+    # A dtMs that is not finite and > 0 cannot be read: NaN, not AssertionDefect.
+    var tone = newSeq[float32](8)
+    for i in 0 ..< tone.len: tone[i] = float32(sin(float64(i)))
+    doAssert rotationOf(tone, 0.0, 3, 0.0).isNaN
+    doAssert rotationOf(tone, -1.0, 3, 0.0).isNaN
+    doAssert rotationOf(tone, Inf, 3, 0.0).isNaN
+    doAssert rotationOf(tone, NaN, 3, 0.0).isNaN
 
 when isMainModule: main()
