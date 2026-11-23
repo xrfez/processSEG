@@ -29,9 +29,9 @@
 ## `fkAmplitudeInto` does not, once the workspace holds `workspaceSize`.
 ##
 ## **Stop.** `stop` (nil: never) is checked once per trace that enters and
-## once per frequency of the spatial pass, never per sample. False means the
-## job was abandoned; `amp` is then unspecified. The plan and the workspace
-## stay usable.
+## once per frequency of the spatial pass, never per sample. `Stopped` means
+## the job was abandoned; `amp` is then unspecified. The plan and the
+## workspace stay usable.
 
 import std/math
 import parseSEG
@@ -154,13 +154,13 @@ proc fkRows*(meta: ChunkMeta, cols, firstCol, nCols: int, rows = 0 .. int.high):
 
 proc fkAmplitudeInto*[T: SampleType](p: FkPlan[T], b: RowBlock[T], meta: ChunkMeta,
     firstCol: int, amp: var openArray[float64], ws: var Workspace,
-    rows = 0 .. int.high, stop: StopCheck = nil): bool {.discardable.} =
+    rows = 0 .. int.high, stop: StopCheck = nil): int =
   ## The f-k modulus of the window `firstCol ..< firstCol + samples` into
-  ## `amp` (`nK·nFreq` values, frequency fastest, unscaled). Returns true when
-  ## it ran to the end. `stop` (nil: never) is asked once per trace that
-  ## enters and once per frequency of the spatial pass, never per sample;
-  ## true abandons the job and returns false, and `amp` is then unspecified.
-  ## The plan is unchanged and the workspace stays usable. Raises `ValueError`
+  ## `amp` (`nK·nFreq` values, frequency fastest, unscaled). Returns the live
+  ## rows used. `stop` (nil: never) is asked once per trace that enters and
+  ## once per frequency of the spatial pass, never per sample; true abandons
+  ## the job and returns `Stopped`, and `amp` is then unspecified. The plan
+  ## is unchanged and the workspace stays usable. Raises `ValueError`
   ## when `b` does not match `meta`, the interval is not the plan's,
   ## `firstCol` is negative, or the live rows in the window are not `traces`
   ## (build the plan for `fkRows`). An `amp` of another length is an
@@ -211,7 +211,7 @@ proc fkAmplitudeInto*[T: SampleType](p: FkPlan[T], b: RowBlock[T], meta: ChunkMe
     if not meta.isLive(r): continue
     let live = meta.liveSamples(r, b.cols)
     if live <= firstCol: continue
-    if stop != nil and stop(): return false
+    if stop != nil and stop(): return Stopped
     let src = b.rowPtr(r)
     let last = min(live, firstCol + p.samples)
     let tw = p.traceW[t]
@@ -228,7 +228,7 @@ proc fkAmplitudeInto*[T: SampleType](p: FkPlan[T], b: RowBlock[T], meta: ChunkMe
     inc t
   let half = nK div 2
   for jf in 0 ..< nFreq:
-    if stop != nil and stop(): return false
+    if stop != nil and stop(): return Stopped
     zeroMem(spatA, nK * sizeof(T))
     zeroMem(spatB, nK * sizeof(T))
     for t in 0 ..< p.traces:
@@ -252,13 +252,13 @@ proc fkAmplitudeInto*[T: SampleType](p: FkPlan[T], b: RowBlock[T], meta: ChunkMe
         re = float64(ar[k]) + float64(bi[k])
         im = float64(br[k]) - float64(ai[k])
       amp[ik * nFreq + jf] = hypot(re, im)
-  result = true
+  entered
 
 proc fkAmplitudeInto*[T: SampleType](p: FkPlan[T], samples: Tensor[T],
     meta: ChunkMeta, firstCol: int, amp: var openArray[float64],
-    ws: var Workspace, rows = 0 .. int.high, stop: StopCheck = nil): bool {.
-    discardable.} =
-  ## `fkAmplitudeInto` on a `[rows, cols]` tensor. A stop leaves `amp`
-  ## unspecified; the plan and the workspace stay usable.
+    ws: var Workspace, rows = 0 .. int.high, stop: StopCheck = nil): int =
+  ## `fkAmplitudeInto` on a `[rows, cols]` tensor. Returns the live rows
+  ## used, or `Stopped` when `stop` abandons (`amp` then unspecified). The
+  ## plan and the workspace stay usable.
   meta.checkShape(samples)
   p.fkAmplitudeInto(rowBlock(samples), meta, firstCol, amp, ws, rows, stop)

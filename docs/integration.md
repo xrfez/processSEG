@@ -816,13 +816,13 @@ The viewer does not build these itself. Each call fills a buffer the viewer alre
 | Picture | Call |
 |---|---|
 | dB of an amplitude, 0 dB at a reference | `toDbInto(amp, db, dbAbsolute, refAmplitude = reference)` (peak-relative stays `toDbInto(amp, db)`; the reference argument is ignored then) |
-| f-k of a gather | `fkRows` to size it, `initFkPlan`, `plan.fkAmplitudeInto`; then `toDbInto`. Pass `stop` to abandon between traces and between frequency passes (false: stopped, `amp` unspecified; nil never stops). Positive k is later on later traces. `dkPerTrace` is cycles per live trace that entered |
+| f-k of a gather | `fkRows` to size it, `initFkPlan`, `plan.fkAmplitudeInto`; then `toDbInto`. Pass `stop` to abandon between traces and between frequency passes (`Stopped` when abandoned, `amp` unspecified; otherwise the live rows used; nil never stops). Positive k is later on later traces. `dkPerTrace` is cycles per live trace that entered |
 | Envelope, phase and instantaneous Hz | `hp.analyticInto(x, dtMs, env, phaseDeg, hz, ws)` — one Hilbert, not `envelopeInto` beside `hilbertInto`. `hz` is right up to Nyquist (mean of the two one-sample phase steps), NaN at the ends and under the floor |
 | Mean of angles in degrees (phase difference, QC) | `circularMeanDeg(angles)`: `(meanDeg, resultant)`, NaN skipped, `(NaN, 0)` for none, `meanDeg` NaN when they cancel |
 | Phase unwrapped along the bins on screen | `unwrapPhaseInto(phaseDeg, shown, dst)`. A hidden bin is not crossed |
 | Linear phase taken off, delay in ms | `removeDelayInto(unwrapped, hz, shown, dst)` |
 | Spectrum averaged over several blocks | `initSpectrumAccumulator`, `acc.add` per block, `acc.amplitudesInto`. Same scale as `averageAmplitudeInto` |
-| Spectrogram averaged over traces | `sg.averageSpectrogramInto` (`averageWorkspace`). A NaN frame drops that trace. Pass `stop` to abandon between traces (false: stopped, `amp` unspecified; nil never stops) |
+| Spectrogram averaged over traces | `sg.averageSpectrogramInto` (`averageWorkspace`). A NaN frame drops that trace. Pass `stop` to abandon between traces (`Stopped` when abandoned, `amp` unspecified; otherwise the rows used; nil never stops) |
 | Response of the flow as applied, edges included | `appliedResponseInto(flow, float32, dtMs, samples, hz, gain, ws)`. Not `response()` |
 | Gain held flat after a time | `heldGain(curve, untilMs)` then `gainCurveOp` |
 | Shift a trace by whole samples, length kept | `timeShift` or `timeShiftInto`. `shift` is a whole number of samples; `wholeSamples` snaps milliseconds (round to nearest, ties away from zero). What leaves one end is clipped; the vacated end is zeros. `shiftSamples` remains the interpolator statics and LMO use |

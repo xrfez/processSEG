@@ -5,7 +5,8 @@
 ##
 ## Fail-first: `average_stop` failed while the stop check was compiled out
 ## (`if false and stop`), so a never-true check was called 0 times instead
-## of once per live row.
+## of once per live row, and while a finished call returned true instead of
+## the rows used and an abandoned call returned false instead of `Stopped`.
 
 import std/[assertions, math, random]
 import processSEG
@@ -156,7 +157,8 @@ proc main*() =
     var ws = initWorkspace()
     ws.reserve(sg.averageWorkspace)
     var amp = newSeq[float64](sg.frames * sg.bins)
-    doAssert sg.averageSpectrogramInto(g.data, meta, amp, ws)
+    let used = sg.averageSpectrogramInto(g.data, meta, amp, ws)
+    doAssert used == 2, "a NaN frame drops the trace, got " & $used
     let mid = sg.frames div 2
     doAssert abs(amp[mid * sg.bins + 4] - 2.0) < 1e-3, $amp[mid * sg.bins + 4]
     let quiet = allocsIn:
@@ -178,16 +180,17 @@ proc main*() =
     var ws = initWorkspace()
     ws.reserve(sg.averageWorkspace)
     var amp = newSeq[float64](sg.frames * sg.bins)
-    doAssert sg.averageSpectrogramInto(g.data, meta, amp, ws)
+    let used = sg.averageSpectrogramInto(g.data, meta, amp, ws)
+    doAssert used == rows, "rows used " & $used
     let full = amp
     var again = newSeq[float64](amp.len)
-    doAssert sg.averageSpectrogramInto(g.data, meta, again, ws, stop = nil)
+    doAssert sg.averageSpectrogramInto(g.data, meta, again, ws, stop = nil) == used
     doAssert again == full
     var seen = 0
     let never: StopCheck = proc (): bool {.gcsafe, raises: [].} =
       inc seen
       false
-    doAssert sg.averageSpectrogramInto(g.data, meta, again, ws, stop = never)
+    doAssert sg.averageSpectrogramInto(g.data, meta, again, ws, stop = never) == used
     doAssert again == full
     doAssert seen == rows, "checked once per live row, got " & $seen
     proc stoppedAfter(k: int): int =
@@ -195,7 +198,7 @@ proc main*() =
       let stop: StopCheck = proc (): bool {.gcsafe, raises: [].} =
         inc calls
         calls >= k
-      doAssert not sg.averageSpectrogramInto(g.data, meta, amp, ws, stop = stop)
+      doAssert sg.averageSpectrogramInto(g.data, meta, amp, ws, stop = stop) == Stopped
       doAssert calls <= k, "called " & $calls & " times, at most " & $k
       calls
     doAssert stoppedAfter(1) == 1
@@ -204,7 +207,8 @@ proc main*() =
     let stopRow: StopCheck = proc (): bool {.gcsafe, raises: [].} =
       inc once
       true
-    doAssert not sg.averageSpectrogramInto(rowBlock(g.data), meta, amp, ws, stop = stopRow)
+    doAssert sg.averageSpectrogramInto(rowBlock(g.data), meta, amp, ws,
+      stop = stopRow) == Stopped
     doAssert once == 1
     let quiet = allocsIn:
       discard sg.averageSpectrogramInto(g.data, meta, amp, ws)

@@ -4,7 +4,7 @@
 ## not re-export parseSEG: callers import it themselves for files, tensors and
 ## views (`import parseSEG, processSEG`), so the two packages stay separate:
 ## - `processSEG/core/types`: `ChunkMeta`, the metadata of a block of rows;
-##   `StopCheck`, a caller's abandon check for a long kernel;
+##   `StopCheck`, a caller's abandon check for a long kernel, and `Stopped`;
 ## - `processSEG/core/rows`: `RowBlock`, zero-copy rows of a tensor or buffer;
 ## - `processSEG/core/workspace`: `Workspace`, grow-only per-thread scratch;
 ## - `processSEG/core/basic`: demean, detrend, scale, clip, polarity, pad taper;

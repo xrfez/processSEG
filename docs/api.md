@@ -103,7 +103,7 @@ value.
 | `m.sub(rows: Slice[int]): ChunkMeta` | The meta of some rows (row 0 is `rows.a`), sharing the view, failed list and file scales: split work with `RowBlock.sub`. |
 | `checkShape(m, samples: Tensor[T])`, `checkShape(m, b: RowBlock[T])` | `ValueError` unless one row per row of `m` (and, for a tensor, rank 2 and C-contiguous). |
 | `SampleType` | parseSEG's `float32 \| float64`, re-exported. |
-| `StopCheck` | `proc (): bool {.gcsafe, raises: [].}`. True: abandon the job. Nil means never stop. Passed last, default nil, to a long kernel that can be abandoned between units of work. |
+| `StopCheck`; `Stopped` | `StopCheck` is `proc (): bool {.gcsafe, raises: [].}`. True: abandon the job. Nil means never stop. Passed last, default nil, to a long kernel that can be abandoned between units of work. `Stopped` (`-1`) is the result of a call its stop check abandoned; the output is then unspecified. |
 
 ## core/rows: `RowBlock`
 
@@ -238,7 +238,7 @@ auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guid
 | `SpectrogramPlan[T]`; `initSpectrogramPlan(T, windowLen, hop, dtMs, samples, nfft = 0)` | The short-time Fourier amplitudes of traces of up to `samples` samples: Hann frames of `windowLen` samples centred on columns `0, hop, 2·hop, ...`, zero padded to `nfft` (0: the next power of two of the window). `ValueError` for `windowLen < 2`, `hop < 1`, `samples < 1`, a bad `dtMs` or `nfft`. |
 | `sg.frames`, `sg.bins`, `sg.windowLen`, `sg.hop`, `sg.nfft`, `sg.samples`, `sg.dtMs`, `sg.frameCol(frame)`, `sg.binHz(k)`, `sg.workspaceSize` | Its axes: frame `i` centred on column `i·hop`, bin `k` at `k / (nfft·dt)`. |
 | `sg.spectrogramInto(x, amp, ws)` | Every frame's amplitudes into `amp` (`frames·bins`, frame after frame), scaled so that a sinusoid of amplitude A on a bin reads A (a frame cut by the trace's ends by its own Σw). |
-| `sg.averageWorkspace`; `sg.averageSpectrogramInto(b \| samples, meta, amp, ws, rows = 0 .. high(int), stop: StopCheck = nil): bool {.discardable.}` | Power average of `spectrogramInto` over the live rows, same scale. A frame with a NaN or infinity drops that trace. True when it finished; false when `stop` said to abandon (`amp` then unspecified). Checked once per live row; nil never stops. The plan and the workspace stay usable. `openArray[openArray]` is not a Nim parameter, so this takes a `RowBlock` and a `ChunkMeta`, as every other block form does. |
+| `sg.averageWorkspace`; `sg.averageSpectrogramInto(b \| samples, meta, amp, ws, rows = 0 .. high(int), stop: StopCheck = nil): int` | Power average of `spectrogramInto` over the live rows, same scale. A frame with a NaN or infinity drops that trace. Returns the rows used, or `Stopped` when `stop` said to abandon (`amp` then unspecified). Checked once per live row; nil never stops. The plan and the workspace stay usable. `openArray[openArray]` is not a Nim parameter, so this takes a `RowBlock` and a `ChunkMeta`, as every other block form does. |
 
 ## fft/fk: `FkPlan`
 
@@ -247,7 +247,7 @@ auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guid
 | `FkAxes` (`nFreq`, `nK`, `dfHz`, `dkPerTrace`); `FkPlan[T]`; `initFkPlan(T, dtMs, traces, samples, taperFraction = 0.1)` | f-k of `traces` live rows by `samples` columns. Tukey both axes. Time padded to `nextFastLen(samples)`, traces to `nextFastLen(2·traces)`. `ValueError` for fewer than 4 traces, fewer than 8 samples, a bad `dtMs` or taper. |
 | `plan.axes`, `plan.nFreq`, `plan.nK`, `plan.dfHz`, `plan.dkPerTrace`, `plan.traces`, `plan.samples`, `plan.dtMs`, `plan.workspaceSize` | Axes (zero k at `nK div 2`, positive k is later on later traces) and scratch. `dkPerTrace` is cycles per trace; cycles/km stay in the viewer. |
 | `fkRows(meta, cols, firstCol, nCols, rows = 0 .. high(int)): int` | Live rows that enter the window: the `traces` to build the plan for. |
-| `plan.fkAmplitudeInto(b \| samples, meta, firstCol, amp, ws, rows = 0 .. high(int), stop: StopCheck = nil): bool {.discardable.}` | Unscaled modulus, `nK·nFreq`, frequency fastest. True when it finished; false when `stop` said to abandon (`amp` then unspecified). Checked once per trace that enters and once per frequency of the spatial pass; nil never stops. The plan and the workspace stay usable. `ValueError` when the live count is not the plan's. A wrong `amp` length is an `AssertionDefect` (every other Into kernel), not the `ValueError` the audit suggested. |
+| `plan.fkAmplitudeInto(b \| samples, meta, firstCol, amp, ws, rows = 0 .. high(int), stop: StopCheck = nil): int` | Unscaled modulus, `nK·nFreq`, frequency fastest. Returns the live rows used, or `Stopped` when `stop` said to abandon (`amp` then unspecified). Checked once per trace that enters and once per frequency of the spatial pass; nil never stops. The plan and the workspace stay usable. `ValueError` when the live count is not the plan's. A wrong `amp` length is an `AssertionDefect` (every other Into kernel), not the `ValueError` the audit suggested. |
 
 ## filter/design: `FilterSpec`
 

@@ -3,7 +3,9 @@
 ## Fail-first: `fk_dip_sign` failed while the k axis was not sign-flipped,
 ## so the dip peaked at index 6 instead of 10 (zero at 8). `fk_stop` failed
 ## while the stop checks were compiled out (`if false and stop`), so a
-## never-true check was called 0 times instead of once per trace and frequency.
+## never-true check was called 0 times instead of once per trace and frequency,
+## and while a finished call returned true instead of the rows used and an
+## abandoned call returned false instead of `Stopped`.
 
 import std/[assertions, math]
 import processSEG
@@ -38,7 +40,7 @@ proc main*() =
     ws.reserve(plan)
     var amp = newSeq[float64](plan.nK * plan.nFreq)
     let n = allocsIn:
-      doAssert plan.fkAmplitudeInto(g.data, meta, 0, amp, ws)
+      doAssert plan.fkAmplitudeInto(g.data, meta, 0, amp, ws) == rows
     doAssert n == 0, $n & " allocations"
     let zero = plan.nK div 2
     var peakK, peakF = 0
@@ -71,16 +73,17 @@ proc main*() =
     var ws = initWorkspace()
     ws.reserve(plan)
     var amp = newSeq[float64](plan.nK * plan.nFreq)
-    doAssert plan.fkAmplitudeInto(g.data, meta, 0, amp, ws)
+    let used = plan.fkAmplitudeInto(g.data, meta, 0, amp, ws)
+    doAssert used == rows, "rows used " & $used
     let full = amp
     var again = newSeq[float64](amp.len)
-    doAssert plan.fkAmplitudeInto(g.data, meta, 0, again, ws, stop = nil)
+    doAssert plan.fkAmplitudeInto(g.data, meta, 0, again, ws, stop = nil) == used
     doAssert again == full
     var seen = 0
     let never: StopCheck = proc (): bool {.gcsafe, raises: [].} =
       inc seen
       false
-    doAssert plan.fkAmplitudeInto(g.data, meta, 0, again, ws, stop = never)
+    doAssert plan.fkAmplitudeInto(g.data, meta, 0, again, ws, stop = never) == used
     doAssert again == full
     doAssert seen == rows + plan.nFreq, "checked once per trace and frequency, got " & $seen
     proc stoppedAfter(k: int): int =
@@ -88,7 +91,7 @@ proc main*() =
       let stop: StopCheck = proc (): bool {.gcsafe, raises: [].} =
         inc calls
         calls >= k
-      doAssert not plan.fkAmplitudeInto(g.data, meta, 0, amp, ws, stop = stop)
+      doAssert plan.fkAmplitudeInto(g.data, meta, 0, amp, ws, stop = stop) == Stopped
       doAssert calls <= k, "called " & $calls & " times, at most " & $k
       calls
     doAssert stoppedAfter(1) == 1
@@ -98,7 +101,8 @@ proc main*() =
     let stopRow: StopCheck = proc (): bool {.gcsafe, raises: [].} =
       inc once
       true
-    doAssert not plan.fkAmplitudeInto(rowBlock(g.data), meta, 0, amp, ws, stop = stopRow)
+    doAssert plan.fkAmplitudeInto(rowBlock(g.data), meta, 0, amp, ws, stop = stopRow) ==
+      Stopped
     doAssert once == 1
     let quiet = allocsIn:
       discard plan.fkAmplitudeInto(g.data, meta, 0, amp, ws)

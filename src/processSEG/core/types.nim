@@ -49,7 +49,8 @@
 ## into worker threads, and any number of threads may read through it at once.
 ##
 ## **Stop.** `StopCheck` is a caller's abandon check for a long kernel
-## (`true`: abandon the job). Nil means never stop.
+## (`true`: abandon the job). Nil means never stop. `Stopped` is the result
+## of a call its stop check abandoned; the output is then unspecified.
 
 import std/math
 import parseSEG
@@ -61,6 +62,10 @@ type
   StopCheck* = proc (): bool {.gcsafe, raises: [].}
     ## True: abandon the job. Nil means never stop.
 
+const Stopped* = -1
+  ## The result of a call its stop check abandoned; the output is then unspecified.
+
+type
   ChunkMeta* = object
     ## The metadata of a block of rows; see the module documentation. Build it
     ## with `initChunkMeta`, which validates it once, so reads never raise.
