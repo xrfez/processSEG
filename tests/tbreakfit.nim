@@ -22,6 +22,11 @@
 ## Seen fail: `trimmedModel` left `used` as the fitted count when the next
 ## set fell under `MinTrimmedPicks`. `trim_rejects_a_short_next` then saw
 ## used=10, not the rejected 9.
+##
+## Seen fail: `keepSecond` used `sigmaTwo <=` instead of `<`.
+## `keep_second_bounds` then accepted sigmaTwo == SecondGain * sigmaOne
+## (5.0 and 4.5). `odd_half_keeps_one_more` died when the start kept
+## `near.len div 2` (10) instead of `(near.len + 1) div 2` (11).
 
 import std/[algorithm, assertions, math, random]
 import processSEG
@@ -344,6 +349,8 @@ proc main*() =
     doAssert not keepSecond(MinSecondPicks, 2.0, SecondGain * 2.0) # not strictly below
     doAssert not keepSecond(MinSecondPicks, 2.0, 1.6) # share ok, short of SecondGainMs
     doAssert keepSecond(MinSecondPicks, 2.0, 1.5) # 1.5 < 1.8 and 2.0 - 1.5 == 0.5
+    # 4.5 == SecondGain * 5, and 5 - 4.5 == SecondGainMs: `<` rejects, `<=` would not
+    doAssert not keepSecond(MinSecondPicks, 5.0, SecondGain * 5.0)
     doAssert SecondGainMs == 0.5
 
   block median_if_closer_contract:
@@ -505,6 +512,22 @@ proc main*() =
       doAssert sameTrimmed(a, b), "bend n=" & $n
       doAssert wa.calls == wb.calls and wa.last == wb.last
       if not a.sigmaMs.isNaN: doAssert a.sigmaMs == b.sigmaMs and a.model == b.model
+
+  block odd_half_keeps_one_more:
+    ## 21 confident picks: `(near.len + 1) div 2` is 11, `near.len div 2` is 10.
+    ## The empty fit returns at once, so `used` is that start count.
+    const n = 21
+    var off = newSeq[float64](n)
+    var pick = newSeq[float64](n)
+    var conf = newSeq[float64](n)
+    for i in 0 ..< n:
+      off[i] = float64(i + 1) * 10
+      pick[i] = 5.0 + off[i] / 4.0
+      conf[i] = 1.0
+    proc emptyFit(use: openArray[bool]): seq[float64] = @[]
+    let t = trimmedModel(off, pick, conf, emptyFit)
+    doAssert not t.trusted
+    doAssert t.used == (n + 1) div 2
 
   block restart_keeps_the_bend:
     ## Most picks sit on the faster segment, so the start drops the first.
