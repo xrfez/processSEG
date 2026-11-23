@@ -171,10 +171,12 @@ proc hypotMagnitude(re, im: ptr UncheckedArray[float64],
     mag[i] = hypot(re[i], im[i])
   {.pop.}
 
-func amplitudesFinite(x: ptr UncheckedArray[float64], n: int): bool {.noinline,
+func amplitudesFinite*(x: ptr UncheckedArray[float64], n: int): bool {.noinline,
     raises: [].} =
   ## No NaN or infinity in `x[0 ..< n]`: none has every exponent bit set.
-  ## An OR of flags, the same rows `classify` dropped per value.
+  ## An OR of flags, the same rows `classify` dropped per value. Exported
+  ## for the pool form of `averageSpectrogramInto`, which calls this on a
+  ## row's amplitudes.
   const expBits = 0x7FF0_0000_0000_0000'u64
   var bad = 0'u64
   {.push boundChecks: off, overflowChecks: off.}
@@ -268,13 +270,15 @@ proc spectrogramInto*[T: SampleType](sg: SpectrogramPlan[T], x: openArray[T],
         else: amp[row + nb - 1] = tail[last - held] * lastSide
     first += used
 
-func averagedRow[T: SampleType](x: ptr UncheckedArray[T], n: int): bool {.inline,
+func averagedRow*[T: SampleType](x: ptr UncheckedArray[T], n: int): bool {.inline,
     raises: [].} =
-  ## True when these input samples enter the power average. A float64 row
-  ## that `leavesFloat64Range` flags is left out (not summed, not counted,
-  ## no FFT): a NaN, an infinity, a subnormal, or a nonzero sample below
-  ## 1e-100 or above 1e140. A float32 row is kept here; a non-finite
-  ## spectrogram is still dropped afterwards.
+  ## True when these input samples enter the power average. Exported for
+  ## the pool form of `averageSpectrogramInto`, which calls this on the
+  ## row's live input samples (`src`, `live`) before the transform. A
+  ## float64 row that `leavesFloat64Range` flags is left out (not summed,
+  ## not counted, no FFT): a NaN, an infinity, a subnormal, or a nonzero
+  ## sample below 1e-100 or above 1e140. A float32 row is kept here; a
+  ## non-finite spectrogram is still dropped afterwards.
   when T is float64:
     n <= 0 or not leavesFloat64Range(cast[ptr UncheckedArray[float64]](x), n)
   else:

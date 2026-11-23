@@ -64,18 +64,18 @@ type
     index: int
 
   PoolState = object
-    lock: Lock   # guards everything below
-    wake: Cond   # a new job or stop, for the workers
-    done: Cond   # pending reached 0, for the caller
-    call: Lock   # one apply at a time
-    jobId: int   # bumped for each job; workers run each id once
-    pending: int # workers still on the current job
+    lock: Lock          # guards everything below
+    wake: Cond          # a new job or stop, for the workers
+    done: Cond          # pending reached 0, for the caller
+    call: Lock          # one apply at a time
+    jobId: int          # bumped for each job; workers run each id once
+    pending: int        # workers still on the current job
     stop: bool
     fn: JobFn
     ctx: pointer
     workers: int
     threads: ptr UncheckedArray[Thread[WorkerArg]]
-    partialRaw: pointer              # grow-once batch partials (caller thread)
+    partialRaw: pointer # grow-once batch partials (caller thread)
     partial: ptr UncheckedArray[float64]
     partialCap: int
     counts: ptr UncheckedArray[int]
@@ -450,17 +450,6 @@ proc ensureAvgScratch(s: ptr PoolState, elems, slots: int) =
     s.counts = cast[ptr UncheckedArray[int]](allocShared0(slots * sizeof(int)))
     s.countsCap = slots
 
-func rowFinite(x: ptr UncheckedArray[float64], n: int): bool {.noinline, raises: [].} =
-  ## No NaN or infinity in `x[0 ..< n]`, the same exponent-bit check as
-  ## `averageSpectrogramInto`.
-  const expBits = 0x7FF0_0000_0000_0000'u64
-  var bad = 0'u64
-  {.push boundChecks: off, overflowChecks: off.}
-  for j in 0 ..< n:
-    bad = bad or typeof(bad)((cast[typeof(bad)](x[j]) and expBits) == expBits)
-  {.pop.}
-  bad == 0
-
 proc addSquares(src: ptr UncheckedArray[float64],
     dst {.noalias.}: ptr UncheckedArray[float64], n: int) {.noinline, raises: [].} =
   {.push boundChecks: off, overflowChecks: off.}
@@ -518,11 +507,12 @@ proc avgJob[T](ctx: pointer, worker: int, ws: var Workspace) {.nimcall, gcsafe,
         let live = c.meta.liveSamples(r, c.src.cols)
         if live > 0:
           let src = c.src.rowPtr(r)
-          c.plan[].spectrogramInto(src.toOpenArray(0, live - 1),
-            tmp.toOpenArray(0, nb - 1), ws)
-          if rowFinite(tmp, nb):
-            addSquares(tmp, dest, nb)
-            inc kept
+          if averagedRow(src, live):
+            c.plan[].spectrogramInto(src.toOpenArray(0, live - 1),
+              tmp.toOpenArray(0, nb - 1), ws)
+            if amplitudesFinite(tmp, nb):
+              addSquares(tmp, dest, nb)
+              inc kept
     c.counts[slot] = kept
 
 proc averageSpectrogramInto*[T: SampleType](p: ProcessPool, sg: SpectrogramPlan[T],
@@ -535,15 +525,17 @@ proc averageSpectrogramInto*[T: SampleType](p: ProcessPool, sg: SpectrogramPlan[
   ## partials in batch order and divides. One worker and many give the same
   ## bits. That grouped sum can differ from the serial form's single running
   ## sum in the last bits (within about 1e-12 of the frame peak on float64
-  ## data in range). A row the serial form drops (not live, no live sample,
-  ## or a NaN or an infinity in its spectrogram) is dropped here. Returns the
-  ## rows used; with none, `amp` is all zero. There is no `stop`: the pool
-  ## runs the job to completion. Raises `ValueError`, before any job starts
-  ## and before `amp` changes, when `b` does not match `meta`, the interval
-  ## is not the plan's, or a live row is longer than the plan. An `amp` of
-  ## another length is an `AssertionDefect`. Partials live on the pool (at
-  ## most two per worker at once, grown once) and are never allocated inside
-  ## a job.
+  ## data in range). A row the serial form drops is dropped here: not live,
+  ## no live sample, a float64 row whose live input samples leave the safe
+  ## range (a NaN, an infinity, a subnormal, or a nonzero sample below
+  ## 1e-100 or above 1e140), or a NaN or an infinity in its spectrogram.
+  ## Returns the rows used; with none, `amp` is all zero. There is no `stop`:
+  ## the pool runs the job to completion. Raises `ValueError`, before any job
+  ## starts and before `amp` changes, when `b` does not match `meta`, the
+  ## interval is not the plan's, or a live row is longer than the plan. An
+  ## `amp` of another length is an `AssertionDefect`. Partials live on the pool
+  ## (at most two per worker at once, grown once) and are never allocated
+  ## inside a job.
   doAssert p.state != nil, "a ProcessPool must come from newProcessPool"
   meta.checkShape(b)
   if not sameInterval(meta.dtMs, sg.dtMs):

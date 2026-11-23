@@ -8,6 +8,9 @@
 ## 1 worker) instead of 18; `pool_average_all_dropped` kept 18 instead of 0.
 ## Batch width set to the worker count: `pool_average_same_bits` differed at
 ## float32, 15 rows, 2 workers, bin 1.
+## `pool_average_drops_extreme_float64` failed before the pool called
+## `averagedRow`: workers 1 used 4 instead of 2 (the 1e200 and 1e-200 rows
+## were kept).
 
 import std/[assertions, math]
 import processSEG
@@ -367,5 +370,40 @@ proc main*() =
     doAssert n == used and n > 0
     doAssert frameClose(got, want, sg.frames, sg.bins).len == 0
     pool.ping
+
+  block pool_average_drops_extreme_float64:
+    # Float64 rows [1e200, 1.0, 1e-200, 1.0]: the two extremes leave the
+    # safe range, so used is 2 and the bits match a pool run of the two
+    # 1.0 rows alone. The count matches the serial form.
+    const cols = 16
+    let sg = initSpectrogramPlan(float64, windowLen = 16, hop = 16, dtMs = 1.0,
+      samples = cols, nfft = 16)
+    let scales = [1e200, 1.0, 1e-200, 1.0]
+    var g = cmpGather[float64](0, newSeq[float64](scales.len), cols, 1.0)
+    for r in 0 ..< scales.len:
+      for j in 0 ..< cols: g.data[r, j] = scales[r]
+    let meta = initChunkMeta(g.rows, dtMs = 1.0)
+    var ws = initWorkspace()
+    ws.reserve(sg.averageWorkspace)
+    var serialAmp = newSeq[float64](sg.frames * sg.bins)
+    let serialUsed = sg.averageSpectrogramInto(g.data, meta, serialAmp, ws)
+    var alone = cmpGather[float64](0, newSeq[float64](2), cols, 1.0)
+    for r in 0 ..< 2:
+      for j in 0 ..< cols: alone.data[r, j] = 1.0
+    let aloneMeta = initChunkMeta(alone.rows, dtMs = 1.0)
+    for w in [1, 2]:
+      var pool = newProcessPool(w)
+      var got = newSeq[float64](sg.frames * sg.bins)
+      let n = pool.averageSpectrogramInto(sg, g.data, meta, got)
+      doAssert n == 2, "workers " & $w & " used " & $n
+      doAssert n == serialUsed, "workers " & $w & " used " & $n &
+        " serial " & $serialUsed
+      var refAmp = newSeq[float64](sg.frames * sg.bins)
+      let nAlone = pool.averageSpectrogramInto(sg, alone.data, aloneMeta, refAmp)
+      doAssert nAlone == 2, "workers " & $w & " alone used " & $nAlone
+      doAssert refAmp[0] != 0.0, "workers " & $w & " 1.0 spectrum is zero"
+      for k in 0 ..< got.len:
+        doAssert got[k] == refAmp[k], "workers " & $w & " bin " & $k &
+          " " & $got[k] & " vs " & $refAmp[k]
 
 when isMainModule: main()
