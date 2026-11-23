@@ -10,6 +10,10 @@
 ## Seen fail: `lineFit` left every weight at 1, or ran 1 reweighting round
 ## instead of 40. `line_fit_reweights_outliers` then missed the
 ## least-absolute-deviation line (intercept off by about 11 ms).
+##
+## Seen fail: `trimmedModel`'s restart sigma test replaced by `false`.
+## `restart_keeps_the_bend` then kept the first trim (used 62 of 80, the 18
+## picks before the crossover dropped).
 
 import std/[algorithm, assertions, math, random]
 import processSEG
@@ -452,5 +456,33 @@ proc main*() =
       doAssert sameTrimmed(a, b), "bend n=" & $n
       doAssert wa.calls == wb.calls and wa.last == wb.last
       if not a.sigmaMs.isNaN: doAssert a.sigmaMs == b.sigmaMs and a.model == b.model
+
+  block restart_keeps_the_bend:
+    ## Most picks sit on the faster segment, so the start drops the first.
+    ## The model is that segment's line until `MinSecondPicks` of the first
+    ## are marked, then both segments. The restart must win: every pick kept,
+    ## including those more than 40 units before the crossover.
+    const n = 80
+    let d = bend(n)
+    let xc = 25.0 * float64(n) * 0.25
+    proc segmentFit(use: openArray[bool]): seq[float64] =
+      var onFirst = 0
+      for i, u in use:
+        if u and d.off[i] <= xc: inc onFirst
+      result = newSeq[float64](n)
+      for i, x in d.off:
+        if onFirst >= MinSecondPicks:
+          result[i] = if x <= xc: x / 1.5 else: xc / 1.5 + (x - xc) / 3.0
+        else:
+          result[i] = xc / 1.5 + (x - xc) / 3.0
+    let t = trimmedModel(d.off, d.pick, d.conf, segmentFit)
+    doAssert t.trusted and t.used == n
+    doAssert t.sigmaMs <= RestartSigmaShare * RestartSigmaFloorMs
+    var far = 0
+    for i, x in d.off:
+      if x < xc - 40.0:
+        inc far
+        doAssert t.kept[i]
+    doAssert far >= MinSecondPicks
 
 when isMainModule: main()
