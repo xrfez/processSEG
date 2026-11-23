@@ -6,7 +6,8 @@
 ## only (the sub-build has its own flags); skipped elsewhere. To check the
 ## check, `PROCESSSEG_VEC_FLAGS="--passC:-fno-tree-vectorize
 ## --passC:-fno-tree-slp-vectorize"` builds the kernels scalar: every kernel
-## must then fail.
+## must then fail. `laneMagnitude` failed while a noinline call sat in the
+## loop (`sinkMag(sqrt(...))`): that instance had no packed instruction.
 
 import std/[os, osproc, strutils, tables]
 
@@ -74,6 +75,8 @@ const
     # in the vibroseis modules that call it: `matchpeak` and `sweepedge`.
     ("rotateBins", "ZvibroseisZmatchpeak"), ("rotateBins", "ZvibroseisZsweepedge"),
     ("envelopeKernel", "ZfftZhilbert"),
+    # Spectrogram: unit-stride magnitudes (sqrt; -fno-math-errno there).
+    ("laneMagnitude", "ZfftZspectrogram"),
     ("addSample", "__vecsignature"),
     # A signal's spectrum times the reference's conjugate (crosscorrelate).
     ("crossKernel", "__vecsignature"),

@@ -187,7 +187,28 @@ proc shiftOnce() =
   vec_shift_f32(x, 2.5, siLinear)
   vec_shift_f32(x, -2.5, siCubic)
 
+proc spectrogramOnce() =
+  # laneMagnitude (fft/spectrogram), both sample types.
+  let sg = initSpectrogramPlan(float32, windowLen = 32, hop = 8, dtMs = 2.0,
+    samples = 64)
+  var ws = initWorkspace()
+  ws.reserve(sg.workspaceSize)
+  var x = newSeq[float32](64)
+  x[3] = 1
+  var amp = newSeq[float64](sg.frames * sg.bins)
+  sg.spectrogramInto(x, amp, ws)
+  let sg64 = initSpectrogramPlan(float64, windowLen = 32, hop = 8, dtMs = 2.0,
+    samples = 64)
+  var ws64 = initWorkspace()
+  ws64.reserve(sg64.workspaceSize)
+  var y = newSeq[float64](64)
+  y[3] = 1
+  var amp64 = newSeq[float64](sg64.frames * sg64.bins)
+  sg64.spectrogramInto(y, amp64, ws64)
+  echo amp[0], amp64[0]
+
 when isMainModule:
+  spectrogramOnce()
   signatureOnce()
   amplitudeOnce()
   correlateOnce()

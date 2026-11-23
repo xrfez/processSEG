@@ -46,6 +46,8 @@ import parseSEG
 import ../core/[rows, types, workspace]
 import plan
 
+{.localPassC: "-fno-math-errno".} # laneMagnitude's sqrt packs (this module's C file)
+
 type
   SpectrogramPlan*[T: SampleType] = object
     ## The short-time Fourier amplitudes of traces of up to `samples`
@@ -119,6 +121,25 @@ func binHz*[T](sg: SpectrogramPlan[T], k: int): float64 {.inline, raises: [].} =
 func elems(s: WorkspaceSize, T: typedesc): int {.inline.} =
   when T is float32: s.f32 else: s.f64
 
+proc laneMagnitude(re, im: ptr UncheckedArray[float32],
+    mag {.noalias.}: ptr UncheckedArray[float64], n: int) {.noinline, raises: [].} =
+  ## `mag[i] = sqrt(re[i]² + im[i]²)` in float64, so a float32 spectrum cannot
+  ## overflow or underflow the product. Unit stride, no call, no branch.
+  {.push boundChecks: off, overflowChecks: off.}
+  for i in 0 ..< n:
+    let r = float64(re[i])
+    let m = float64(im[i])
+    mag[i] = sqrt(r * r + m * m)
+  {.pop.}
+
+proc laneMagnitude(re, im: ptr UncheckedArray[float64],
+    mag {.noalias.}: ptr UncheckedArray[float64], n: int) {.noinline, raises: [].} =
+  ## The float64 form of `laneMagnitude`.
+  {.push boundChecks: off, overflowChecks: off.}
+  for i in 0 ..< n:
+    mag[i] = sqrt(re[i] * re[i] + im[i] * im[i])
+  {.pop.}
+
 func workspaceSize*[T](sg: SpectrogramPlan[T]): WorkspaceSize {.raises: [].} =
   ## The scratch `spectrogramInto` needs.
   let extra = fftLanes * (sg.fft.len + 2 * sg.fft.bins)
@@ -157,15 +178,33 @@ proc spectrogramInto*[T: SampleType](sg: SpectrogramPlan[T], x: openArray[T],
         sw[l] += float64(sg.window[j])
     sg.fft.forwardLanes(buf.toOpenArray(0, n * fftLanes - 1),
       re.toOpenArray(0, nb * fftLanes - 1), im.toOpenArray(0, nb * fftLanes - 1), ws)
+    # Time samples are dead. Their bytes hold unit-stride magnitudes; a
+    # float32 buffer is a few lanes short of one bin, and those sit in `tail`.
+    let count = nb * fftLanes
+    let held = min(count, (n * fftLanes * sizeof(T)) div sizeof(float64))
+    let mag = cast[ptr UncheckedArray[float64]](addr buf[0])
+    doAssert held >= fftLanes and count - held <= fftLanes
+    doAssert (nb - 1) * fftLanes - 1 < held # bins before the last are in `mag`
+    var tail: array[fftLanes, float64]
+    laneMagnitude(re, im, mag, held)
+    if held < count:
+      laneMagnitude(cast[ptr UncheckedArray[T]](addr re[held]),
+        cast[ptr UncheckedArray[T]](addr im[held]),
+        cast[ptr UncheckedArray[float64]](addr tail[0]), count - held)
     for l in 0 ..< used:
       let row = (first + l) * nb
       if not (sw[l] > 0):
         for k in 0 ..< nb: amp[row + k] = 0
-        continue
-      for k in 0 ..< nb:
-        let side = (if k == 0 or 2 * k == n: 1.0 else: 2.0)
-        amp[row + k] = hypot(float64(re[k * fftLanes + l]), float64(im[k * fftLanes + l])) *
-          side / sw[l]
+      else:
+        let inv = 1.0 / sw[l]
+        let two = 2.0 * inv
+        amp[row] = mag[l] * inv
+        for k in 1 ..< nb - 1:
+          amp[row + k] = mag[k * fftLanes + l] * two
+        let last = (nb - 1) * fftLanes + l
+        let lastSide = if 2 * (nb - 1) == n: inv else: two
+        if last < held: amp[row + nb - 1] = mag[last] * lastSide
+        else: amp[row + nb - 1] = tail[last - held] * lastSide
     first += used
 
 func averageWorkspace*[T](sg: SpectrogramPlan[T]): WorkspaceSize {.raises: [].} =

@@ -7,6 +7,10 @@
 ## (`if false and stop`), so a never-true check was called 0 times instead
 ## of once per live row, and while a finished call returned true instead of
 ## the rows used and an abandoned call returned false instead of `Stopped`.
+## `float32_large_stays_finite` failed while the magnitude was squared in
+## float32 (`sqrt(re * re + im * im)` with no float64 cast): a 1e30 tone
+## read Inf. `float32_magnitude_matches_a_direct_dft` failed while the
+## magnitude tail was left unread, so the last bin was 0.
 
 import std/[assertions, math, random]
 import processSEG
@@ -214,5 +218,56 @@ proc main*() =
       discard sg.averageSpectrogramInto(g.data, meta, amp, ws)
     doAssert quiet == 0, $quiet & " allocations"
     doAssert amp == full, "the plan and workspace are reusable after a stop"
+
+  block float32_large_stays_finite:
+    # A constant 1e30: the float32 FFT stays finite, and so must the magnitude
+    # (the product is float64). Squaring in float32 overflows to Inf.
+    let sg = initSpectrogramPlan(float32, windowLen = 32, hop = 16, dtMs = 1.0,
+      samples = 128, nfft = 32)
+    var x = newSeq[float32](128)
+    for j in 0 ..< x.len: x[j] = 1e30
+    var ws = initWorkspace()
+    ws.reserve(sg.workspaceSize)
+    var amp = newSeq[float64](sg.frames * sg.bins)
+    sg.spectrogramInto(x, amp, ws)
+    doAssert amp[0] > 1e29 and amp[0] < 1e32, $amp[0]
+    for v in amp:
+      doAssert v.classify notin {fcNan, fcInf, fcNegInf}, $v
+
+  block float32_magnitude_matches_a_direct_dft:
+    # Even nfft: the last bin is the tail. Odd nfft: the last bin is split.
+    var rng = initRand(11)
+    for nfft in [16, 15]:
+      let n = 48
+      let win = 11
+      var x = newSeq[float32](n)
+      for v in x.mitems: v = float32(rng.gauss(0, 1))
+      let sg = initSpectrogramPlan(float32, windowLen = win, hop = 4, dtMs = 1.0,
+        samples = n, nfft = nfft)
+      var ws = initWorkspace()
+      ws.reserve(sg.workspaceSize)
+      var amp = newSeq[float64](sg.frames * sg.bins)
+      sg.spectrogramInto(x, amp, ws)
+      let half = win div 2
+      for i in 0 ..< sg.frames:
+        let start = i * 4 - half
+        var sw = 0.0
+        for j in 0 ..< win:
+          if start + j in 0 ..< n:
+            sw += sin(PI * float64(j + 1) / float64(win + 1)) ^ 2
+        for k in 0 ..< sg.bins:
+          var re, im = 0.0
+          for j in 0 ..< win:
+            let c = start + j
+            if c notin 0 ..< n: continue
+            let w = sin(PI * float64(j + 1) / float64(win + 1)) ^ 2
+            let ang = -2 * PI * float64(k * j) / float64(nfft)
+            re += w * float64(x[c]) * cos(ang)
+            im += w * float64(x[c]) * sin(ang)
+          let side = if k == 0 or 2 * k == nfft: 1.0 else: 2.0
+          let want = if sw > 0: hypot(re, im) * side / sw else: 0.0
+          let got = amp[i * sg.bins + k]
+          doAssert abs(got - want) < 1e-4 * max(1.0, abs(want)),
+            $nfft & " frame " & $i & " bin " & $k & ": " & $got & " vs " & $want
 
 when isMainModule: main()
