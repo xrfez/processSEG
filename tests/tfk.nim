@@ -243,4 +243,11 @@ proc main*() =
           else: 'f'
       doAssert got == want, "kind " & $kind & " " & got
 
+  block fk_lane_remainder:
+    # 7, 9 and 17 traces are not multiples of fftLanes. A dropped tail lane
+    # disagrees with the slow DFT of the same panel.
+    panelVsDft(7, 16, 2, 1.0, 1e-6)
+    panelVsDft(9, 16, 3, 1.0, 1e-6)
+    panelVsDft(17, 16, 4, 1.0, 1e-6)
+
 when isMainModule: main()
