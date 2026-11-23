@@ -94,7 +94,8 @@ import processSEG/vibroseis/[crosscorrelate, matchpeak, vibqc, recfilter]
 import processSEG/continuous/slice
 import processSEG/survey/patch
 import processSEG/synth
-export types, rows, workspace, basic, mute, plan, spectrum, hilbert, spectrogram, fk,
+export spectrum except addAmplitudeRows # a pool batch helper: scaled power, not an amplitude
+export types, rows, workspace, basic, mute, plan, hilbert, spectrogram, fk,
     timeshift, design,
     apply, iir, gain, curves, stats, pipeline, adapters, pool, shift, model,
     formats, moveout, elevation, nmo, binning, stack, batch, geometry, firstbreak, snr,
