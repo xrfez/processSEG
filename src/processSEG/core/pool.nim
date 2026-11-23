@@ -12,6 +12,7 @@
 ## pool.pickInto(picker, raw, meta, picks)       # first breaks
 ## pool.averageSpectrogramInto(sg, raw, meta, amp) # averaged spectrogram
 ## pool.fkAmplitudeInto(fk, raw, meta, 0, amp)   # f-k amplitude
+## pool.averageAmplitudeInto(sp, raw, meta, firstCol, amp) # averaged spectrum
 ## ```
 ##
 ## **Workers.** The threads start once, in `newProcessPool`, sleep on a
@@ -56,6 +57,7 @@ from ../fft/plan import fftLanes
 import ../fft/spectrogram
 from ../fft/fk import FkPlan
 import ../fft/fk as fk
+import ../fft/spectrum
 from ../filter/iir import iirLanes
 
 type
@@ -477,6 +479,50 @@ proc meanSqrt(dst {.noalias.}: ptr UncheckedArray[float64], n: int, u: float64) 
     dst[i] = sqrt(dst[i] / u)
   {.pop.}
 
+template eachAvgSlot(c: untyped; body: untyped) =
+  ## Claims batch slots until none remain. The body sees `slot`, `row0`,
+  ## `row1` and `dest` (nil when there are no bins) and stores the rows it
+  ## kept in `c.counts[slot]`. One worker writes each slot.
+  let nbSlot = c.nb
+  while true:
+    let slot {.inject.} = c.next.fetchAdd(1)
+    if slot >= c.nBatches: break
+    let batch = c.firstBatch + slot
+    let row0 {.inject.} = c.lo + batch * c.batchRows
+    let row1 {.inject.} = min(c.hi, row0 + c.batchRows - 1)
+    let dest {.inject.} = if nbSlot == 0: nil
+      else: cast[ptr UncheckedArray[float64]](addr c.partial[slot * nbSlot])
+    body
+
+template runAvgWaves(state: ptr PoolState; nb, span: int; amp: var openArray[float64];
+    launch: untyped): int =
+  ## Fixed batches of `avgBatchRows`, at most two waves of partials per
+  ## worker, summed in batch order on this thread. `launch` runs one wave:
+  ## it sees `batch0` and `nWave`, and the partials and counts are already
+  ## zero. The caller holds `state.call`.
+  let batchCount = (span + avgBatchRows - 1) div avgBatchRows
+  let slots = min(batchCount, 2 * state.workers)
+  ensureAvgScratch(state, slots * nb, slots)
+  var usedWave = 0
+  var batch0 {.inject.} = 0
+  while batch0 < batchCount:
+    let nWave {.inject.} = min(slots, batchCount - batch0)
+    if nWave > 0 and nb > 0:
+      zeroMem(addr state.partial[0], nWave * nb * sizeof(float64))
+    for s in 0 ..< nWave: state.counts[s] = 0
+    launch
+    for s in 0 ..< nWave:
+      let kept = state.counts[s]
+      if kept > 0:
+        if nb > 0:
+          addPartial(cast[ptr UncheckedArray[float64]](addr state.partial[s * nb]),
+            cast[ptr UncheckedArray[float64]](addr amp[0]), nb)
+        usedWave += kept
+    batch0 += nWave
+  if usedWave > 0 and nb > 0:
+    meanSqrt(cast[ptr UncheckedArray[float64]](addr amp[0]), nb, float64(usedWave))
+  usedWave
+
 type
   AvgCtx[T: SampleType] = object
     plan: ptr SpectrogramPlan[T]
@@ -499,14 +545,7 @@ proc avgJob[T](ctx: pointer, worker: int, ws: var Workspace) {.nimcall, gcsafe,
   let nb = c.nb
   let tmpAt = when T is float32: 0 else: c.plan[].workspaceSize.f64
   let tmp = ws.scratch(float64, nb, tmpAt)
-  while true:
-    let slot = c.next.fetchAdd(1)
-    if slot >= c.nBatches: break
-    let batch = c.firstBatch + slot
-    let row0 = c.lo + batch * c.batchRows
-    let row1 = min(c.hi, row0 + c.batchRows - 1)
-    let dest = if nb == 0: nil
-               else: cast[ptr UncheckedArray[float64]](addr c.partial[slot * nb])
+  eachAvgSlot(c):
     var kept = 0
     for r in row0 .. row1:
       if c.meta.isLive(r):
@@ -562,37 +601,18 @@ proc averageSpectrogramInto*[T: SampleType](p: ProcessPool, sg: SpectrogramPlan[
     zeroMem(addr amp[0], nb * sizeof(float64))
   if lo > hi: return 0
   let span = hi - lo + 1
-  let width = avgBatchRows
-  let batchCount = (span + width - 1) div width
-  let slots = min(batchCount, 2 * p.workers)
   var ctx = AvgCtx[T](plan: addr sg, src: b, meta: meta, nb: nb, lo: lo, hi: hi,
-    batchRows: width)
+    batchRows: avgBatchRows)
   var used = 0
   acquire p.state.call
   try:
-    ensureAvgScratch(p.state, slots * nb, slots)
-    ctx.partial = p.state.partial
-    ctx.counts = p.state.counts
-    var batch0 = 0
-    while batch0 < batchCount:
-      let n = min(slots, batchCount - batch0)
-      if n > 0 and nb > 0:
-        zeroMem(addr ctx.partial[0], n * nb * sizeof(float64))
-      for s in 0 ..< n: ctx.counts[s] = 0
+    used = runAvgWaves(p.state, nb, span, amp):
+      ctx.partial = p.state.partial
+      ctx.counts = p.state.counts
       ctx.firstBatch = batch0
-      ctx.nBatches = n
+      ctx.nBatches = nWave
       ctx.next.store(0)
       run(p.state, avgJob[T], addr ctx)
-      for s in 0 ..< n:
-        let kept = ctx.counts[s]
-        if kept > 0:
-          if nb > 0:
-            addPartial(cast[ptr UncheckedArray[float64]](addr ctx.partial[s * nb]),
-              cast[ptr UncheckedArray[float64]](addr amp[0]), nb)
-          used += kept
-      batch0 += n
-    if used > 0 and nb > 0:
-      meanSqrt(cast[ptr UncheckedArray[float64]](addr amp[0]), nb, float64(used))
   finally:
     release p.state.call
   used
@@ -700,3 +720,98 @@ proc fkAmplitudeInto*[T: SampleType](p: ProcessPool, plan: FkPlan[T],
   ## `fkAmplitudeInto` on a `[rows, cols]` tensor. Returns the live rows used.
   meta.checkShape(samples)
   p.fkAmplitudeInto(plan, rowBlock(samples), meta, firstCol, amp, rows)
+
+proc applyOneSided[T](sp: SpectrumPlan[T], amp: var openArray[float64]) {.raises: [].} =
+  ## `amp[k] *= sides(k)` after the shared mean, the one-sided scale the
+  ## serial form applies with the square root.
+  let nb = sp.bins
+  {.push boundChecks: off, overflowChecks: off.}
+  for k in 0 ..< nb:
+    amp[k] = amp[k] * sp.sides(k)
+  {.pop.}
+
+type
+  SpecCtx[T: SampleType] = object
+    plan: ptr SpectrumPlan[T]
+    src: RowBlock[T]
+    meta: ChunkMeta
+    firstCol, nb, lo, hi, batchRows: int
+    firstBatch, nBatches: int
+    partial: ptr UncheckedArray[float64]
+    counts: ptr UncheckedArray[int]
+    next: Atomic[int]
+
+proc specJob[T](ctx: pointer, worker: int, ws: var Workspace) {.nimcall, gcsafe,
+    raises: [].} =
+  ## One wave: each claimed slot is one batch, written by this worker only.
+  let c = cast[ptr SpecCtx[T]](ctx)
+  try:
+    ws.reserve(c.plan[].workspaceSize)
+  except ValueError as e:
+    raiseAssert "checked by averageAmplitudeInto: " & e.msg
+  eachAvgSlot(c):
+    if c.nb == 0:
+      c.counts[slot] = 0
+    else:
+      c.counts[slot] = c.plan[].addAmplitudeRows(c.src, c.meta, c.firstCol,
+        row0, row1, dest.toOpenArray(0, c.nb - 1), ws)
+
+proc averageAmplitudeInto*[T: SampleType](p: ProcessPool, sp: SpectrumPlan[T],
+    b: RowBlock[T], meta: ChunkMeta, firstCol: int, amp: var openArray[float64],
+    rows = 0 .. int.high): int =
+  ## The power-averaged amplitude spectrum of the window
+  ## `firstCol ..< firstCol + windowLen` over the live rows of `b` in `rows`
+  ## (clipped to the block), the pool form of `averageAmplitudeInto`. Rows are
+  ## cut into fixed batches of 16, not by worker count; each batch is summed
+  ## in row order into its own partial, and this thread adds the partials in
+  ## batch order, divides, and applies `sides`. One worker and many give the
+  ## same bits. That grouped sum can differ from the serial form's single
+  ## running sum in the last bits (within about 1e-12 of the peak). A row the
+  ## serial form leaves out is left out here: not live, no live sample past
+  ## `firstCol`, or a NaN or an infinity in the window. Returns the rows used;
+  ## with none, `amp` is all zero. There is no `stop`: the pool runs the job
+  ## to completion. Raises `ValueError`, before any job starts and before
+  ## `amp` changes, when `b` does not match `meta`, the interval is not the
+  ## plan's, or `firstCol` is negative. An `amp` of another length is an
+  ## `AssertionDefect`. Partials live on the pool (at most two per worker at
+  ## once, grown once) and are never allocated inside a job.
+  doAssert p.state != nil, "a ProcessPool must come from newProcessPool"
+  meta.checkShape(b)
+  if not sameInterval(meta.dtMs, sp.dtMs):
+    raise newException(ValueError, "the rows' interval " & $meta.dtMs &
+      " ms is not the plan's " & $(sp.dtMs) & " ms")
+  if firstCol < 0:
+    raise newException(ValueError, "firstCol must be ≥ 0, got " & $firstCol)
+  let nb = sp.bins
+  doAssert amp.len == nb, "amp needs bins values"
+  let lo = max(rows.a, 0)
+  let hi = min(rows.b, b.len - 1)
+  if nb > 0:
+    zeroMem(addr amp[0], nb * sizeof(float64))
+  if lo > hi: return 0
+  let span = hi - lo + 1
+  var ctx = SpecCtx[T](plan: addr sp, src: b, meta: meta, firstCol: firstCol,
+    nb: nb, lo: lo, hi: hi, batchRows: avgBatchRows)
+  var used = 0
+  acquire p.state.call
+  try:
+    used = runAvgWaves(p.state, nb, span, amp):
+      ctx.partial = p.state.partial
+      ctx.counts = p.state.counts
+      ctx.firstBatch = batch0
+      ctx.nBatches = nWave
+      ctx.next.store(0)
+      run(p.state, specJob[T], addr ctx)
+    if used > 0 and nb > 0:
+      applyOneSided(sp, amp)
+  finally:
+    release p.state.call
+  used
+
+proc averageAmplitudeInto*[T: SampleType](p: ProcessPool, sp: SpectrumPlan[T],
+    samples: Tensor[T], meta: ChunkMeta, firstCol: int,
+    amp: var openArray[float64], rows = 0 .. int.high): int =
+  ## `averageAmplitudeInto` on a `[rows, cols]` tensor. Returns the rows used.
+  ## The plan stays usable.
+  meta.checkShape(samples)
+  p.averageAmplitudeInto(sp, rowBlock(samples), meta, firstCol, amp, rows)

@@ -106,7 +106,7 @@ proc initSpectrumPlan*(T: typedesc[SampleType], dtMs: float64, windowLen: int,
     result.taper[i] = T(w)
     result.taperSum += float64(result.taper[i])
 
-func sides[T](sp: SpectrumPlan[T], k: int): float64 {.inline.} =
+func sides*[T](sp: SpectrumPlan[T], k: int): float64 {.inline.} =
   ## The one-sided factor of bin `k`: 1 at 0 Hz and at Nyquist, else 2.
   if k == 0 or 2 * k == sp.fft.len: 1.0 else: 2.0
 
@@ -316,6 +316,70 @@ proc amplitudeInto*[T: SampleType](sp: SpectrumPlan[T], x: openArray[T],
 
 # ---------------------------------------------------------- averaged panel --
 
+proc addLanePowers[T](re, im: ptr UncheckedArray[T], nLanes, stride, nb: int,
+    scale, acc: ptr UncheckedArray[float64]) {.inline, raises: [].} =
+  ## `acc[k] += Σ_l (re² + im²) · scale[l]` for lanes `0 ..< nLanes`.
+  ## Bin `k` of lane `l` is element `k·stride + l`.
+  {.push boundChecks: off.}
+  for k in 0..<nb:
+    var s = 0.0
+    for l in 0..<nLanes:
+      let r = float64(re[k * stride + l])
+      let i = float64(im[k * stride + l])
+      s += (r * r + i * i) * scale[l]
+    acc[k] += s
+  {.pop.}
+
+proc addAmplitudeRows*[T: SampleType](sp: SpectrumPlan[T], b: RowBlock[T],
+    meta: ChunkMeta, firstCol, row0, row1: int, acc: var openArray[float64],
+    ws: var Workspace): int {.raises: [].} =
+  ## Adds the scaled power of rows `row0 .. row1` into `acc` (`bins` values),
+  ## in row order: each kept row contributes `(re² + im²) / Σw²`, the same
+  ## quantity `averageAmplitudeInto` sums. Returns how many were added. A row
+  ## that is not live, that has no live sample past `firstCol`, or whose
+  ## window holds a NaN or an infinite sample is left out (`acc` unchanged
+  ## for that row). `ws` must hold `sp.workspaceSize`. Exported for the pool
+  ## form, which sums fixed batches with this and averages them itself.
+  let nb = sp.fft.bins
+  let n = sp.fft.len
+  doAssert acc.len == nb, "acc needs bins values"
+  if row1 < row0 or nb == 0: return 0
+  let at = sp.fft.workspaceSize.elems(T)
+  let xw = ws.scratch(T, n * fftLanes + 2 * nb * fftLanes, at)
+  let re = cast[ptr UncheckedArray[T]](addr xw[n * fftLanes])
+  let im = cast[ptr UncheckedArray[T]](addr xw[n * fftLanes + nb * fftLanes])
+  var lane = 0
+  var used = 0
+  var scale: array[fftLanes, float64] # 1/Σw² of each lane's window
+
+  template flush() =
+    if lane > 0:
+      for l in lane..<fftLanes: # unused lanes are zero
+        for j in 0..<n: xw[j * fftLanes + l] = T(0)
+      sp.fft.forwardLanes(xw.toOpenArray(0, n * fftLanes - 1), re.toOpenArray(0,
+          nb * fftLanes - 1),
+        im.toOpenArray(0, nb * fftLanes - 1), ws)
+      addLanePowers(re, im, lane, fftLanes, nb,
+        cast[ptr UncheckedArray[float64]](addr scale[0]),
+        cast[ptr UncheckedArray[float64]](addr acc[0]))
+      lane = 0
+
+  for r in row0..row1:
+    if meta.isLive(r):
+      let live = meta.liveSamples(r, b.cols)
+      if live > firstCol:
+        let last = min(live, firstCol + sp.taper.len)
+        let src = b.rowPtr(r)
+        let sw = sp.windowInto(src.toOpenArray(firstCol, last - 1),
+          cast[ptr UncheckedArray[T]](addr xw[lane]), fftLanes)
+        if sw > 0: # a NaN or Inf sample: the lane is reused
+          scale[lane] = 1 / (sw * sw)
+          inc lane
+          inc used
+          if lane == fftLanes: flush()
+  flush()
+  used
+
 proc averageAmplitudeInto*[T: SampleType](sp: SpectrumPlan[T], b: RowBlock[T],
     meta: ChunkMeta, firstCol: int, amp: var openArray[float64],
     ws: var Workspace, rows = 0 .. int.high): int =
@@ -337,48 +401,13 @@ proc averageAmplitudeInto*[T: SampleType](sp: SpectrumPlan[T], b: RowBlock[T],
     badSpectrum("firstCol must be ≥ 0, got " & $firstCol)
   doAssert amp.len == nb, "amp needs bins values"
   let at = sp.fft.workspaceSize.elems(T)
-  let xw = ws.scratch(T, n * fftLanes + 2 * nb * fftLanes, at)
-  let re = cast[ptr UncheckedArray[T]](addr xw[n * fftLanes])
-  let im = cast[ptr UncheckedArray[T]](addr xw[n * fftLanes + nb * fftLanes])
   let acc = ws.scratch(float64, nb, at = (when T is float32: 0 else: at +
     n * fftLanes + 2 * nb * fftLanes))
   for k in 0..<nb: acc[k] = 0
   let lo = max(rows.a, 0)
   let hi = min(rows.b, b.len - 1)
-  var lane = 0
-  var used = 0
-  var scale: array[fftLanes, float64] # 1/Σw² of each lane's window
-
-  template flush() =
-    if lane > 0:
-      for l in lane..<fftLanes: # unused lanes are zero
-        for j in 0..<n: xw[j * fftLanes + l] = T(0)
-      sp.fft.forwardLanes(xw.toOpenArray(0, n * fftLanes - 1), re.toOpenArray(0,
-          nb * fftLanes - 1),
-        im.toOpenArray(0, nb * fftLanes - 1), ws)
-      for k in 0..<nb:
-        var s = 0.0
-        for l in 0..<lane:
-          let r = float64(re[k * fftLanes + l])
-          let i = float64(im[k * fftLanes + l])
-          s += (r * r + i * i) * scale[l]
-        acc[k] += s
-      lane = 0
-
-  for r in lo..hi:
-    if not meta.isLive(r): continue
-    let live = meta.liveSamples(r, b.cols)
-    if live <= firstCol: continue
-    let last = min(live, firstCol + sp.taper.len)
-    let src = b.rowPtr(r)
-    let sw = sp.windowInto(src.toOpenArray(firstCol, last - 1),
-      cast[ptr UncheckedArray[T]](addr xw[lane]), fftLanes)
-    if not (sw > 0): continue # a NaN or Inf sample: the lane is reused
-    scale[lane] = 1 / (sw * sw)
-    inc lane
-    inc used
-    if lane == fftLanes: flush()
-  flush()
+  let used = sp.addAmplitudeRows(b, meta, firstCol, lo, hi,
+    acc.toOpenArray(0, nb - 1), ws)
   for k in 0..<nb:
     amp[k] = if used > 0: sqrt(acc[k] / float64(used)) * sp.sides(k) else: 0.0
   used

@@ -20,6 +20,14 @@
 ## 1.0000000000000002e+150 (fcNormal), serial 1e+150 (fcNormal).
 ## `fk_pool_errors` failed while a 1-live-row window did not raise:
 ## `serialMsg.len > 0 and serialMsg == poolMsg`.
+##
+## Fail-first (averaged spectrum), then restored:
+## `applyOneSided` skipped: `pool_spectrum_same_bits` differed at float32,
+## 1 row, 1 worker, bin 1 (diff 0.0515, peak 0.103).
+## Kept-count replaced by every row in the batch: `pool_spectrum_drops_rows`
+## kept 34 (float32, 1 worker) instead of the serial count.
+## `amp` zeroed before the interval check: `pool_spectrum_errors` saw
+## `amp[0] == 0` instead of 1.5.
 
 import std/[assertions, math]
 import processSEG
@@ -536,5 +544,142 @@ proc main*() =
     var dead: ProcessPool
     doAssertRaises AssertionDefect:
       discard dead.fkAmplitudeInto(plan, g.data, meta, 0, amp)
+
+  proc specClose(got, want: openArray[float64]): string =
+    ## Empty when `got` is within 1e-12 of `want`'s peak on every bin.
+    frameClose(got, want, 1, got.len)
+
+  proc checkPoolSpectrum[T: SampleType]() =
+    const cols = 80
+    let sp = initSpectrumPlan(T, dtMs = 2.0, windowLen = 32, nfft = 64)
+    var ws = initWorkspace()
+    ws.reserve(sp)
+    var pools: array[4, ProcessPool]
+    let counts = [1, 2, 3, 8]
+    for i, w in counts: pools[i] = newProcessPool(w)
+    for rows in [1, 15, 16, 17, 200]:
+      var g = toneGather[T](rows, cols)
+      if rows >= 17:
+        g.keys[2].status = tsDead
+        g.setLive(4, 20)
+      let meta = initChunkMeta(g.rows, dtMs = 2)
+      var want = newSeq[float64](sp.bins)
+      let used = sp.averageAmplitudeInto(g.data, meta, 0, want, ws)
+      var refGot: seq[float64] = @[]
+      var refUsed = 0
+      for i, w in counts:
+        var got = newSeq[float64](sp.bins)
+        let n = pools[i].averageAmplitudeInto(sp, g.data, meta, 0, got)
+        doAssert n == used, $T & " rows " & $rows & " workers " & $w &
+          " used " & $n & " vs " & $used
+        let note = specClose(got, want)
+        doAssert note.len == 0, $T & " rows " & $rows & " w " & $w & " " & note
+        if i == 0:
+          refGot = got
+          refUsed = n
+        else:
+          doAssert n == refUsed
+          for k in 0 ..< got.len:
+            doAssert got[k] == refGot[k], $T & " rows " & $rows &
+              " workers " & $w & " bin " & $k
+
+  block pool_spectrum_same_bits:
+    # Workers 1, 2, 3, 8 match each other bit for bit, and the serial form
+    # within 1e-12 of the peak. Row counts sit on both sides of the batch of
+    # 16, including one wave and several.
+    checkPoolSpectrum[float32]()
+    checkPoolSpectrum[float64]()
+
+  proc checkSpecDropped[T: SampleType]() =
+    const cols = 64
+    const rows = 34
+    const firstCol = 8
+    let sp = initSpectrumPlan(T, dtMs = 2.0, windowLen = 32, nfft = 64)
+    var g = toneGather[T](rows, cols)
+    g.keys[15].status = tsDead
+    g.data[16, firstCol + 1] = T(NaN)
+    g.setLive(31, firstCol)
+    g.data[32, firstCol] = T(Inf)
+    g.data[0, 0] = T(NaN) # before the window: kept
+    let meta = initChunkMeta(g.rows, dtMs = 2, failed = @[17])
+    var ws = initWorkspace()
+    ws.reserve(sp)
+    var want = newSeq[float64](sp.bins)
+    let used = sp.averageAmplitudeInto(g.data, meta, firstCol, want, ws)
+    doAssert used == rows - 5, $T & " serial kept " & $used
+    var refGot: seq[float64] = @[]
+    for i, w in [1, 2, 3, 8]:
+      var pool = newProcessPool(w)
+      var got = newSeq[float64](sp.bins)
+      let n = pool.averageAmplitudeInto(sp, rowBlock(g.data), meta, firstCol, got)
+      doAssert n == used, $T & " workers " & $w & " kept " & $n
+      let note = specClose(got, want)
+      doAssert note.len == 0, $T & " " & note
+      if i == 0: refGot = got
+      else:
+        for k in 0 ..< got.len:
+          doAssert got[k] == refGot[k], $T & " workers " & $w
+
+  block pool_spectrum_drops_rows:
+    # Dead, failed, NaN, Inf and a window that starts past the live end, on
+    # batch edges. A NaN before the window is kept. The count matches serial.
+    checkSpecDropped[float32]()
+    checkSpecDropped[float64]()
+
+  proc checkSpecAllDropped[T: SampleType]() =
+    const cols = 48
+    const rows = 18
+    let sp = initSpectrumPlan(T, dtMs = 2.0, windowLen = 32, nfft = 32)
+    var g = toneGather[T](rows, cols)
+    for r in 0 ..< rows: g.data[r, 4] = T(NaN)
+    let meta = initChunkMeta(g.rows, dtMs = 2)
+    var ws = initWorkspace()
+    ws.reserve(sp)
+    var want = newSeq[float64](sp.bins)
+    doAssert sp.averageAmplitudeInto(g.data, meta, 0, want, ws) == 0
+    for v in want: doAssert v == 0.0
+    for w in [1, 8]:
+      var pool = newProcessPool(w)
+      var got = newSeq[float64](sp.bins)
+      for k in 0 ..< got.len: got[k] = 1.0
+      let n = pool.averageAmplitudeInto(sp, g.data, meta, 0, got)
+      doAssert n == 0, $T & " workers " & $w & " kept " & $n
+      for v in got: doAssert v == 0.0, $T & " " & $w
+
+  block pool_spectrum_all_dropped:
+    checkSpecAllDropped[float32]()
+    checkSpecAllDropped[float64]()
+
+  block pool_spectrum_errors:
+    let sp = initSpectrumPlan(float32, dtMs = 2.0, windowLen = 32, nfft = 64)
+    var g = toneGather[float32](6, 64)
+    let meta = initChunkMeta(g.rows, dtMs = 2)
+    var pool = newProcessPool(2)
+    var amp = newSeq[float64](sp.bins)
+    amp[0] = 1.5
+    let other = initChunkMeta(g.rows, dtMs = 4)
+    doAssertRaises ValueError:
+      discard pool.averageAmplitudeInto(sp, g.data, other, 0, amp)
+    doAssert amp[0] == 1.5
+    amp[0] = 1.5
+    doAssertRaises ValueError:
+      discard pool.averageAmplitudeInto(sp, g.data, meta, -1, amp)
+    doAssert amp[0] == 1.5
+    var bad = newSeq[float64](3)
+    doAssertRaises AssertionDefect:
+      discard pool.averageAmplitudeInto(sp, g.data, meta, 0, bad)
+    var ws = initWorkspace()
+    ws.reserve(sp)
+    var want = newSeq[float64](sp.bins)
+    let used = sp.averageAmplitudeInto(g.data, meta, 4, want, ws, rows = 1 .. 3)
+    var got = newSeq[float64](sp.bins)
+    let n = pool.averageAmplitudeInto(sp, g.data, meta, 4, got, rows = 1 .. 3)
+    doAssert n == used and n > 0
+    doAssert specClose(got, want).len == 0
+    pool.ping
+    discard pool.averageAmplitudeInto(sp, g.data, meta, 0, got)
+    let nAlloc = allocsIn:
+      discard pool.averageAmplitudeInto(sp, g.data, meta, 0, got)
+    doAssert nAlloc == 0, $nAlloc
 
 when isMainModule: main()

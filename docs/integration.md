@@ -217,8 +217,9 @@ flow[2].agc.windowMs = 300                # a slider moved: edit the op, recompi
   every plan the process compiles, so 0 can mean "never processed".
 - **What allocates:** `compile`, `newProcessPool`, `reserve` when it grows, and the first
   `pool.apply` after a plan needing more scratch than any before (each worker grows its
-  workspace), and the first `pool.averageSpectrogramInto` that needs a larger
-  partial buffer (grown once on the pool; each worker also grows its workspace); for
+  workspace), and the first `pool.averageSpectrogramInto` or
+  `pool.averageAmplitudeInto` that needs a larger partial buffer (grown once on the
+  pool, shared by both; each worker also grows its workspace); for
   calibration, `fileScalesInto` (a few columns of scratch) and
   `scaleReport`; for vibrator QC, the plans, `initSweepReference`, `initSweepTrack` and the
   first `analyzeVibrators` into a `results` seq. Every other `apply`, `pool.apply`,
@@ -573,6 +574,10 @@ out), and amplitudes are scaled so that a sinusoid of amplitude A on a bin reads
 window is given in columns of the block: the viewer converts its time selection with the
 meta's time axis (`sampleTimeMs`). Rows with a NaN or Inf sample in the window are left out (the returned count says how many rows were used). It does not change the samples, so it runs on the raw
 or the processed buffer. It allocates nothing once the workspace is reserved.
+`pool.averageAmplitudeInto` is the same average with no workspace and no `stop`: rows
+are summed in fixed batches, so the bits do not depend on the worker count. That grouped
+sum can differ from this running sum in the last bits (within about 1e-12 of the peak).
+The same rows are left out, and the count is the rows used.
 
 ## Overlays: moveout ticks for geometry checks
 
@@ -829,6 +834,7 @@ The viewer does not build these itself. Each call fills a buffer the viewer alre
 | Phase unwrapped along the bins on screen | `unwrapPhaseInto(phaseDeg, shown, dst)`. A hidden bin is not crossed |
 | Linear phase taken off, delay in ms | `removeDelayInto(unwrapped, hz, shown, dst)` |
 | Spectrum averaged over several blocks | `initSpectrumAccumulator`, `acc.add` per block, `acc.amplitudesInto`. Same scale as `averageAmplitudeInto` |
+| Spectrum averaged over traces | `sp.averageAmplitudeInto` (`workspaceSize`), or `pool.averageAmplitudeInto` (no workspace; same rows left out; the grouped sum can differ from the serial running sum in the last bits, within about 1e-12 of the peak) |
 | Spectrogram averaged over traces | `sg.averageSpectrogramInto` (`averageWorkspace`), or `pool.averageSpectrogramInto` (no workspace, no `stop`; same rows dropped; the grouped sum can differ from the serial running sum in the last bits). A float64 row outside the safe range, or a NaN or infinity in the spectrogram, drops that trace. Pass `stop` to the serial form to abandon between traces (`Stopped` when abandoned, `amp` unspecified; otherwise the rows used; nil never stops) |
 | Response of the flow as applied, edges included | `appliedResponseInto(flow, float32, dtMs, samples, hz, gain, ws)`. Not `response()` |
 | Gain held flat after a time | `heldGain(curve, untilMs)` then `gainCurveOp` |

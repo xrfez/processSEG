@@ -209,8 +209,9 @@ auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guid
 | Proc | What |
 |---|---|
 | `SpectrumPlan[T]`; `initSpectrumPlan(T, dtMs, windowLen, taperFraction = 0.1, nfft = 0, demean = true)` | Windowed amplitude spectra: demeaned, Tukey-tapered, zero-padded to `nfft` (0: the next power of two). |
-| `sp.bins`, `sp.windowLen`, `sp.nfft`, `sp.binHz(k)`, `sp.workspaceSize` | Its axes and scratch. |
+| `sp.bins`, `sp.windowLen`, `sp.nfft`, `sp.binHz(k)`, `sp.sides(k)`, `sp.workspaceSize` | Its axes, the one-sided factor of bin `k` (1 at 0 Hz and at Nyquist, else 2), and scratch. |
 | `sp.averageAmplitudeInto(b \| samples, meta, firstCol, amp: var openArray[float64], ws, rows = 0 .. high(int)): int` | The power-averaged amplitude spectrum of the window `firstCol ..< firstCol + windowLen` over the live rows in `rows`; returns the rows used (rows with NaN or Inf are left out). A sinusoid of amplitude A on a bin reads A. |
+| `sp.addAmplitudeRows(b, meta, firstCol, row0, row1, acc, ws): int` | Adds the scaled power of rows `row0 .. row1` into `acc` (`bins` values), the quantity the average sums. Returns how many were added. A row that is not live, that has no live sample past `firstCol`, or whose window holds a NaN or an infinity is left out. |
 | `sp.amplitudeInto(x, amp, phase, ws)` | One window of one trace: amplitude and phase (radians). |
 | `amplitudePhaseInto(re, im, amp, phase)` | Modulus and phase of a raw `forward` spectrum, unscaled. |
 | `DbReference` (`dbPeak`, `dbAbsolute`); `toDbInto(amp, db, reference = dbPeak, floorDb = -120, refAmplitude = 1)` | 20·log10 of the amplitudes, 0 dB at the peak or at `refAmplitude` (`dbAbsolute`; 1 by default, so present callers are unchanged), clamped at `floorDb`. `dbPeak` ignores `refAmplitude`. |
@@ -575,6 +576,8 @@ The last time a trace's signal is still up, in ms. `blockLevels` is the largest 
 | `ProcessPool`; `newProcessPool(workers = 4)`, `p.workers` | Persistent worker threads, each with its own `Workspace`. `ValueError` for `workers < 1`, `ResourceExhaustedError` when the OS refuses a thread. `=copy` and `=dup` are compile errors (move it); `=destroy` stops and joins the workers; `=wasMoved` empties it. |
 | `pool.apply(plan, b \| samples, meta)`, `pool.apply(plan, src, dst, meta)` (blocks or tensors) | `plan.apply` with the rows split across the workers; blocks until done, identical results. One job at a time; a second caller waits. |
 | `pool.ping` | An empty job: the per-job overhead. |
+| `pool.averageSpectrogramInto(sg, b \| samples, meta, amp, rows = 0 .. high(int)): int` | `averageSpectrogramInto` with rows in fixed batches of 16, summed in order on the calling thread. Same bits for any worker count; the grouped sum can differ from the serial running sum in the last bits. No workspace and no `stop`. |
+| `pool.averageAmplitudeInto(sp, b \| samples, meta, firstCol, amp, rows = 0 .. high(int)): int` | `averageAmplitudeInto` with rows in fixed batches of 16, summed in order on the calling thread. Same bits for any worker count; the grouped sum can differ from the serial running sum in the last bits (within about 1e-12 of the peak). Same rows left out. No workspace and no `stop`. `ValueError` before `amp` changes. |
 | `correlateInto(pool, plan: CorrelationPlan[T], src, dst: RowBlock[T] \| Tensor[T], meta)` | Vibroseis correlation with the rows split across the workers; checks as `checkCorrelate` on the caller's thread. |
 | `traceAmplitudeInto(pool, b \| samples, meta, params, dst)` | Amplitude QC (`qc/amplitude`) with the rows split across the workers, each reserving `traceAmplitudeWorkspace`. |
 | `pickInto(pool, plan: FirstBreakPlan[T], b \| samples, meta, dst)` | First-break picking (`qc/firstbreak`) with the rows split across the workers; checks as `checkPick` on the caller's thread. |
