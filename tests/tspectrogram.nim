@@ -2,6 +2,10 @@
 ## windowed samples, a sinusoid on a bin reads its amplitude in every frame,
 ## a sweep's ridge follows its law and its 2nd harmonic shows 20 dB down,
 ## float32, refusals and no allocation.
+##
+## Fail-first: `average_stop` failed while the stop check was compiled out
+## (`if false and stop`), so a never-true check was called 0 times instead
+## of once per live row.
 
 import std/[assertions, math, random]
 import processSEG
@@ -152,12 +156,59 @@ proc main*() =
     var ws = initWorkspace()
     ws.reserve(sg.averageWorkspace)
     var amp = newSeq[float64](sg.frames * sg.bins)
-    let used = sg.averageSpectrogramInto(g.data, meta, amp, ws)
-    doAssert used == 2, "a NaN frame drops the trace, got " & $used
+    doAssert sg.averageSpectrogramInto(g.data, meta, amp, ws)
     let mid = sg.frames div 2
     doAssert abs(amp[mid * sg.bins + 4] - 2.0) < 1e-3, $amp[mid * sg.bins + 4]
     let quiet = allocsIn:
       discard sg.averageSpectrogramInto(g.data, meta, amp, ws)
     doAssert quiet == 0
+
+  block average_stop:
+    # Fail-first: failed while the stop check was compiled out, seen 0.
+    const rows = 4
+    const cols = 128
+    let sg = initSpectrogramPlan(float64, windowLen = 32, hop = 16, dtMs = 2, samples = cols,
+      nfft = 32)
+    var g = cmpGather[float64](0, newSeq[float64](rows), cols, 2)
+    let f = sg.binHz(4)
+    for r in 0 ..< rows:
+      for j in 0 ..< cols:
+        g.data[r, j] = cos(2 * PI * f * float64(j) * 2 / 1000) * float64(r + 1)
+    let meta = initChunkMeta(g.rows, dtMs = 2)
+    var ws = initWorkspace()
+    ws.reserve(sg.averageWorkspace)
+    var amp = newSeq[float64](sg.frames * sg.bins)
+    doAssert sg.averageSpectrogramInto(g.data, meta, amp, ws)
+    let full = amp
+    var again = newSeq[float64](amp.len)
+    doAssert sg.averageSpectrogramInto(g.data, meta, again, ws, stop = nil)
+    doAssert again == full
+    var seen = 0
+    let never: StopCheck = proc (): bool {.gcsafe, raises: [].} =
+      inc seen
+      false
+    doAssert sg.averageSpectrogramInto(g.data, meta, again, ws, stop = never)
+    doAssert again == full
+    doAssert seen == rows, "checked once per live row, got " & $seen
+    proc stoppedAfter(k: int): int =
+      var calls = 0
+      let stop: StopCheck = proc (): bool {.gcsafe, raises: [].} =
+        inc calls
+        calls >= k
+      doAssert not sg.averageSpectrogramInto(g.data, meta, amp, ws, stop = stop)
+      doAssert calls <= k, "called " & $calls & " times, at most " & $k
+      calls
+    doAssert stoppedAfter(1) == 1
+    doAssert stoppedAfter(3) == 3
+    var once = 0
+    let stopRow: StopCheck = proc (): bool {.gcsafe, raises: [].} =
+      inc once
+      true
+    doAssert not sg.averageSpectrogramInto(rowBlock(g.data), meta, amp, ws, stop = stopRow)
+    doAssert once == 1
+    let quiet = allocsIn:
+      discard sg.averageSpectrogramInto(g.data, meta, amp, ws)
+    doAssert quiet == 0, $quiet & " allocations"
+    doAssert amp == full, "the plan and workspace are reusable after a stop"
 
 when isMainModule: main()

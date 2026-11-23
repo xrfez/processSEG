@@ -36,6 +36,10 @@
 ## **Allocation.** The constructor allocates; `spectrogramInto` does not,
 ## once the workspace holds `workspaceSize`, and never raises: other lengths
 ## are an `AssertionDefect`, a NaN makes the frames that hold it NaN.
+##
+## **Stop.** `averageSpectrogramInto`'s `stop` (nil: never) is checked once
+## per live row, never per sample. False means the job was abandoned; `amp`
+## is then unspecified. The plan and the workspace stay usable.
 
 import std/math
 import parseSEG
@@ -172,16 +176,20 @@ func averageWorkspace*[T](sg: SpectrogramPlan[T]): WorkspaceSize {.raises: [].} 
 
 proc averageSpectrogramInto*[T: SampleType](sg: SpectrogramPlan[T], b: RowBlock[T],
     meta: ChunkMeta, amp: var openArray[float64], ws: var Workspace,
-    rows = 0 .. int.high): int =
+    rows = 0 .. int.high, stop: StopCheck = nil): bool {.discardable.} =
   ## The power average of `spectrogramInto` over the live rows of `b` in
   ## `rows` (clipped to the block), into `amp` (`frames·bins` values, the
   ## same layout). A sinusoid of amplitude A on a bin reads A, as one trace
   ## does. A row whose spectrogram holds a NaN or an infinity is left out, as
-  ## is a row that is not live or has no live sample. Returns the rows used;
-  ## with none, `amp` is all zero. Raises `ValueError` when `b` does not
-  ## match `meta` or the interval is not the plan's. An `amp` of another
-  ## length, or a workspace that does not hold `averageWorkspace`, is an
-  ## `AssertionDefect` / `IndexDefect`. Nothing allocates.
+  ## is a row that is not live or has no live sample. Returns true when it
+  ## ran to the end; with no row used, `amp` is all zero. `stop` (nil: never)
+  ## is asked once per live row that has a sample, never per sample; true
+  ## abandons the job and returns false, and `amp` is then unspecified. The
+  ## plan is unchanged and the workspace stays usable. Raises `ValueError`
+  ## when `b` does not match `meta` or the interval is not the plan's. An
+  ## `amp` of another length, or a workspace that does not hold
+  ## `averageWorkspace`, is an `AssertionDefect` / `IndexDefect`. Nothing
+  ## allocates.
   ##
   ## The proposal took `openArray[openArray[T]]`. Nim does not allow a nested
   ## `openArray`, and a block of traces is a `RowBlock` with a `ChunkMeta`
@@ -211,6 +219,7 @@ proc averageSpectrogramInto*[T: SampleType](sg: SpectrogramPlan[T], b: RowBlock[
     if live > sg.samples:
       badPlan("a live row of " & $live & " samples is longer than the plan's " &
         $sg.samples)
+    if stop != nil and stop(): return false
     let src = b.rowPtr(r)
     sg.spectrogramInto(src.toOpenArray(0, live - 1), tmp.toOpenArray(0, nb - 1), ws)
     var finite = true
@@ -221,14 +230,16 @@ proc averageSpectrogramInto*[T: SampleType](sg: SpectrogramPlan[T], b: RowBlock[
     if not finite: continue
     for k in 0 ..< nb: amp[k] += tmp[k] * tmp[k]
     inc used
-  if used == 0: return 0
-  let u = float64(used)
-  for k in 0 ..< nb: amp[k] = sqrt(amp[k] / u)
-  used
+  if used > 0:
+    let u = float64(used)
+    for k in 0 ..< nb: amp[k] = sqrt(amp[k] / u)
+  result = true
 
 proc averageSpectrogramInto*[T: SampleType](sg: SpectrogramPlan[T],
     samples: Tensor[T], meta: ChunkMeta, amp: var openArray[float64],
-    ws: var Workspace, rows = 0 .. int.high): int =
-  ## `averageSpectrogramInto` on a `[rows, cols]` tensor.
+    ws: var Workspace, rows = 0 .. int.high, stop: StopCheck = nil): bool {.
+    discardable.} =
+  ## `averageSpectrogramInto` on a `[rows, cols]` tensor. A stop leaves
+  ## `amp` unspecified; the plan and the workspace stay usable.
   meta.checkShape(samples)
-  sg.averageSpectrogramInto(rowBlock(samples), meta, amp, ws, rows)
+  sg.averageSpectrogramInto(rowBlock(samples), meta, amp, ws, rows, stop)
