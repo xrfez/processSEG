@@ -474,7 +474,7 @@ Which first-break picks a model is fitted to. `medianLineStart` ranks the confid
 |---|---|
 | `ConfidentPick`, `MadToSigma`, `TrimSigmas`, `TrimFloorMs`, `TrimRounds`, `MinTrimmedPicks`, `StartLines`, `MinSecondPicks`, `SecondGain`, `SecondGainMs`, `RestartSigmaShare`, `RestartSigmaFloorMs` | The constants of the trim and of a second segment. `ConfidentPick` is `ShotFitParams.minConfidence`'s default. |
 | `ModelFn` | `proc (use: openArray[bool]): seq[float64] {.closure.}`: the caller's model at every trace, fitted to the picks `use` marks; empty when it cannot be fitted. |
-| `Trimmed` (`trusted`, `model`, `kept`, `used`, `sigmaMs`, `rounds`) | What `trimmedModel` found. `model` is empty unless `trusted`; `sigmaMs` is NaN for none. |
+| `Trimmed` (`trusted`, `model`, `kept`, `used`, `sigmaMs`, `rounds`) | What `trimmedModel` found. `model` is empty unless `trusted`; `sigmaMs` is NaN for none. When the next set falls under `MinTrimmedPicks`, `used` is the rejected count while `kept` is still the set just fitted (12 confident picks, the fit matches 9: trusted=false, used=9, 10 trues in `kept`, model empty). |
 | `median(xs)`, `robustSigma(xs)` | The median (NaN when empty; the middle value, or the mean of the two middle); `MadToSigma` times the median absolute deviation about it. |
 | `lineFit(x, t, use)` | Least absolute deviations, `t = interceptMs + msPerUnit · x` (40 reweighted rounds). `ok` is false for fewer than two finite points `use` marks, all at one `x`, or a line that does not rise. `ValueError` when `x`, `t` and `use` differ in length. |
 | `medianIfCloser(dev, best)` | The median of `dev` when it can lie below `best`, else +Inf. Rearranges `dev` when that median is selected. A NaN is taken by a full sort. |

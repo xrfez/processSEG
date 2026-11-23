@@ -76,8 +76,16 @@ type
     ## What `trimmedModel` found.
     trusted*: bool       ## At least `MinTrimmedPicks` picks were left, and a model was fitted.
     model*: seq[float64] ## The last fit's times; empty unless `trusted`.
-    kept*: seq[bool]     ## The picks the last fit used.
-    used*: int           ## How many.
+    kept*: seq[bool]     ## The picks the last fit used. When the next set falls under
+                         ## `MinTrimmedPicks`, `used` is the rejected count while
+                         ## `kept` is still the set just fitted (12 confident picks,
+                         ## the fit matches 9: trusted=false, used=9, 10 trues in
+                         ## `kept`, model empty).
+    used*: int           ## How many, except when the next set falls under
+                         ## `MinTrimmedPicks`: then `used` is the rejected count while
+                         ## `kept` is still the set just fitted (12 confident picks, the
+                         ## fit matches 9: trusted=false, used=9, 10 trues in `kept`,
+                         ## model empty).
     sigmaMs*: float64    ## The robust sigma of the kept picks' residuals; NaN for none.
     rounds*: int         ## Fits made.
 

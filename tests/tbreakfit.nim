@@ -18,6 +18,10 @@
 ## Seen fail: unequal parallel arrays had no length check.
 ## `unequal_lengths` died with an IndexDefect (`index out of bounds`) in
 ## `lineFit`, `medianLineStart` and `trimmedModel`.
+##
+## Seen fail: `trimmedModel` left `used` as the fitted count when the next
+## set fell under `MinTrimmedPicks`. `trim_rejects_a_short_next` then saw
+## used=10, not the rejected 9.
 
 import std/[algorithm, assertions, math, random]
 import processSEG
@@ -430,6 +434,33 @@ proc main*() =
     let holes = trimmedModel(nanOff, nanPick, conf, watched(nanOff, nanPick, Watch()))
     doAssert holes.trusted
     doAssert not holes.kept[0] and not holes.kept[1]
+
+  block trim_rejects_a_short_next:
+    ## 12 confident picks; the fit matches the 9 on the line, not the three
+    ## outliers. The next set is under `MinTrimmedPicks`, so `used` is that
+    ## rejected count and `kept` is still the 10 just fitted.
+    const n = 12
+    var off = newSeq[float64](n)
+    var pick = newSeq[float64](n)
+    var conf = newSeq[float64](n)
+    for i in 0 ..< n:
+      off[i] = 20.0 * float64(i + 1)
+      pick[i] = 10.0 + off[i] / 2.0
+      conf[i] = 1.0
+    pick[9] += 400.0
+    pick[10] += 500.0
+    pick[11] += 600.0
+    proc onLine(use: openArray[bool]): seq[float64] =
+      result = newSeq[float64](n)
+      for i in 0 ..< n: result[i] = 10.0 + off[i] / 2.0
+    let t = trimmedModel(off, pick, conf, onLine)
+    var trues = 0
+    for k in t.kept:
+      if k: inc trues
+    doAssert not t.trusted
+    doAssert t.used == 9
+    doAssert trues == 10
+    doAssert t.model.len == 0
 
   block start_and_trim_match_reference:
     for n in [0, 1, 2, 9, 10, 11, 300, 4000]:
