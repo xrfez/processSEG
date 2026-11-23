@@ -2,7 +2,7 @@
 ## a copy-based reference for every direction and fraction (the in-place
 ## read order), polynomials reproduced, zeros outside, NaN and large
 ## shifts, float32, and no allocation. `placedSinc` matches `oldPlacedSinc`
-## (the previous per-sample sum) on every bit.
+## (the per-sample sum in tap order, built the same way) on every bit.
 ##
 ## Break check, restored: `sincBlock`'s `acc[i] = acc[i] + weight *
 ## float64(s[i])` with the multiply removed failed that equality.
@@ -23,8 +23,11 @@ func oldBessel(x: float64): float64 =
 func oldPlacedSinc[T](stored: openArray[T], shiftMs, dtMs: float64): seq[T] =
   ## Copy of the previous per-sample sum: 49 taps, tap 0 then 1 then 2,
   ## `sum += sample * tap`, zero outside the trace. The range test stays on
-  ## every sample. The old interior dropped it; GCC 12 at `-O3` then
-  ## reassociates that float64 reduction, so those bits are not tap order.
+  ## every sample. Both this and the previous release sum in tap order; an
+  ## optimised build contracts `sum + sample * tap` to a fused multiply-add
+  ## here and in `placedSinc`, where the previous float64 interior multiplied
+  ## and added separately, so float64 interiors differ from that release by a
+  ## few units in the last place. float32 results are the same bits.
   if not (dtMs > 0) or stored.len == 0 or shiftMs.isNaN: return @stored
   let d = shiftMs / dtMs
   if not (abs(d) < 9223372036854775808.0): return @stored
