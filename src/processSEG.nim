@@ -67,6 +67,8 @@
 ## - `processSEG/qc/record`: field records against the XPS (`recordCompleteness`, `summarize`);
 ## - `processSEG/qc/amplitude`: amplitude QC per trace and per record (`traceAmplitudeInto`, `recordAmplitude`);
 ## - `processSEG/qc/exclusion`: noisy and weak traces outside the exclusion area near the source, nodes and components, louder than neighbours (`noiseQc`, `traceRolesInto`);
+## - `processSEG/qc/signalend`: where a trace's signal ends (`blockLevels`,
+##   `lastLoudMs`, `signalEndMs`);
 ## - `processSEG/synth`: synthetic traces and gathers (`ricker`, `addSinusoid`, `addRicker`,
 ##   `addNoise`, `linearMs`, `hyperbolicMs`, `addLinear`, `addHyperbola`).
 
@@ -80,7 +82,7 @@ import processSEG/velocity/[model, formats, moveout]
 import processSEG/statics/elevation
 import processSEG/stack/[nmo, binning, stack]
 import processSEG/qc/[geometry, firstbreak, snr, shotfit, breakfit, fold, record]
-import processSEG/qc/[amplitude, exclusion]
+import processSEG/qc/[amplitude, exclusion, signalend]
 import processSEG/vibroseis/[taper, sweep, pilot, correlate, vstack, sweeptrack]
 import processSEG/vibroseis/[crosscorrelate, vibqc, recfilter]
 import processSEG/continuous/slice
@@ -92,4 +94,4 @@ export types, rows, workspace, basic, mute, plan, spectrum, hilbert, spectrogram
     formats, moveout, elevation, nmo, binning, stack, batch, geometry, firstbreak, snr,
     shotfit, breakfit, filescales
 export taper, sweep, pilot, correlate, vstack, slice, patch, fold, record, amplitude, units,
-    calibrate, sweeptrack, crosscorrelate, vibqc, recfilter, synth, exclusion
+    calibrate, sweeptrack, crosscorrelate, vibqc, recfilter, synth, exclusion, signalend

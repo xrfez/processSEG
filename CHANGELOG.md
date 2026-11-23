@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `qc/signalend`: where a trace's signal ends. `blockLevels`, `lastLoudMs`, `signalEndMs`, `RippleFraction`. `levels` and `timesMs` of different lengths raise `ValueError`; an empty pair is NaN.
+
 ## 0.11.0
 
 - `qc/breakfit`: the robust start and trimmed model of first-break picks. `median`, `robustSigma`, `lineFit`, `medianIfCloser`, `medianLineStart`, `trimmedModel`, `keepSecond`, `ModelFn`, `Trimmed`; constants `ConfidentPick`, `MadToSigma`, `TrimSigmas`, `TrimFloorMs`, `TrimRounds`, `MinTrimmedPicks`, `StartLines`, `MinSecondPicks`, `SecondGain`, `SecondGainMs`, `RestartSigmaShare`, `RestartSigmaFloorMs`.
