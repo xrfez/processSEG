@@ -444,4 +444,82 @@ proc main*() =
       var bad = initPipeline([scaleOp(Inf)])
       bad.appliedResponseInto(float64, 2, 32, [1.0], g2, ws)
 
+  block applied_response_matches_sine_cosine:
+    # Fail-first: the rotation step omitted `dt` (`w = -2 * PI * f`), so every
+    # non-zero frequency disagreed with the sine/cosine sum kept here.
+    # Block loop: `re[k] = v * c[k]` (no running sum) failed this block at hz.len 17.
+    # Tail loop: `re = v * c` (no running sum) failed this block at hz.len 1.
+    proc sineCosineGain[T: SampleType](x: openArray[T], hz: openArray[float64],
+        dt: float64, gain: var openArray[float64]) =
+      for i, f in hz:
+        var re, im = 0.0
+        for j in 0 ..< x.len:
+          let p = -2 * PI * f * float64(j) * dt
+          let v = float64(x[j])
+          re += v * cos(p)
+          im += v * sin(p)
+        gain[i] = hypot(re, im)
+
+    proc impulseOut[T: SampleType](flow: Pipeline, dtMs: float64,
+        samples: int): seq[T] =
+      var copy = flow
+      for i in 0 ..< copy.len:
+        if copy[i].kind == opFilter: copy[i].filter.trend = trNone
+        elif copy[i].kind == opIir: copy[i].iir.trend = trNone
+      let plan = copy.compile(T, dtMs, samples)
+      var local = initWorkspace()
+      local.reserve(plan)
+      result = newSeq[T](samples)
+      result[samples div 2] = 1
+      var keys = [initTraceKeys()]
+      keys[0].status = tsLive
+      keys[0].t0Ms = 0
+      keys[0].offset = 0
+      var counts = [samples]
+      let meta = initChunkMeta(rowsOf(keys, counts), dtMs)
+      plan.apply(rowBlock(result, 1, samples), meta, local)
+
+    proc logHz(nyq: float64, n: int): seq[float64] =
+      result = newSeq[float64](n)
+      result[0] = 0
+      result[n - 1] = nyq
+      let lo = nyq * 1e-6
+      let hi = nyq * (1 - 1e-9)
+      for i in 1 ..< n - 1:
+        let t = float64(i - 1) / float64(n - 3)
+        result[i] = lo * pow(hi / lo, t)
+
+    proc linHz(nyq: float64, n: int): seq[float64] =
+      result = newSeq[float64](n)
+      if n <= 1:
+        if n == 1: result[0] = 0
+      else:
+        for i in 0 ..< n:
+          result[i] = nyq * float64(i) / float64(n - 1)
+
+    let flows = [
+      initPipeline([bandPassOp(Corners(f1: 8, f2: 12, f3: 40, f4: 50))]),
+      initPipeline([iirOp(butterBandPass(4, 60, 24))]),
+      initPipeline([gainDbOp(12), filterOp(lowCut(4, 8))]),
+    ]
+    var ws = initWorkspace()
+    for flow in flows:
+      for dtMs in [0.5, 2.0, 4.0]:
+        let nyq = 500.0 / dtMs
+        for samples in [64, 1000, 4001, 16384]:
+          template checkResponse(T: typedesc) =
+            let x = impulseOut[T](flow, dtMs, samples)
+            for nHz in [1, 15, 17, 31, 512]:
+              for hz in [logHz(nyq, nHz), linHz(nyq, nHz)]:
+                var got, want = newSeq[float64](hz.len)
+                flow.appliedResponseInto(T, dtMs, samples, hz, got, ws)
+                sineCosineGain(x, hz, dtMs / 1000, want)
+                for i in 0 ..< hz.len:
+                  let d = abs(got[i] - want[i])
+                  doAssert d <= 1e-12 + 1e-9 * abs(want[i]),
+                    $T & " dt " & $dtMs & " n " & $samples & " m " & $hz.len &
+                    " f " & $hz[i] & " got " & $got[i] & " want " & $want[i]
+          checkResponse(float64)
+          checkResponse(float32)
+
 when isMainModule: main()

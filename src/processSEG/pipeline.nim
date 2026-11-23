@@ -771,13 +771,82 @@ proc apply*[T: SampleType](plan: PipelinePlan[T], src: Tensor[T],
   meta.checkShape(dst)
   plan.apply(rowBlock(src), rowBlock(dst), meta, ws)
 
+func responseModuli[T: SampleType](x: openArray[T]; hz: openArray[float64];
+    dt: float64; gain: var openArray[float64]) =
+  ## `|Σ x[j] exp(−2πi·f·j·dt)|`. A phasor rotates and snaps onto that angle
+  ## each sample; state stays in registers. No heap.
+  let n = x.len
+  let m = hz.len
+  var i = 0
+  const B = 16
+  {.push boundChecks: off, overflowChecks: off.}
+  while i + B <= m:
+    var c, s, pt, re, im, a, w, cw, sw: array[B, float64]
+    for k in 0 ..< B:
+      c[k] = 1
+      a[k] = (-2.0 * PI) * hz[i + k]
+      w[k] = a[k] * dt
+      cw[k] = cos(w[k])
+      sw[k] = sin(w[k])
+    for j in 0 ..< n:
+      let v = float64(x[j])
+      let jf1 = float64(j + 1)
+      for k in 0 ..< B:
+        re[k] = re[k] + v * c[k]
+        im[k] = im[k] + v * s[k]
+        let p1 = (a[k] * jf1) * dt
+        let dw = p1 - pt[k]
+        let eps = dw - w[k]
+        let rcw = cw[k] - sw[k] * eps
+        let rsw = sw[k] + cw[k] * eps
+        let nc = c[k] * rcw - s[k] * rsw
+        let ns = c[k] * rsw + s[k] * rcw
+        let delta = p1 - (pt[k] + dw)
+        c[k] = nc - ns * delta
+        s[k] = ns + nc * delta
+        pt[k] = p1
+    for k in 0 ..< B:
+      gain[i + k] = hypot(re[k], im[k])
+    i += B
+  while i < m:
+    var c = 1.0
+    var s = 0.0
+    var pt = 0.0
+    var re = 0.0
+    var im = 0.0
+    let aa = (-2.0 * PI) * hz[i]
+    let ww = aa * dt
+    let ccw = cos(ww)
+    let ssw = sin(ww)
+    for j in 0 ..< n:
+      let v = float64(x[j])
+      re = re + v * c
+      im = im + v * s
+      let p1 = (aa * float64(j + 1)) * dt
+      let dw = p1 - pt
+      let eps = dw - ww
+      let rcw = ccw - ssw * eps
+      let rsw = ssw + ccw * eps
+      let nc = c * rcw - s * rsw
+      let ns = c * rsw + s * rcw
+      let delta = p1 - (pt + dw)
+      c = nc - ns * delta
+      s = ns + nc * delta
+      pt = p1
+    gain[i] = hypot(re, im)
+    i += 1
+  {.pop.}
+
 proc appliedResponseInto*(flow: Pipeline, T: typedesc[SampleType],
     dtMs: float64, samples: int, hz: openArray[float64],
     gain: var openArray[float64], ws: var Workspace) =
   ## The response of `flow` as applied, not the design response: a unit
   ## impulse at sample `samples div 2` is run through `compile` and `apply`,
   ## and `gain[i]` is the modulus of that output's DFT at `hz[i]` Hz,
-  ## `|Σ x[j] exp(−2πi·f·j·dt)|`. FFT and IIR ops are applied with `trNone`,
+  ## `|Σ x[j] exp(−2πi·f·j·dt)|`, at arbitrary frequencies, not only bin
+  ## centres. The sum is a complex rotation per sample, snapped onto that
+  ## angle (Θ(`samples` · `hz.len`) arithmetic, one sine and cosine per
+  ## frequency, not per sample). FFT and IIR ops are applied with `trNone`,
   ## so a trend removal does not bend the impulse; the caller's flow is not
   ## changed. Edges are in the result (a short trace's stop band is not
   ## `response()`).
@@ -789,9 +858,9 @@ proc appliedResponseInto*(flow: Pipeline, T: typedesc[SampleType],
   ## length (an `AssertionDefect` otherwise).
   ##
   ## This compiles a plan on every call, so it allocates the plan and the
-  ## impulse trace. `ws` is grown to the plan when it does not already hold
-  ## it; a second call with a workspace that fits does not grow it, but the
-  ## plan is still built.
+  ## impulse trace. The rotation state stays in registers. `ws` is grown to the
+  ## plan when it does not already hold it; a second call with a workspace
+  ## that fits does not grow it, but the plan is still built.
   doAssert gain.len == hz.len, "hz and gain need the same length"
   var copy = flow
   for i in 0 ..< copy.len:
@@ -808,12 +877,4 @@ proc appliedResponseInto*(flow: Pipeline, T: typedesc[SampleType],
   var counts = [samples]
   let meta = initChunkMeta(rowsOf(keys, counts), dtMs)
   plan.apply(rowBlock(x, 1, samples), meta, ws)
-  let dt = dtMs / 1000
-  for i, f in hz:
-    var re, im = 0.0
-    for j in 0 ..< samples:
-      let p = -2 * PI * f * float64(j) * dt
-      let s = float64(x[j])
-      re += s * cos(p)
-      im += s * sin(p)
-    gain[i] = hypot(re, im)
+  responseModuli(x, hz, dtMs / 1000, gain)
