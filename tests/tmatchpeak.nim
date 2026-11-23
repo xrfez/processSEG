@@ -5,8 +5,11 @@
 ## Fail-first: `peak_ends_flat_and_parabola` failed when `peakAt`'s height line
 ## dropped the `0.25 *` factor (`got.value == want.value`). `match_empty_one_nan_flat_ends`
 ## failed when `matchOf` stored `top` instead of `min(top, 1.0)` (1.4 != 1.0).
-## `rotation_edges` failed when `rotationOf` passed offset 0 instead of `offset`,
-## and again when `rotationOfInto` did the same.
+## `rotation_edges` failed when `rotationOf` passed offset 0 instead of `offset`.
+## `peak_out_of_range` failed when `peakAt` read `y[i]` before the range guard
+## (IndexDefect, not ValueError) for empty, -1 and `len`.
+## `rotation_bad_dt` failed when the `dtMs` guard before `analyticInto` was
+## removed (AssertionDefect, not NaN) for 0, -1, Inf and NaN.
 
 import std/[assertions, math, random]
 import processSEG
@@ -112,10 +115,16 @@ proc main*() =
     doAssert PreciseShiftPeakToSidelobe == srcPreciseShiftPeakToSidelobe
     doAssert PreciseShiftMatch == srcPreciseShiftMatch
 
-  block peak_ends_flat_and_parabola:
-    # Empty: the source indexes before the guard.
-    doAssertRaises IndexDefect:
+  block peak_out_of_range:
+    # Empty, -1 and len are outside 0 ..< y.len: ValueError, not IndexDefect.
+    doAssertRaises ValueError:
       discard peakAt(newSeq[float64](), 0)
+    doAssertRaises ValueError:
+      discard peakAt(@[0.4, 0.9], -1)
+    doAssertRaises ValueError:
+      discard peakAt(@[0.4, 0.9], 2)
+
+  block peak_ends_flat_and_parabola:
     # One sample, and a peak at either end: the sample itself.
     doAssert peakAt(@[0.4], 0) == (0.0, 0.4)
     let ends = @[0.2, 0.9, 0.3]
@@ -236,9 +245,6 @@ proc main*() =
   block rotation_edges:
     doAssert rotationOf(newSeq[float32](), 1.0, 0, 0.0).isNaN
     doAssert rotationOf(@[1'f32], 1.0, 0, 0.0).isNaN
-    var ws = initWorkspace()
-    doAssert rotationOfInto(newSeq[float32](), 1.0, 0, 0.0, ws).isNaN
-    doAssert rotationOfInto(@[0'f32, 1'f32], 1.0, 5, 0.0, ws).isNaN
     # A zero trace has no phase. A step past the end cannot be read.
     let zeros = newSeq[float32](32)
     doAssert eq(rotationOf(zeros, 2.0, 16, 0.0), srcRotationOf(zeros, 2.0, 16, 0.0))
@@ -250,7 +256,6 @@ proc main*() =
     doAssert eq(rotationOf(tone, 2.0, at, 0.0), srcRotationOf(tone, 2.0, at, 0.0))
     doAssert eq(rotationOf(tone, 2.0, at, -0.4), srcRotationOf(tone, 2.0, at, -0.4))
     doAssert eq(rotationOf(tone, 2.0, at, 0.25), srcRotationOf(tone, 2.0, at, 0.25))
-    doAssert rotationOf(tone, 2.0, at, -0.4) == rotationOfInto(tone, 2.0, at, -0.4, ws)
     # Negative offset must use abs: dropping it walks the phase the other way.
     doAssert rotationOf(tone, 2.0, at, -0.4) != rotationOf(tone, 2.0, at, 0.4) or
       rotationOf(tone, 2.0, at, -0.4).isNaN
@@ -259,7 +264,6 @@ proc main*() =
 
   block rotation_random:
     var rng = initRand(13)
-    var ws = initWorkspace()
     for trial in 0 .. 12:
       let n = rng.rand(2 .. 96)
       var c = newSeq[float32](n)
@@ -270,6 +274,14 @@ proc main*() =
       let offset = rng.rand(1.0) - 0.5
       let want = srcRotationOf(c, 2.0, at, offset)
       doAssert eq(rotationOf(c, 2.0, at, offset), want), "trial " & $trial
-      doAssert eq(rotationOfInto(c, 2.0, at, offset, ws), want), "into " & $trial
+
+  block rotation_bad_dt:
+    # A dtMs that is not finite and > 0 cannot be read: NaN, not AssertionDefect.
+    var tone = newSeq[float32](8)
+    for i in 0 ..< tone.len: tone[i] = float32(sin(float64(i)))
+    doAssert rotationOf(tone, 0.0, 3, 0.0).isNaN
+    doAssert rotationOf(tone, -1.0, 3, 0.0).isNaN
+    doAssert rotationOf(tone, Inf, 3, 0.0).isNaN
+    doAssert rotationOf(tone, NaN, 3, 0.0).isNaN
 
 when isMainModule: main()

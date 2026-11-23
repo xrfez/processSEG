@@ -79,7 +79,7 @@ func lastLoud(levels, timesMs: openArray[float64], blockMs, peakFloor: float64):
       return timesMs[k] + blockMs
   NaN
 
-func lastLoudMs*(levels, timesMs: openArray[float64], blockMs = 0.0,
+proc lastLoudMs*(levels, timesMs: openArray[float64], blockMs = 0.0,
     peakFloor = 0.0): float64 =
   ## The time (ms) at which the signal ends: that of the last level at least
   ## a tenth of the level at `int(n · 0.9)` of the finite levels, sorted, plus

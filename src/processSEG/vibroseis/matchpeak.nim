@@ -73,11 +73,14 @@ type
 proc badParams(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
 
-func peakAt*(y: openArray[float64], i: int): tuple[offset, value: float64] {.raises: [].} =
+proc peakAt*(y: openArray[float64], i: int): tuple[offset, value: float64] =
   ## The vertex of the parabola through `y[i-1]`, `y[i]`, `y[i+1]` (`i` a
   ## maximum inside the array): its place in samples from `i` (within half a
   ## sample) and its height. A flat or noisy top (no downward curve) is the
   ## sample itself. An `i` at either end is that sample, at offset 0.
+  ## Raises `ValueError` when `i` is outside `0 ..< y.len` (an empty `y` too).
+  if i notin 0 ..< y.len:
+    badParams("peakAt: index " & $i & " of " & $y.len)
   result = (0.0, y[i])
   if i < 1 or i + 1 >= y.len: return
   let den = y[i - 1] - 2 * y[i] + y[i + 1]
@@ -137,6 +140,7 @@ proc matchOf*(envelope, lagsMs: openArray[float64]): Match =
 proc rotationPhase(c: openArray[float32], dtMs: float64, at: int, offset: float64,
     ws: var Workspace): float64 =
   result = NaN
+  if not (dtMs > 0 and dtMs < Inf): return
   if c.len < 2 or at notin 0 ..< c.len: return
   let near = if offset < 0: at - 1 elif offset > 0: at + 1 else: at
   if near notin 0 ..< c.len: return
@@ -154,15 +158,8 @@ proc rotationOf*(c: openArray[float32], dtMs: float64, at: int, offset: float64)
   ## The phase turn (degrees) of the correlation `c` (float32, over every lag,
   ## lag 0 in the middle) at its peak: the argument of its analytic signal at
   ## sample `at`, taken `offset` (within half a sample) towards the next one
-  ## by its phase's step. NaN when it cannot be read. Allocates a Hilbert plan,
-  ## a workspace and the analytic buffers. `rotationOfInto` takes the caller's
-  ## workspace for the transform scratch.
+  ## by its phase's step. NaN when it cannot be read, including a `dtMs` that
+  ## is not finite or not greater than 0. Allocates a Hilbert plan,
+  ## a workspace and the analytic buffers.
   var ws = initWorkspace()
-  result = rotationPhase(c, dtMs, at, offset, ws)
-
-proc rotationOfInto*(c: openArray[float32], dtMs: float64, at: int, offset: float64,
-    ws: var Workspace): float64 =
-  ## `rotationOf` using `ws` for the Hilbert scratch, grown to the plan's
-  ## `workspaceSize` when it does not already fit. The Hilbert plan and the
-  ## analytic buffers are still allocated. NaN when the phase cannot be read.
   result = rotationPhase(c, dtMs, at, offset, ws)
