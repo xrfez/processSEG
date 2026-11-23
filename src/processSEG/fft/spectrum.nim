@@ -330,7 +330,7 @@ proc addLanePowers[T](re, im: ptr UncheckedArray[T], nLanes, stride, nb: int,
     acc[k] += s
   {.pop.}
 
-proc addAmplitudeRows*[T: SampleType](sp: SpectrumPlan[T], b: RowBlock[T],
+proc addPowerRows*[T: SampleType](sp: SpectrumPlan[T], b: RowBlock[T],
     meta: ChunkMeta, firstCol, row0, row1: int, acc: var openArray[float64],
     ws: var Workspace): int {.raises: [].} =
   ## Adds the scaled power of rows `row0 .. row1` into `acc` (`bins` values),
@@ -406,7 +406,7 @@ proc averageAmplitudeInto*[T: SampleType](sp: SpectrumPlan[T], b: RowBlock[T],
   for k in 0..<nb: acc[k] = 0
   let lo = max(rows.a, 0)
   let hi = min(rows.b, b.len - 1)
-  let used = sp.addAmplitudeRows(b, meta, firstCol, lo, hi,
+  let used = sp.addPowerRows(b, meta, firstCol, lo, hi,
     acc.toOpenArray(0, nb - 1), ws)
   for k in 0..<nb:
     amp[k] = if used > 0: sqrt(acc[k] / float64(used)) * sp.sides(k) else: 0.0

@@ -753,7 +753,7 @@ proc specJob[T](ctx: pointer, worker: int, ws: var Workspace) {.nimcall, gcsafe,
     if c.nb == 0:
       c.counts[slot] = 0
     else:
-      c.counts[slot] = c.plan[].addAmplitudeRows(c.src, c.meta, c.firstCol,
+      c.counts[slot] = c.plan[].addPowerRows(c.src, c.meta, c.firstCol,
         row0, row1, dest.toOpenArray(0, c.nb - 1), ws)
 
 proc averageAmplitudeInto*[T: SampleType](p: ProcessPool, sp: SpectrumPlan[T],
