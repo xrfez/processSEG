@@ -14,6 +14,10 @@
 ## Seen fail: `trimmedModel`'s restart sigma test replaced by `false`.
 ## `restart_keeps_the_bend` then kept the first trim (used 62 of 80, the 18
 ## picks before the crossover dropped).
+##
+## Seen fail: unequal parallel arrays had no length check.
+## `unequal_lengths` died with an IndexDefect (`index out of bounds`) in
+## `lineFit`, `medianLineStart` and `trimmedModel`.
 
 import std/[algorithm, assertions, math, random]
 import processSEG
@@ -314,6 +318,20 @@ proc main*() =
     doAssert fit.ok
     doAssert abs(fit.interceptMs - lad.a) < 0.05
     doAssert abs(fit.msPerUnit - lad.s) < 0.002
+
+  block unequal_lengths:
+    doAssertRaises ValueError:
+      discard lineFit(@[1.0, 2.0], @[3.0, 4.0], @[true])
+    doAssertRaises ValueError:
+      discard medianLineStart(@[1.0, 2.0], @[3.0, 4.0], @[true])
+    proc noFit(use: openArray[bool]): seq[float64] = @[]
+    var pick = newSeq[float64](MinTrimmedPicks + 2)
+    var conf = newSeq[float64](pick.len)
+    for i in 0 ..< pick.len:
+      pick[i] = 10.0 + float64(i)
+      conf[i] = 1.0
+    doAssertRaises ValueError:
+      discard trimmedModel(@[1.0], pick, conf, noFit) # offset shorter than the picks
 
   block keep_second_bounds:
     doAssert not keepSecond(MinSecondPicks - 1, 2.0, 1.0)

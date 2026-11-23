@@ -32,7 +32,8 @@
 ##
 ## Times are milliseconds. A pick counts from confidence `ConfidentPick`.
 ## An empty input is NaN or an empty result, never an error. `offset`,
-## `pickMs` and `confidence` are parallel, as are `x`, `t` and `use`.
+## `pickMs` and `confidence` are parallel, as are `x`, `t` and `use`:
+## different lengths raise `ValueError`.
 
 import std/[algorithm, math]
 
@@ -98,12 +99,17 @@ func robustSigma*(xs: openArray[float64]): float64 =
   for i, x in xs: d[i] = abs(x - m)
   MadToSigma * median(d)
 
+proc badParams(msg: string) {.noinline, noreturn.} =
+  raise newException(ValueError, msg)
+
 func lineFit*(x, t: openArray[float64]; use: openArray[bool]):
     tuple[interceptMs, msPerUnit: float64; ok: bool] =
   ## The straight line `t = a + s x` through the points `use` marks, by least
   ## absolute deviations (iteratively reweighted least squares, 40 rounds).
   ## `ok` is false for fewer than two points, all at one `x`, or a line that
-  ## does not rise.
+  ## does not rise. Raises `ValueError` when `x`, `t` and `use` differ in length.
+  if x.len != t.len or x.len != use.len:
+    badParams("lineFit: " & $x.len & " x, " & $t.len & " t, " & $use.len & " use")
   result = (NaN, NaN, false)
   var xs, ts: seq[float64]
   for i in 0 ..< x.len:
@@ -186,13 +192,17 @@ func medianLineStart*(offs, pickMs: openArray[float64]; confident: openArray[boo
   ## median of squares (the best of `StartLines` lines through pairs of picks,
   ## the pairs chosen by a fixed generator), sorted nearest first. That line
   ## is not pulled by up to half of the picks being noise, which a fit of all
-  ## of them is.
+  ## of them is. Raises `ValueError` when `offs`, `pickMs` and `confident`
+  ## differ in length.
   ##
   ## A line's median distance is looked for only when it can beat the best so
   ## far (`medianIfCloser`): at least half of the distances must lie below it,
   ## which one count over them shows (a random pair of picks mostly gives a
   ## line that fails that), and then the median is selected, not sorted. The
   ## line chosen is the one a full sort of every line's distances chooses.
+  if offs.len != pickMs.len or offs.len != confident.len:
+    badParams("medianLineStart: " & $offs.len & " offs, " & $pickMs.len &
+      " pickMs, " & $confident.len & " confident")
   var ids: seq[int]
   for i in 0 ..< pickMs.len:
     if confident[i] and not offs[i].isNaN: ids.add i
@@ -227,6 +237,11 @@ proc trimmedModel*(offsetAbs, pickMs, confidence: openArray[float64]; fit: Model
   ## than `MinTrimmedPicks` picks are left. A trim whose start lies on the
   ## record's second segment drops the first as gross: it is made again from
   ## the picks kept and the nearest dropped ones (the end of this proc).
+  ## Raises `ValueError` when `offsetAbs`, `pickMs` and `confidence` differ
+  ## in length.
+  if offsetAbs.len != pickMs.len or offsetAbs.len != confidence.len:
+    badParams("trimmedModel: " & $offsetAbs.len & " offsetAbs, " & $pickMs.len &
+      " pickMs, " & $confidence.len & " confidence")
   let n = pickMs.len
   result = Trimmed(kept: newSeq[bool](n), sigmaMs: NaN)
   var confident = newSeq[bool](n)
