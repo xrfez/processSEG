@@ -15,8 +15,9 @@
 ## **Transform.** Live rows that have a sample in the window are tapered on
 ## both axes (a Tukey ramp, `taperWeight(tpCos2, (d+0.5)/ramp)`), zero-padded
 ## in time to `nextFastLen(samples)` and across traces to
-## `nextFastLen(2·traces)`, then transformed: a real FFT in time, and the
-## complex FFT across traces as two real FFTs. The modulus is unscaled (the
+## `nextFastLen(2·traces)`, then transformed: a real FFT in time (`fftLanes`
+## traces at a time) and the complex FFT across traces as two real FFTs. The
+## modulus is unscaled (the
 ## caller applies `toDbInto`). Dead, auxiliary and failed rows, and live rows
 ## with no sample in the window, are left out, so `dkPerTrace` is per trace
 ## that entered, in order.
@@ -130,15 +131,21 @@ func dtMs*[T](p: FkPlan[T]): float64 {.inline, raises: [].} =
 func elems(s: WorkspaceSize, T: typedesc): int {.inline.} =
   when T is float32: s.f32 else: s.f64
 
+func fftScratch[T](p: FkPlan[T]): WorkspaceSize {.inline.} =
+  ## The time FFT runs `fftLanes` traces at a time; the spatial FFT is one
+  ## trace. Whichever scratch is larger.
+  max(p.timeFft.workspaceSize, p.spaceFft.workspaceSize(batched = false))
+
+func panelScratch[T](p: FkPlan[T]): int {.inline.} =
+  ## Lane buffer, stored spectra and the spatial pass, in elements of `T`.
+  fftLanes * (p.timeFft.len + 2 * p.timeFft.bins) + p.traces * p.timeFft.bins * 2 +
+    2 * p.spaceFft.len + 4 * p.spaceFft.bins
+
 func workspaceSize*[T](p: FkPlan[T]): WorkspaceSize {.raises: [].} =
   ## The scratch `fkAmplitudeInto` needs.
-  let fftWs = max(p.timeFft.workspaceSize(batched = false),
-    p.spaceFft.workspaceSize(batched = false))
-  let extra = p.timeFft.len + 2 * p.timeFft.bins + p.traces * p.timeFft.bins * 2 +
-    2 * p.spaceFft.len + 4 * p.spaceFft.bins
-  result = fftWs
-  when T is float32: result.f32 += extra
-  else: result.f64 += extra
+  result = fftScratch(p)
+  when T is float32: result.f32 += panelScratch(p)
+  else: result.f64 += panelScratch(p)
 
 proc fkRows*(meta: ChunkMeta, cols, firstCol, nCols: int, rows = 0 .. int.high): int {.
     raises: [].} =
@@ -185,17 +192,16 @@ proc fkAmplitudeInto*[T: SampleType](p: FkPlan[T], b: RowBlock[T], meta: ChunkMe
       $p.traces)
   let nTime = p.timeFft.len
   let sBins = p.spaceFft.bins
-  let at = max(p.timeFft.workspaceSize(batched = false),
-    p.spaceFft.workspaceSize(batched = false)).elems(T)
-  let buf = ws.scratch(T, p.workspaceSize.elems(T) - at, at)
+  let at = fftScratch(p).elems(T)
+  let buf = ws.scratch(T, panelScratch(p), at)
   var o = 0
   template take(n: int): ptr UncheckedArray[T] =
     let p = cast[ptr UncheckedArray[T]](addr buf[o])
     o += n
     p
-  let trace = take(nTime)
-  let oneRe = take(nFreq)
-  let oneIm = take(nFreq)
+  let laneX = take(nTime * fftLanes)
+  let laneRe = take(nFreq * fftLanes)
+  let laneIm = take(nFreq * fftLanes)
   let specRe = take(p.traces * nFreq)
   let specIm = take(p.traces * nFreq)
   let spatA = take(nK)
@@ -207,6 +213,19 @@ proc fkAmplitudeInto*[T: SampleType](p: FkPlan[T], b: RowBlock[T], meta: ChunkMe
   let lo = max(rows.a, 0)
   let hi = min(rows.b, b.len - 1)
   var t = 0
+  var lane = 0
+  template flushTime() =
+    if lane > 0:
+      p.timeFft.forwardLanes(laneX.toOpenArray(0, nTime * fftLanes - 1),
+        laneRe.toOpenArray(0, nFreq * fftLanes - 1),
+        laneIm.toOpenArray(0, nFreq * fftLanes - 1), ws)
+      let base = t - lane
+      for l in 0 ..< lane:
+        let ti = base + l
+        for k in 0 ..< nFreq:
+          specRe[ti * nFreq + k] = laneRe[k * fftLanes + l]
+          specIm[ti * nFreq + k] = laneIm[k * fftLanes + l]
+      lane = 0
   for r in lo .. hi:
     if not meta.isLive(r): continue
     let live = meta.liveSamples(r, b.cols)
@@ -215,17 +234,15 @@ proc fkAmplitudeInto*[T: SampleType](p: FkPlan[T], b: RowBlock[T], meta: ChunkMe
     let src = b.rowPtr(r)
     let last = min(live, firstCol + p.samples)
     let tw = p.traceW[t]
-    zeroMem(trace, nTime * sizeof(T))
+    if lane == 0: zeroMem(laneX, nTime * fftLanes * sizeof(T))
     {.push boundChecks: off.}
     for j in 0 ..< last - firstCol:
-      trace[j] = src[firstCol + j] * p.timeW[j] * tw
+      laneX[j * fftLanes + lane] = src[firstCol + j] * p.timeW[j] * tw
     {.pop.}
-    p.timeFft.forward(trace.toOpenArray(0, nTime - 1),
-      oneRe.toOpenArray(0, nFreq - 1), oneIm.toOpenArray(0, nFreq - 1), ws)
-    for k in 0 ..< nFreq:
-      specRe[t * nFreq + k] = oneRe[k]
-      specIm[t * nFreq + k] = oneIm[k]
+    inc lane
     inc t
+    if lane == fftLanes: flushTime()
+  flushTime()
   let half = nK div 2
   for jf in 0 ..< nFreq:
     if stop != nil and stop(): return Stopped
