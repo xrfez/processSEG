@@ -39,6 +39,7 @@
 ## - `processSEG/qc/firstbreak`: first-break pickers with a confidence (`FirstBreakPlan`, `pickInto`);
 ## - `processSEG/qc/snr`: windowed SNR per trace, coherence SNR per gather versus time (`windowSnrInto`, `coherenceSnrInto`);
 ## - `processSEG/qc/shotfit`: robust per-shot refraction fit, swapped-geometry flags (`fitShot`);
+## - `processSEG/qc/breakfit`: robust start and trimmed model of first-break picks (`trimmedModel`);
 ## - `processSEG/pipeline`: `Op`, `Pipeline`, `compile` → `PipelinePlan`, `apply`;
 ## - `processSEG/core/pool`: `ProcessPool`, persistent workers that apply plans;
 ## - `processSEG/adapters`: `chunkMeta` from a prefetch chunk or a trace read, `pilotFromTrace`;
@@ -79,7 +80,8 @@ import processSEG/core/pool
 import processSEG/velocity/[model, formats, moveout]
 import processSEG/statics/elevation
 import processSEG/stack/[nmo, binning, stack]
-import processSEG/qc/[geometry, firstbreak, snr, shotfit, fold, record, amplitude, exclusion]
+import processSEG/qc/[geometry, firstbreak, snr, shotfit, breakfit, fold, record]
+import processSEG/qc/[amplitude, exclusion]
 import processSEG/vibroseis/[taper, sweep, pilot, correlate, vstack, sweeptrack]
 import processSEG/vibroseis/[crosscorrelate, vibqc, recfilter]
 import processSEG/continuous/slice
@@ -89,6 +91,6 @@ export types, rows, workspace, basic, mute, plan, spectrum, hilbert, spectrogram
     timeshift, design,
     apply, iir, gain, curves, stats, pipeline, adapters, pool, shift, model,
     formats, moveout, elevation, nmo, binning, stack, batch, geometry, firstbreak, snr,
-    shotfit, filescales
+    shotfit, breakfit, filescales
 export taper, sweep, pilot, correlate, vstack, slice, patch, fold, record, amplitude, units,
     calibrate, sweeptrack, crosscorrelate, vibqc, recfilter, synth, exclusion

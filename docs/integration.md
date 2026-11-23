@@ -640,6 +640,11 @@ processSEG's QC modules score this automatically (experimental for land data):
   refractor bends them smoothly, a misplaced receiver jumps); with samples, the odd ones
   out by cross-correlation with the neighbours; `fit.suspect[row]` and `asymmetryMs` (a
   misplaced source).
+- `trimmedModel(offset, picks, confidence, fit)` (`qc/breakfit`): which picks a
+  model is fitted to. It starts from the closer half of a robust line and drops
+  those farther than `max(12 ms, 3 σ)`, up to five rounds. `keepSecond` is the
+  test a second segment must pass. The fit itself stays the caller's (`lineFit`,
+  or `fitShot`).
 
 ## Noisy traces and the exclusion area
 

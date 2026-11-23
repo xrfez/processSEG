@@ -213,6 +213,19 @@ data and short groups. Pass each receiver line of a 3D shot separately. `fitShot
 its scratch in the `ShotFit`: reuse one for shot after shot and a call allocates only a
 few times, for its sorts, whatever the number of traces.
 
+## A trimmed model of the picks
+
+`qc/breakfit` chooses which first-break picks a model is fitted to.
+`medianLineStart` ranks the confident picks by their distance from the straight
+line of least median of squares, so up to half of them can be noise without
+setting the line. `trimmedModel` starts from the closer half and, for up to
+five rounds, keeps the picks within `max(12 ms, 3 σ)` of the caller's fit.
+Fewer than ten picks left, and the model is not trusted. A start that has
+dropped a first segment is tried again from those picks. `keepSecond` says
+whether a second segment is worth keeping: at least fifteen picks beyond the
+crossover, and a robust scatter below 0.9 of the single line's, by at least
+0.5 ms. The fit itself stays the caller's (`lineFit`, or `fitShot`).
+
 ## Signal-to-noise ratios
 
 `qc/snr` measures the SNR two ways, in dB. Per trace, `windowSnrInto` compares the mean

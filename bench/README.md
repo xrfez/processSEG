@@ -366,8 +366,8 @@ where it ran 8 rows per call and left two thirds of every batch empty; the pool 
 
 `nim bench` (bench/bqc.nim), one thread: amplitude QC of a 2000 × 3000 float32 panel, the
 coherence SNR of a 24 × 6000 gather, the correlation of 200 records of 20 s at 2 ms with a
-12 s sweep (nfft 16200) and of one such record, the shot fit of 2000 picks, the resampling
-of a 30 s pilot at 0.25 ms.
+12 s sweep (nfft 16200) and of one such record, the shot fit of 2000 picks, the robust
+first-break start and trimmed model of 4000 picks, the resampling of a 30 s pilot at 0.25 ms.
 
 2026-11-13, AMD Ryzen 9 3950X, Nim 2.4.0, gcc 12.2.0,
 `-d:danger --opt:speed --debuginfo:on --linedir:on -march=x86-64-v3`, medians:

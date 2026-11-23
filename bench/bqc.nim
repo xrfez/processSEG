@@ -1,7 +1,7 @@
 ## QC and vibroseis throughput, one thread: amplitude QC of a panel, the
 ## coherence SNR of a gather against its window, vibroseis correlation (a
-## block of records, and one record), the per-shot refraction fit and the
-## resampling of a pilot.
+## block of records, and one record), the per-shot refraction fit, the
+## robust first-break start and trimmed model, and the resampling of a pilot.
 
 import std/[math, random, strutils]
 import benchutil
@@ -125,6 +125,38 @@ proc shotFit() =
     echo "    ", r.ms, " per shot"
   if sink == 42: echo ""
 
+proc breakFit() =
+  ## 4000 picks on a line, 5 % of them outliers: the robust start and the trim.
+  const n = 4000
+  var off = newSeq[float64](n)
+  var pick = newSeq[float64](n)
+  var conf = newSeq[float64](n)
+  var confident = newSeq[bool](n)
+  var rng = initRand(7)
+  for i in 0 ..< n:
+    off[i] = 12.5 * float64(i + 1)
+    pick[i] = 15.0 + off[i] / 2.8 + rng.gauss(0, 0.4)
+    conf[i] = 0.95
+    confident[i] = true
+    if i mod 20 == 0: pick[i] += 400
+  var sink = 0.0
+  let start = bench("medianLineStart, 4000 picks", n * 8):
+    let near = medianLineStart(off, pick, confident)
+    sink += near[0][0]
+  start.report
+  echo "    ", start.ms, " per call"
+  proc fit(use: openArray[bool]): seq[float64] =
+    let f = lineFit(off, pick, use)
+    if not f.ok: return
+    result = newSeq[float64](n)
+    for i, x in off: result[i] = f.interceptMs + f.msPerUnit * x
+  let trim = bench("trimmedModel, 4000 picks", n * 8):
+    let t = trimmedModel(off, pick, conf, fit)
+    sink += t.sigmaMs
+  trim.report
+  echo "    ", trim.ms, " per call"
+  if sink == 42: echo ""
+
 proc resampling() =
   ## A 30 s pilot at 0.25 ms to 4 ms and to 0.5 ms.
   let fine = generatePilot(linearSweep(4, 100, 30000, 0.25, initSweepTaper(500, 500),
@@ -143,6 +175,7 @@ proc main() =
   coherence()
   correlation()
   shotFit()
+  breakFit()
   resampling()
 
 main()

@@ -467,6 +467,22 @@ auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guid
 | `ShotFit` (`model`, `interceptMs`, `v1`, `v2`, `crossover`, `used`, `asymmetryMs`, `threshold`, `position`, `modelMs`, `residualMs`, `localMs`, `lagMs`, `coherence`, `suspect`) | One shot's fit; the per-row seqs are resized and reused. |
 | `fitShot(meta, picks, params, fit)`, `fitShot(b \| samples, meta, picks, params, fit)` | Fit one shot's rows; flag traces whose residual jumps against their neighbours, and (with samples) the odd ones out by cross-correlation. `asymmetryMs` hints at a misplaced source. |
 
+## qc/breakfit: robust start and trimmed model
+
+Which first-break picks a model is fitted to. `medianLineStart` ranks the confident picks by distance from the straight line of least median of squares (the best of `StartLines` lines through pairs of picks, a fixed generator). `trimmedModel` starts from the closer half of those and drops picks farther than `max(TrimFloorMs, TrimSigmas · sigma)`, refitting up to `TrimRounds` times. Not `trusted` with fewer than `MinTrimmedPicks` left. A start on a second segment is tried again from the kept picks and the nearest dropped ones (`MinSecondPicks`, `RestartSigmaShare`, `RestartSigmaFloorMs`). Times in ms. An empty input is NaN or an empty result, never an error. Parallel arrays of different lengths raise `ValueError`.
+
+| Proc | What |
+|---|---|
+| `ConfidentPick`, `MadToSigma`, `TrimSigmas`, `TrimFloorMs`, `TrimRounds`, `MinTrimmedPicks`, `StartLines`, `MinSecondPicks`, `SecondGain`, `SecondGainMs`, `RestartSigmaShare`, `RestartSigmaFloorMs` | The constants of the trim and of a second segment. `ConfidentPick` is `ShotFitParams.minConfidence`'s default. |
+| `ModelFn` | `proc (use: openArray[bool]): seq[float64] {.closure.}`: the caller's model at every trace, fitted to the picks `use` marks; empty when it cannot be fitted. |
+| `Trimmed` (`trusted`, `model`, `kept`, `used`, `sigmaMs`, `rounds`) | What `trimmedModel` found. `model` is empty unless `trusted`; `sigmaMs` is NaN for none. When the next set falls under `MinTrimmedPicks`, `used` is the rejected count while `kept` is still the set just fitted (12 confident picks, the fit matches 9: trusted=false, used=9, 10 trues in `kept`, model empty). |
+| `median(xs)`, `robustSigma(xs)` | The median (NaN when empty; the middle value, or the mean of the two middle); `MadToSigma` times the median absolute deviation about it. |
+| `lineFit(x, t, use)` | Least absolute deviations, `t = interceptMs + msPerUnit · x` (40 reweighted rounds). `ok` is false for fewer than two finite points `use` marks, all at one `x`, or a line that does not rise. `ValueError` when `x`, `t` and `use` differ in length. |
+| `medianIfCloser(dev, best)` | The median of `dev` when it can lie below `best`, else +Inf. Rearranges `dev` when that median is selected. A NaN is taken by a full sort. |
+| `medianLineStart(offs, pickMs, confident)` | Confident picks with a known offset, and their distance from the robust line, nearest first. Empty for fewer than two. `ValueError` when `offs`, `pickMs` and `confident` differ in length. |
+| `trimmedModel(offsetAbs, pickMs, confidence, fit)` | The trimmed model. The last call of `fit` is the model kept: a rejected restart refits the first set, so the caller's view of the last fit is that one. `ValueError` when `offsetAbs`, `pickMs` and `confidence` differ in length. |
+| `keepSecond(beyond, sigmaOne, sigmaTwo)` | A second segment stays when `beyond` is at least `MinSecondPicks` and `sigmaTwo` is below `SecondGain` of `sigmaOne`, by at least `SecondGainMs`. NaN sigmas do not. |
+
 ## qc/fold: fold maps of a survey
 
 Data in: a parseSEG `SurveyGeometry` (R and S records for the grid; X or O relations for the pre-plot fold); traces as `ChunkMeta` or `TraceRows` for the actual fold.
