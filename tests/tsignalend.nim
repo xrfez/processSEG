@@ -5,7 +5,14 @@
 ## and the edges named for this detector: empty input, one sample, NaN, a
 ## flat trace, a peak at either end.
 ##
-## Seen fail: placeholder, filled after the scratch-copy breaks.
+## Seen fail: `blockLevels` stepped `i += n + 1`, skipping a sample between
+## blocks. `random_traces` then died in `checkLevels` (`got.len == want.len`).
+##
+## Seen fail: `lastLoudMs` treated equal lengths as the error (`!=` became
+## `==`). `empty_input` then raised `ValueError` (`0 levels, 0 timesMs`).
+##
+## Seen fail: `signalEndMs` dropped the short-trace guard (`x.len < 4` became
+## `x.len < 0`). `empty_input` then saw 0, not NaN (`min` drops that end).
 
 import std/[algorithm, math, random]
 import processSEG
