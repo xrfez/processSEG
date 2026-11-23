@@ -21,8 +21,9 @@ with no hidden allocation and no hidden threads.
   fold, a brute stack of a whole file, written as SEG-Y (or described by `stackKeys` for
   parseSEG's writer).
 - **QC:** geometry checks (header offset against coordinates), first-break pickers
-  (STA/LTA, modified energy ratio, modified Coppens) with a confidence per pick, and a
-  robust per-shot refraction fit that flags swapped receivers; windowed and coherence SNR.
+  (STA/LTA, modified energy ratio, modified Coppens) with a confidence per pick, a
+  robust start and trimmed model of those picks, and a robust per-shot refraction
+  fit that flags swapped receivers; windowed and coherence SNR.
 - **Vibroseis:** sweep generation (linear, dB/octave, dB/Hz, exponential, table; nine taper
   shapes), generated or recorded pilots (resampling, instrument filters, SEG-Y sweep
   headers), correlation and sweep deconvolution, vertical and diversity stacking of
