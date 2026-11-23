@@ -697,6 +697,23 @@ QC](guide/vibrator-qc.md), with the plot each call fills.
 | `compareTracksInto(a, b, phaseDeg, ratioDb)` | Signal `a` against `b` per point: the fundamentals' phase difference (wrapped) and ratio in dB. |
 | `wrapDeg(deg)` | An angle wrapped to (−180, 180]. |
 
+## vibroseis/sweepedge: the top frequency of a reference sweep
+
+The top frequency of a reference, read from its samples, and the uncertainty of that
+reading. The frequency law near the top is taken to where the sweep ends. The end ramp's
+shape is not assumed: the fall is fitted against powers of the time left and the cosine
+squared, and the data weigh them. `hz` is NaN when there is no reading.
+
+| Proc | What |
+|---|---|
+| `UncertainFraction` (0.006) | An uncertainty (three standard errors) above this fraction of the top frequency marks the reading uncertain. |
+| `TopReason` (`trNone`, `trNoSweep`, `trTaperShort`, `trNoTop`, `trNotSure`) | Why a reading is uncertain, or why there is none. `trNone`: no sentence, the reading is sure enough. `trNoSweep`: the reference has no sweep to read. `trTaperShort`: the end taper of the sweep is too short or too noisy to be fitted. `trNoTop`: the sweep's frequency law gives no top. `trNotSure`: the end of the sweep is not sure enough. |
+| `TopReading` (`hz`, `uncertaintyHz`, `uncertain`, `endMs`, `lastMs`, `rateHzS`, `why`) | The reading. `hz` NaN: none. `endMs` is where the sweep is taken to end (its top-frequency end). `uncertaintyHz` is three standard errors (Inf when there is no reading). `lastMs` is the last point of the fall that was fitted. `rateHzS` is the sweep's rate at its end, Hz per second. `why` is a `TopReason`. |
+| `notBefore(tEnd, tLast, dir)` | `tEnd` kept at or past `tLast`, the last point of the fall that was fitted, in the sweep's direction (`dir` 1: later in time, -1: earlier). |
+| `Weighed` (`tEnd`, `seSq`, `spread`, `best`) | The shapes' roots weighed by their fits: the weighted root (kept at or past the last point fitted), the weighted squared standard error of the roots that count, the standard deviation of the roots between the shapes, and the shape that fits best. |
+| `weighShapes(roots, sses, floors, rootSe, n, kCorr, tLast, dir)` | The shapes weighted by how well each fits. The end is never short of the last point fitted. `ValueError` when the arrays differ in length. |
+| `readTop(x, dtMs, track, extent)` | The reference's top frequency: the end of the sweep where its frequency is highest. `x` is the reference's samples (the first at 0 ms), `track` its frequency track and `extent` its measured sweep and flat part. Allocates per call. `ValueError` when `track.timeMs` and `track.referenceHz` differ in length. |
+
 ## vibroseis/crosscorrelate: a signal against its reference
 
 | Proc | What |

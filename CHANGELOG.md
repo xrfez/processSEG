@@ -3,6 +3,7 @@
 ## Unreleased
 
 - `core/shift`: `placedWhole` and `placedSinc` place a stored trace later by whole samples or a Kaiser-windowed sinc (24 taps each side, beta 8), returning a longer or shorter trace. A non-positive interval, an empty trace, or a NaN shift returns a copy of the stored samples. Not a mode of `shiftSamples` (that one stays in place; a positive shift there moves samples earlier).
+- `vibroseis/sweepedge`: the top frequency of a reference sweep, read from its samples, with the reading's uncertainty. `TopReading`, `TopReason` (`trNone`, `trNoSweep`, `trTaperShort`, `trNoTop`, `trNotSure`), `notBefore`, `Weighed`, `weighShapes`, `readTop`, `UncertainFraction`. Parallel arrays of different length raise `ValueError`.
 - `qc/signalend`: where a trace's signal ends. `blockLevels`, `lastLoudMs`, `signalEndMs`, `RippleFraction`. `levels` and `timesMs` of different lengths raise `ValueError`; an empty pair is NaN.
 
 ## 0.11.0
