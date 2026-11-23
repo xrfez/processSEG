@@ -2,6 +2,12 @@
 ## 1–16 workers (in place, src → dst, per-panel parts, rows of uneven cost),
 ## many back-to-back jobs, idle start-up and shutdown, moves, two callers
 ## sharing one pool, argument errors and no allocation in a steady state.
+##
+## Fail-first (averaged spectrogram), then restored:
+## `rowFinite` forced true: `pool_average_drops_nan` kept 20 rows (float32,
+## 1 worker) instead of 18; `pool_average_all_dropped` kept 18 instead of 0.
+## Batch width set to the worker count: `pool_average_same_bits` differed at
+## float32, 15 rows, 2 workers, bin 1.
 
 import std/[assertions, math]
 import processSEG
@@ -212,5 +218,154 @@ proc main*() =
     pool.apply(plan, g.data, got, meta)
     for r in 0..<37:
       for j in 0..<700: doAssert got[r, j] == want[r, j]
+
+  proc frameClose(got, want: openArray[float64], frames, bins: int): string =
+    ## Empty when `got` is within 1e-12 of `want`'s frame peak on every bin.
+    for f in 0 ..< frames:
+      var peak = 0.0
+      for k in 0 ..< bins:
+        peak = max(peak, abs(want[f * bins + k]))
+      let tol = 1e-12 * peak
+      for k in 0 ..< bins:
+        let d = abs(got[f * bins + k] - want[f * bins + k])
+        if d > tol:
+          return "frame " & $f & " bin " & $k & " diff " & $d & " peak " & $peak
+    ""
+
+  proc toneGather[T: SampleType](rows, cols: int): SynthGather[T] =
+    var offs = newSeq[float64](rows)
+    result = cmpGather[T](0, offs, cols, dtMs = 2)
+    for r in 0 ..< rows:
+      let a = 0.3 + 0.17 * float64(r mod 11)
+      let phase = 0.05 * float64(r)
+      for j in 0 ..< cols:
+        result.data[r, j] = T(a * sin(2 * PI * (3 + float64(r mod 5)) *
+          float64(j) * 0.002 + phase))
+
+  proc checkPoolAverage[T: SampleType]() =
+    const cols = 80
+    let sg = initSpectrogramPlan(T, windowLen = 32, hop = 8, dtMs = 2.0, samples = cols)
+    var ws = initWorkspace()
+    ws.reserve(sg.averageWorkspace)
+    var pools: array[4, ProcessPool]
+    let counts = [1, 2, 3, 8]
+    for i, w in counts: pools[i] = newProcessPool(w)
+    for rows in [1, 15, 16, 17, 200]:
+      var g = toneGather[T](rows, cols)
+      if rows >= 17:
+        g.keys[2].status = tsDead
+        g.setLive(4, 20)
+      let meta = initChunkMeta(g.rows, dtMs = 2)
+      var want = newSeq[float64](sg.frames * sg.bins)
+      let used = sg.averageSpectrogramInto(g.data, meta, want, ws)
+      var refGot: seq[float64] = @[]
+      var refUsed = 0
+      for i, w in counts:
+        var got = newSeq[float64](sg.frames * sg.bins)
+        let n = pools[i].averageSpectrogramInto(sg, g.data, meta, got)
+        doAssert n == used, $T & " rows " & $rows & " workers " & $w &
+          " used " & $n & " vs " & $used
+        let note = frameClose(got, want, sg.frames, sg.bins)
+        doAssert note.len == 0, $T & " rows " & $rows & " w " & $w & " " & note
+        if i == 0:
+          refGot = got
+          refUsed = n
+        else:
+          doAssert n == refUsed
+          for k in 0 ..< got.len:
+            doAssert got[k] == refGot[k], $T & " rows " & $rows & " workers " & $w &
+              " bin " & $k
+
+  block pool_average_same_bits:
+    # Workers 1, 2, 3, 8 match each other bit for bit, and the serial form
+    # within 1e-12 of the frame peak. Row counts sit on both sides of the
+    # batch of 16, including one wave and several.
+    checkPoolAverage[float32]()
+    checkPoolAverage[float64]()
+
+  proc checkDropped[T: SampleType]() =
+    const cols = 64
+    const rows = 20
+    let sg = initSpectrogramPlan(T, windowLen = 32, hop = 8, dtMs = 2.0, samples = cols)
+    var g = toneGather[T](rows, cols)
+    g.data[1, 8] = T(NaN)
+    g.data[16, 3] = T(NaN)
+    let meta = initChunkMeta(g.rows, dtMs = 2)
+    var ws = initWorkspace()
+    ws.reserve(sg.averageWorkspace)
+    var want = newSeq[float64](sg.frames * sg.bins)
+    let used = sg.averageSpectrogramInto(g.data, meta, want, ws)
+    doAssert used == rows - 2, $T & " serial kept " & $used
+    var refGot: seq[float64] = @[]
+    for i, w in [1, 2, 3, 8]:
+      var pool = newProcessPool(w)
+      var got = newSeq[float64](sg.frames * sg.bins)
+      let n = pool.averageSpectrogramInto(sg, rowBlock(g.data), meta, got)
+      doAssert n == used, $T & " workers " & $w & " kept " & $n
+      let note = frameClose(got, want, sg.frames, sg.bins)
+      doAssert note.len == 0, $T & " " & note
+      if i == 0: refGot = got
+      else:
+        for k in 0 ..< got.len:
+          doAssert got[k] == refGot[k], $T & " workers " & $w
+
+  block pool_average_drops_nan:
+    # Two NaN rows are dropped; the count matches the serial form.
+    checkDropped[float32]()
+    checkDropped[float64]()
+
+  proc checkAllDropped[T: SampleType]() =
+    const cols = 48
+    const rows = 18
+    let sg = initSpectrogramPlan(T, windowLen = 32, hop = 8, dtMs = 2.0, samples = cols)
+    var g = toneGather[T](rows, cols)
+    for r in 0 ..< rows: g.data[r, 4] = T(NaN)
+    let meta = initChunkMeta(g.rows, dtMs = 2)
+    var ws = initWorkspace()
+    ws.reserve(sg.averageWorkspace)
+    var want = newSeq[float64](sg.frames * sg.bins)
+    doAssert sg.averageSpectrogramInto(g.data, meta, want, ws) == 0
+    for v in want: doAssert v == 0.0
+    for w in [1, 8]:
+      var pool = newProcessPool(w)
+      var got = newSeq[float64](sg.frames * sg.bins)
+      for k in 0 ..< got.len: got[k] = 1.0
+      let n = pool.averageSpectrogramInto(sg, g.data, meta, got)
+      doAssert n == 0, $T & " workers " & $w & " kept " & $n
+      for v in got: doAssert v == 0.0, $T & " " & $w
+
+  block pool_average_all_dropped:
+    checkAllDropped[float32]()
+    checkAllDropped[float64]()
+
+  block pool_average_errors:
+    let sg = initSpectrogramPlan(float32, windowLen = 32, hop = 8, dtMs = 2.0, samples = 64)
+    var g = toneGather[float32](6, 64)
+    let meta = initChunkMeta(g.rows, dtMs = 2)
+    var pool = newProcessPool(2)
+    var amp = newSeq[float64](sg.frames * sg.bins)
+    amp[0] = 1.5
+    let other = initChunkMeta(g.rows, dtMs = 4)
+    doAssertRaises ValueError:
+      discard pool.averageSpectrogramInto(sg, g.data, other, amp)
+    doAssert amp[0] == 1.5
+    let short = initSpectrogramPlan(float32, windowLen = 32, hop = 8, dtMs = 2.0, samples = 32)
+    var shortAmp = newSeq[float64](short.frames * short.bins)
+    shortAmp[0] = 1.5
+    doAssertRaises ValueError:
+      discard pool.averageSpectrogramInto(short, g.data, meta, shortAmp)
+    doAssert shortAmp[0] == 1.5
+    var bad = newSeq[float64](3)
+    doAssertRaises AssertionDefect:
+      discard pool.averageSpectrogramInto(sg, g.data, meta, bad)
+    var ws = initWorkspace()
+    ws.reserve(sg.averageWorkspace)
+    var want = newSeq[float64](sg.frames * sg.bins)
+    let used = sg.averageSpectrogramInto(g.data, meta, want, ws, rows = 1 .. 3)
+    var got = newSeq[float64](sg.frames * sg.bins)
+    let n = pool.averageSpectrogramInto(sg, g.data, meta, got, rows = 1 .. 3)
+    doAssert n == used and n > 0
+    doAssert frameClose(got, want, sg.frames, sg.bins).len == 0
+    pool.ping
 
 when isMainModule: main()

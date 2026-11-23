@@ -217,7 +217,9 @@ flow[2].agc.windowMs = 300                # a slider moved: edit the op, recompi
   every plan the process compiles, so 0 can mean "never processed".
 - **What allocates:** `compile`, `newProcessPool`, `reserve` when it grows, and the first
   `pool.apply` after a plan needing more scratch than any before (each worker grows its
-  workspace); for calibration, `fileScalesInto` (a few columns of scratch) and
+  workspace), and the first `pool.averageSpectrogramInto` that needs a larger
+  partial buffer (grown once on the pool; each worker also grows its workspace); for
+  calibration, `fileScalesInto` (a few columns of scratch) and
   `scaleReport`; for vibrator QC, the plans, `initSweepReference`, `initSweepTrack` and the
   first `analyzeVibrators` into a `results` seq. Every other `apply`, `pool.apply`,
   `chunkMeta(c)`, stats, spectrum, moveout, `resolveInto`, `calibrate`, tracking,
@@ -827,7 +829,7 @@ The viewer does not build these itself. Each call fills a buffer the viewer alre
 | Phase unwrapped along the bins on screen | `unwrapPhaseInto(phaseDeg, shown, dst)`. A hidden bin is not crossed |
 | Linear phase taken off, delay in ms | `removeDelayInto(unwrapped, hz, shown, dst)` |
 | Spectrum averaged over several blocks | `initSpectrumAccumulator`, `acc.add` per block, `acc.amplitudesInto`. Same scale as `averageAmplitudeInto` |
-| Spectrogram averaged over traces | `sg.averageSpectrogramInto` (`averageWorkspace`). A float64 row outside the safe range, or a NaN or infinity in the spectrogram, drops that trace. Pass `stop` to abandon between traces (`Stopped` when abandoned, `amp` unspecified; otherwise the rows used; nil never stops) |
+| Spectrogram averaged over traces | `sg.averageSpectrogramInto` (`averageWorkspace`), or `pool.averageSpectrogramInto` (no workspace, no `stop`; same rows dropped; the grouped sum can differ from the serial running sum in the last bits). A float64 row outside the safe range, or a NaN or infinity in the spectrogram, drops that trace. Pass `stop` to the serial form to abandon between traces (`Stopped` when abandoned, `amp` unspecified; otherwise the rows used; nil never stops) |
 | Response of the flow as applied, edges included | `appliedResponseInto(flow, float32, dtMs, samples, hz, gain, ws)`. Not `response()` |
 | Gain held flat after a time | `heldGain(curve, untilMs)` then `gainCurveOp` |
 | Shift a trace by whole samples, length kept | `timeShift` or `timeShiftInto`. `shift` is a whole number of samples; `wholeSamples` snaps milliseconds (round to nearest, ties away from zero). What leaves one end is clipped; the vacated end is zeros. `shiftSamples` remains the interpolator statics and LMO use |
