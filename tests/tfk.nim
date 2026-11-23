@@ -1,7 +1,9 @@
 ## f-k amplitude of a gather.
 ##
 ## Fail-first: `fk_dip_sign` failed while the k axis was not sign-flipped,
-## so the dip peaked at index 6 instead of 10 (zero at 8).
+## so the dip peaked at index 6 instead of 10 (zero at 8). `fk_stop` failed
+## while the stop checks were compiled out (`if false and stop`), so a
+## never-true check was called 0 times instead of once per trace and frequency.
 
 import std/[assertions, math]
 import processSEG
@@ -36,7 +38,7 @@ proc main*() =
     ws.reserve(plan)
     var amp = newSeq[float64](plan.nK * plan.nFreq)
     let n = allocsIn:
-      doAssert plan.fkAmplitudeInto(g.data, meta, 0, amp, ws) == rows
+      doAssert plan.fkAmplitudeInto(g.data, meta, 0, amp, ws)
     doAssert n == 0, $n & " allocations"
     let zero = plan.nK div 2
     var peakK, peakF = 0
@@ -54,5 +56,53 @@ proc main*() =
     doAssert amp[(zero - 2) * plan.nFreq + 8] < peak * 0.05
     doAssertRaises ValueError: discard initFkPlan(float64, dtMs, traces = 3, samples = 64)
     doAssertRaises ValueError: discard initFkPlan(float64, dtMs, traces = 8, samples = 7)
+
+  block fk_stop:
+    # Fail-first: failed while the stop checks were compiled out, seen 0.
+    const rows = 8
+    const cols = 64
+    const dtMs = 2.0
+    var g = gather(rows, cols, dtMs)
+    let plan = initFkPlan(float64, dtMs, traces = rows, samples = cols)
+    for r in 0 ..< rows:
+      for j in 0 ..< cols:
+        g.data[r, j] = cos(0.15 * float64(j) + 0.4 * float64(r))
+    let meta = initChunkMeta(g.rows, dtMs)
+    var ws = initWorkspace()
+    ws.reserve(plan)
+    var amp = newSeq[float64](plan.nK * plan.nFreq)
+    doAssert plan.fkAmplitudeInto(g.data, meta, 0, amp, ws)
+    let full = amp
+    var again = newSeq[float64](amp.len)
+    doAssert plan.fkAmplitudeInto(g.data, meta, 0, again, ws, stop = nil)
+    doAssert again == full
+    var seen = 0
+    let never: StopCheck = proc (): bool {.gcsafe, raises: [].} =
+      inc seen
+      false
+    doAssert plan.fkAmplitudeInto(g.data, meta, 0, again, ws, stop = never)
+    doAssert again == full
+    doAssert seen == rows + plan.nFreq, "checked once per trace and frequency, got " & $seen
+    proc stoppedAfter(k: int): int =
+      var calls = 0
+      let stop: StopCheck = proc (): bool {.gcsafe, raises: [].} =
+        inc calls
+        calls >= k
+      doAssert not plan.fkAmplitudeInto(g.data, meta, 0, amp, ws, stop = stop)
+      doAssert calls <= k, "called " & $calls & " times, at most " & $k
+      calls
+    doAssert stoppedAfter(1) == 1
+    doAssert stoppedAfter(3) == 3
+    doAssert stoppedAfter(rows + 1) == rows + 1
+    var once = 0
+    let stopRow: StopCheck = proc (): bool {.gcsafe, raises: [].} =
+      inc once
+      true
+    doAssert not plan.fkAmplitudeInto(rowBlock(g.data), meta, 0, amp, ws, stop = stopRow)
+    doAssert once == 1
+    let quiet = allocsIn:
+      discard plan.fkAmplitudeInto(g.data, meta, 0, amp, ws)
+    doAssert quiet == 0, $quiet & " allocations"
+    doAssert amp == full, "the plan and workspace are reusable after a stop"
 
 when isMainModule: main()
