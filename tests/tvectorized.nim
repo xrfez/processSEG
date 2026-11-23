@@ -66,11 +66,14 @@ const
     # (correlation), the resampling filter's dot product (pilots).
     ("mulKernel", "__veccorrelate"), ("dot", "__veccorrelate"),
     # Vibrator signatures, instantiated in `utils/vecsignature` (their plans
-    # use the one-trace FFT, scalar by design): the Hilbert transform's
-    # spectrum times −i (fft/hilbert); the envelope's square roots (there,
-    # with -fno-math-errno); the tracking's running sums, every harmonic in
-    # one lane group (vibroseis/sweeptrack: its phasor powers are serial).
-    ("rotateBins", "__vecsignature"), ("envelopeKernel", "ZfftZhilbert"),
+    # use the one-trace FFT, scalar by design): the envelope's square roots
+    # (there, with -fno-math-errno); the tracking's running sums, every
+    # harmonic in one lane group (vibroseis/sweeptrack: its phasor powers
+    # are serial).
+    # The Hilbert transform's spectrum times −i (fft/hilbert) is instantiated
+    # in the vibroseis modules that call it: `matchpeak` and `sweepedge`.
+    ("rotateBins", "ZvibroseisZmatchpeak"), ("rotateBins", "ZvibroseisZsweepedge"),
+    ("envelopeKernel", "ZfftZhilbert"),
     ("addSample", "__vecsignature"),
     # A signal's spectrum times the reference's conjugate (crosscorrelate).
     ("crossKernel", "__vecsignature"),
