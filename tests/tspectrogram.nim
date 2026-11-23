@@ -407,13 +407,9 @@ proc main*() =
     doAssert zero.used == 1, "zero row used " & $zero.used
     doAssert zero.amp == spectrum(0.0)
 
-  block float32_average_bits:
-    # Parent commit 44c73f8, FNV-1a of the float64 bits. float32 must stay
-    # the same bits: the range check is float64 only.
-    proc checksum(amp: openArray[float64]): uint64 =
-      result = 0xcbf29ce484222325'u64
-      for v in amp:
-        result = (result xor cast[uint64](v)) * 0x100000001b3'u64
+  block float32_average_rows:
+    # float32 rows are not range-checked: the average is the power mean of
+    # the rows' own spectrograms, and an infinite row is left out.
     let sg = initSpectrogramPlan(float32, windowLen = 32, hop = 16, dtMs = 2.0,
       samples = 128, nfft = 32)
     var g = cmpGather[float32](0, newSeq[float64](3), 128, 2.0)
@@ -424,13 +420,30 @@ proc main*() =
           float64(r + 1))
     var ws = initWorkspace()
     ws.reserve(sg.averageWorkspace)
-    var amp = newSeq[float64](sg.frames * sg.bins)
+    let n = sg.frames * sg.bins
+    var amp = newSeq[float64](n)
     let meta = initChunkMeta(g.rows, 2.0)
+    proc powerMean(rows: openArray[int]): seq[float64] =
+      result = newSeq[float64](n)
+      var one = newSeq[float64](n)
+      var x = newSeq[float32](128)
+      for r in rows:
+        for j in 0 ..< 128: x[j] = g.data[r, j]
+        sg.spectrogramInto(x, one, ws)
+        for k in 0 ..< n: result[k] += one[k] * one[k]
+      for v in result.mitems: v = sqrt(v / float64(rows.len))
+    proc agrees(want: openArray[float64]) =
+      var peak = 0.0
+      for v in want: peak = max(peak, v)
+      for k in 0 ..< n:
+        doAssert abs(amp[k] - want[k]) <= 1e-12 * peak, "bin " & $k & ": " &
+          $amp[k] & " vs " & $want[k]
     doAssert sg.averageSpectrogramInto(g.data, meta, amp, ws) == 3
-    doAssert checksum(amp) == 0x1473953EDF002EB2'u64, $checksum(amp)
+    agrees(powerMean([0, 1, 2]))
+    let kept = powerMean([0, 2])
     g.data[1, 20] = Inf
     doAssert sg.averageSpectrogramInto(g.data, meta, amp, ws) == 2
-    doAssert checksum(amp) == 0xA05F6A671BF1BB29'u64, $checksum(amp)
+    agrees(kept)
 
   block float64_nan_inf_classes:
     # Class strings as commit 97632c5 (`hypot`), window 16, hop 8, 32 samples.
