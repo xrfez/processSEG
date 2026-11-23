@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `fkAmplitudeInto`: the time FFTs run `fftLanes` traces at a time, and the modulus is a unit-stride `sqrt(re² + im²)` instead of `hypot` (last bits only; within 1e-6 of the panel peak).
+
 ## 0.12.0
 
 - `core/shift`: `placedWhole` and `placedSinc` place a stored trace later by whole samples or a Kaiser-windowed sinc (24 taps each side, beta 8), returning a longer or shorter trace. A non-positive interval, an empty trace, or a shift that is NaN, infinite or beyond the range of a sample count returns a copy of the stored samples. Not a mode of `shiftSamples` (that one stays in place; a positive shift there moves samples earlier).

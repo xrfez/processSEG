@@ -1,7 +1,8 @@
 ## f-k amplitude of a gather.
 ##
 ## Fail-first: `fk_dip_sign` failed while the k axis was not sign-flipped,
-## so the dip peaked at index 6 instead of 10 (zero at 8). `fk_stop` failed
+## so the dip peaked at index 6 instead of 10 (zero at 8), and again while
+## `modulusInto` stored 0, so the peak frequency was 0 instead of 8. `fk_stop` failed
 ## while the stop checks were compiled out (`if false and stop`), so a
 ## never-true check was called 0 times instead of once per trace and frequency,
 ## and while a finished call returned true instead of the rows used and an

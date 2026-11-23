@@ -17,8 +17,8 @@
 ## in time to `nextFastLen(samples)` and across traces to
 ## `nextFastLen(2·traces)`, then transformed: a real FFT in time (`fftLanes`
 ## traces at a time) and the complex FFT across traces as two real FFTs. The
-## modulus is unscaled (the
-## caller applies `toDbInto`). Dead, auxiliary and failed rows, and live rows
+## modulus is unscaled, `sqrt(re² + im²)` (the caller applies `toDbInto`).
+## Dead, auxiliary and failed rows, and live rows
 ## with no sample in the window, are left out, so `dkPerTrace` is per trace
 ## that entered, in order.
 ##
@@ -38,6 +38,11 @@ import std/math
 import parseSEG
 import ../core/[rows, types, workspace]
 import plan
+
+# `sqrt` of a sum of squares never needs errno, and without it GCC packs the
+# square roots. This module's C file only: `modulusInto` is not generic, so
+# the loop is compiled here (a generic kernel would compile in the caller).
+{.localPassC: "-fno-math-errno".}
 
 type
   FkAxes* = object
@@ -146,6 +151,16 @@ func workspaceSize*[T](p: FkPlan[T]): WorkspaceSize {.raises: [].} =
   result = fftScratch(p)
   when T is float32: result.f32 += panelScratch(p)
   else: result.f64 += panelScratch(p)
+  result.f64 += 3 * p.spaceFft.len # unit-stride re, im and modulus
+
+proc modulusInto(re {.noalias.}, im {.noalias.}, mag {.noalias.}: ptr UncheckedArray[
+    float64], n: int) {.noinline, raises: [].} =
+  ## `mag[i] = sqrt(re[i]² + im[i]²)`, unit stride, no call and no branch.
+  ## `-fno-math-errno` on this module packs the square roots.
+  {.push boundChecks: off, overflowChecks: off.}
+  for i in 0 ..< n:
+    mag[i] = sqrt(re[i] * re[i] + im[i] * im[i])
+  {.pop.}
 
 proc fkRows*(meta: ChunkMeta, cols, firstCol, nCols: int, rows = 0 .. int.high): int {.
     raises: [].} =
@@ -210,6 +225,10 @@ proc fkAmplitudeInto*[T: SampleType](p: FkPlan[T], b: RowBlock[T], meta: ChunkMe
   let ai = take(sBins)
   let br = take(sBins)
   let bi = take(sBins)
+  let magAt = when T is float32: 0 else: at + panelScratch(p)
+  let re64 = ws.scratch(float64, nK, magAt)
+  let im64 = ws.scratch(float64, nK, magAt + nK)
+  let mag = ws.scratch(float64, nK, magAt + 2 * nK)
   let lo = max(rows.a, 0)
   let hi = min(rows.b, b.len - 1)
   var t = 0
@@ -257,18 +276,20 @@ proc fkAmplitudeInto*[T: SampleType](p: FkPlan[T], b: RowBlock[T], meta: ChunkMe
       bi.toOpenArray(0, sBins - 1), ws)
     # Full complex DFT of a + i·b, then flipped so later-on-later is +k.
     # Output index ik reads standard bin (nK/2 − ik), wrapped into 0 ..< nK.
+    # The fold is indexed; the modulus is a unit-stride loop so it packs.
     for ik in 0 ..< nK:
       let raw = half - ik
       let sk = if raw >= 0: raw else: raw + nK
-      var re, im: float64
       if sk <= half:
-        re = float64(ar[sk]) - float64(bi[sk])
-        im = float64(ai[sk]) + float64(br[sk])
+        re64[ik] = float64(ar[sk]) - float64(bi[sk])
+        im64[ik] = float64(ai[sk]) + float64(br[sk])
       else:
         let k = nK - sk
-        re = float64(ar[k]) + float64(bi[k])
-        im = float64(br[k]) - float64(ai[k])
-      amp[ik * nFreq + jf] = hypot(re, im)
+        re64[ik] = float64(ar[k]) + float64(bi[k])
+        im64[ik] = float64(br[k]) - float64(ai[k])
+    modulusInto(re64, im64, mag, nK)
+    for ik in 0 ..< nK:
+      amp[ik * nFreq + jf] = mag[ik]
   entered
 
 proc fkAmplitudeInto*[T: SampleType](p: FkPlan[T], samples: Tensor[T],
