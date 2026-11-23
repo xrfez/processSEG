@@ -164,4 +164,21 @@ proc main*() =
     doAssert placedWhole(stored, -2) == @[4.0]
     doAssert placedSinc(stored, 2.0, 1.0) == placedWhole(stored, 2)
 
+  block unusable_shift_returns_stored:
+    # Break check: without the isFinite guard in placedSinc, Inf, -Inf, 1e20
+    # and (Inf, Inf) raise OverflowDefect at int(floor(d)).
+    let stored = @[1'f32, -2, 3.5, 0.25]
+    doAssert placedSinc(stored, Inf, 1.0) == stored
+    doAssert placedSinc(stored, -Inf, 1.0) == stored
+    doAssert placedSinc(stored, 1e20, 1.0) == stored
+    doAssert placedSinc(stored, Inf, Inf) == stored
+
+  block whole_shift_range:
+    # Break check: without the range test, placedWhole(@[1'f32], low(int))
+    # raises OverflowDefect when it negates low(int), and
+    # placedWhole(@[1'f32], high(int)) raises OverflowDefect in newSeq.
+    doAssert placedWhole(@[1'f32], low(int)) == newSeq[float32]()
+    doAssertRaises ValueError:
+      discard placedWhole(@[1'f32], high(int))
+
 when isMainModule: main()

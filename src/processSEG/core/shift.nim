@@ -173,31 +173,41 @@ func besselI0(x: float64): float64 =
     result += term
 
 func placedWhole*[T: SampleType](stored: openArray[T],
-    wholeSamples: int): seq[T] {.raises: [].} =
+    wholeSamples: int): seq[T] {.raises: [ValueError].} =
   ## `stored` starting `wholeSamples` after the first sample (zeros before
   ## it); a negative number drops that many of its first samples. Longer by
   ## a positive shift, shorter by a negative one, empty when the drop covers
-  ## `stored`.
+  ## `stored`. A positive shift whose length is past the range of a sample
+  ## count raises `ValueError`.
   if wholeSamples >= 0:
+    if wholeSamples > high(int) - stored.len:
+      raise newException(ValueError,
+        "placedWhole: shift " & $wholeSamples & " is past the range of a sample count")
     result = newSeq[T](wholeSamples + stored.len)
     for i, v in stored: result[wholeSamples + i] = v
   else:
-    let drop = min(-wholeSamples, stored.len)
+    # Not negated first: -low(int) overflows.
+    if wholeSamples <= -stored.len: return newSeq[T]()
+    let drop = -wholeSamples
     result = newSeq[T](stored.len - drop)
     for i in 0 ..< result.len: result[i] = stored[drop + i]
 
 func placedSinc*[T: SampleType](stored: openArray[T], shiftMs,
-    dtMs: float64): seq[T] {.raises: [].} =
+    dtMs: float64): seq[T] {.raises: [ValueError].} =
   ## `stored` moved later by `shiftMs`, a fraction of a sample included.
   ## Each output sample is a Kaiser-windowed sinc (24 taps each side, beta 8)
   ## of the stored samples around the time it lies at, so 100.3 ms at 1 ms
   ## lands at 100.3 ms, not at 100. Samples outside `stored` are zero, so
   ## nothing wraps. Longer by the shift, shorter when it is negative.
-  ## A `dtMs` that is not positive, an empty `stored`, or a NaN `shiftMs`
-  ## returns a copy of `stored`. A fraction below 1e-9 above a whole number
-  ## of samples is `placedWhole` at that whole number.
+  ## A `dtMs` that is not positive, an empty `stored`, a NaN or infinite
+  ## `shiftMs`, or a shift whose quotient by `dtMs` is beyond the range of a
+  ## sample count returns a copy of `stored`. A fraction below 1e-9 above a
+  ## whole number of samples is `placedWhole` at that whole number, which
+  ## raises `ValueError` only for a whole number past the range of a count.
   if not (dtMs > 0) or stored.len == 0 or shiftMs.isNaN: return @stored
   let d = shiftMs / dtMs
+  # Also false for NaN (every comparison with NaN is false).
+  if not (abs(d) < 9223372036854775808.0): return @stored
   let whole = int(floor(d))
   let frac = d - float64(whole)
   if frac < 1e-9: return placedWhole(stored, whole)
