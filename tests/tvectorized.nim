@@ -8,8 +8,13 @@
 ## --passC:-fno-tree-slp-vectorize"` builds the kernels scalar: every kernel
 ## must then fail. `laneMagnitude` failed while a noinline call sat in the
 ## loop (`sinkMag(sqrt(...))`): that instance had no packed instruction.
+## `extremeFloat64` failed while the modulus squared in float64: an f-k panel
+## of uniform(-1e155, 1e155) was 40 infinities, and a constant 1e200
+## spectrogram read Inf at bin 0.
 
-import std/[os, osproc, strutils, tables]
+import std/[math, os, osproc, random, strutils, tables]
+import processSEG
+import utils/synth
 
 const
   # Kernel instance symbols (`<name>_u<n>__veckernels`) that must hold packed
@@ -79,6 +84,8 @@ const
     # and one exponent-bit finite check per averaged row.
     ("laneMagnitude", "ZfftZspectrogram"),
     ("amplitudesFinite", "ZfftZspectrogram"),
+    # f-k modulus: packed sqrt, hypot only on a block that leaves range.
+    ("modulusInto", "ZfftZfk"),
     ("addSample", "__vecsignature"),
     # A signal's spectrum times the reference's conjugate (crosscorrelate).
     ("crossKernel", "__vecsignature"),
@@ -86,6 +93,7 @@ const
     ("weightedSumKernel", "__vecsignature")]
 
 const mostlyPacked = ["sosKernel"]
+const sqrtPd = ["laneMagnitude", "modulusInto"]
   # Kernels whose loop must be packed as a whole: over all their instances,
   # more packed than scalar floating-point arithmetic. "Some packed
   # instruction" is not enough for these: the IIR kernel at 8 lanes had 8
@@ -126,7 +134,38 @@ proc isPacked(insn: string): bool =
 
 proc checkBuild(mode: string)
 
+proc extremeFloat64*() =
+  ## Squares of these inputs overflow or flush. Fails before the hypot fallback.
+  var rng = initRand(1)
+  var g = cmpGather[float64](0, newSeq[float64](4), 8, 2.0)
+  for r in 0 ..< 4:
+    for j in 0 ..< 8: g.data[r, j] = 1e155 * (rng.rand(2.0) - 1.0)
+  let plan = initFkPlan(float64, 2.0, traces = 4, samples = 8, taperFraction = 0.1)
+  var ws = initWorkspace()
+  ws.reserve(plan)
+  var amp = newSeq[float64](plan.nK * plan.nFreq)
+  discard plan.fkAmplitudeInto(g.data, initChunkMeta(g.rows, 2.0), 0, amp, ws)
+  var nInf = 0
+  for a in amp:
+    if a.classify in {fcInf, fcNegInf}: inc nInf
+  doAssert nInf == 0, "f-k 1e155 has " & $nInf & " infinities"
+  let sg = initSpectrogramPlan(float64, windowLen = 16, hop = 16, dtMs = 1.0,
+    samples = 16, nfft = 16)
+  var y = newSeq[float64](16)
+  for j in 0 ..< 16: y[j] = 1e200
+  var wsSg = initWorkspace()
+  wsSg.reserve(sg.averageWorkspace)
+  var frame = newSeq[float64](sg.bins)
+  sg.spectrogramInto(y, frame, wsSg)
+  doAssert frame[0].classify == fcNormal and abs(frame[0] - 1e200) < 1e194,
+    "spectrogram 1e200 amp[0] " & $frame[0]
+  for j in 0 ..< 16: y[j] = 1e-200
+  sg.spectrogramInto(y, frame, wsSg)
+  doAssert frame[0].classify == fcNormal and abs(frame[0] - 1e-200) < 1e-206,
+    "spectrogram 1e-200 amp[0] " & $frame[0]
+
 proc main*() =
+  extremeFloat64()
   when not (defined(amd64) and defined(linux)) or defined(release) or
       defined(addressSanitizer):
     echo "  skipped (needs a debug run on x86-64 Linux)"
@@ -160,6 +199,7 @@ proc checkBuild(mode: string) =
     # `name.constprop.0`) count as one: a split function keeps its loops in
     # the part, and its outer symbol is a thin wrapper.
     var packedOf, scalarOf = initOrderedTable[string, int]()
+    var sqrtOf = initOrderedTable[string, bool]()
     for line in syms.output.splitLines:
       let sym = line.splitWhitespace()
       if sym.len < 3: continue
@@ -171,14 +211,17 @@ proc checkBuild(mode: string) =
         name & " " & quoteShell(bin))
       doAssert dis.exitCode == 0, dis.output
       var packed, scalar = 0
+      var sawSqrt = false
       for l in dis.output.splitLines:
         let cols = l.split('\t')
         if cols.len >= 2:
           let insn = cols[1 .. ^1].join(" ").strip()
+          if "vsqrtpd" in insn: sawSqrt = true
           if insn.isPacked: inc packed
           elif insn.isScalarFp: inc scalar
       packedOf[base] = packedOf.getOrDefault(base) + packed
       scalarOf[base] = scalarOf.getOrDefault(base) + scalar
+      sqrtOf[base] = sqrtOf.getOrDefault(base) or sawSqrt
     if k in mostlyPacked:
       var packed, scalar = 0
       for base, n in packedOf: packed += n
@@ -188,6 +231,8 @@ proc checkBuild(mode: string) =
     else:
       for base, packed in packedOf:
         doAssert packed > 0, base & " has no packed SIMD instructions"
+        if k in sqrtPd:
+          doAssert sqrtOf.getOrDefault(base), base & " has no vsqrtpd"
     doAssert packedOf.len > 0, "no instance of " & k & " in the kernel build"
     echo "  ", k, ": ", packedOf.len, " instance(s) vectorized"
 

@@ -13,6 +13,8 @@
 ## magnitude tail was left unread, so the last bin was 0.
 ## `average_spectrogram` failed while `amplitudesFinite` always returned
 ## true: the NaN row was used, so 3 rows were used.
+## `float64_extreme_magnitude` failed while the magnitude was squared in
+## float64: constant 1e200 read Inf at bin 0 (reference 1e200).
 
 import std/[assertions, math, random]
 import processSEG
@@ -327,5 +329,78 @@ proc main*() =
           let got = amp[i * sg.bins + k]
           doAssert abs(got - want) < 1e-4 * max(1.0, abs(want)),
             $nfft & " frame " & $i & " bin " & $k & ": " & $got & " vs " & $want
+
+  block float64_extreme_magnitude:
+    # window = nfft = 16, one frame. Squares of 1e200 overflow; squares of
+    # 1e-200 flush. averageSpectrogramInto must keep the finite 1e200 row.
+    let sg = initSpectrogramPlan(float64, windowLen = 16, hop = 16, dtMs = 1.0,
+      samples = 16, nfft = 16)
+    doAssert sg.frames == 1 and sg.bins == 9
+    var ws = initWorkspace()
+    ws.reserve(sg.averageWorkspace)
+    for scale in [1e200, 1e-200]:
+      var x = newSeq[float64](16)
+      for j in 0 ..< 16: x[j] = scale
+      var amp = newSeq[float64](sg.bins)
+      sg.spectrogramInto(x, amp, ws)
+      let start = -8
+      var sw = 0.0
+      for j in 0 ..< 16:
+        if start + j in 0 ..< 16:
+          sw += sin(PI * float64(j + 1) / 17) ^ 2
+      for k in 0 ..< sg.bins:
+        var re, im = 0.0
+        for j in 0 ..< 16:
+          let c = start + j
+          if c notin 0 ..< 16: continue
+          let w = sin(PI * float64(j + 1) / 17) ^ 2
+          let ang = -2 * PI * float64(k * j) / 16
+          re += w * x[c] * cos(ang)
+          im += w * x[c] * sin(ang)
+        let side = if k == 0 or k == 8: 1.0 else: 2.0
+        let want = hypot(re, im) * side / sw
+        doAssert abs(amp[k] - want) < 1e-6 * max(abs(want), 1e-300),
+          $scale & " bin " & $k & ": " & $amp[k] & " vs " & $want
+      doAssert amp[0].classify == fcNormal and abs(amp[0] - scale) < 1e-6 * scale,
+        $scale & " amp[0] " & $amp[0]
+    var g = cmpGather[float64](0, newSeq[float64](1), 16, 1.0)
+    for j in 0 ..< 16: g.data[0, j] = 1e200
+    var avg = newSeq[float64](sg.bins)
+    let used = sg.averageSpectrogramInto(g.data, initChunkMeta(g.rows, 1.0), avg, ws)
+    doAssert used == 1, "extreme finite row dropped, used " & $used
+
+  block float64_nan_inf_classes:
+    # Class strings as commit 97632c5 (`hypot`), window 16, hop 8, 32 samples.
+    const expect = [
+      "NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN",
+      "INNNNNNNNINNNNNNNNINNNNNNNNINNNNNNNN",
+      "NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN",
+      "INNNNNNNIINNNNNNNIffffffffzffffffffz",
+      "NNNNNNNNNNNNNNNNNNffffffffzffffffffz"]
+    let sg = initSpectrogramPlan(float64, windowLen = 16, hop = 8, dtMs = 1.0,
+      samples = 32, nfft = 16)
+    var ws = initWorkspace()
+    ws.reserve(sg.workspaceSize)
+    var amp = newSeq[float64](sg.frames * sg.bins)
+    doAssert amp.len == 36
+    for kind, want in expect:
+      var x = newSeq[float64](32)
+      for j in 0 ..< 32:
+        x[j] = case kind
+          of 0: NaN
+          of 1: Inf
+          of 2: (if j mod 2 == 0: Inf else: NaN)
+          of 3: (if j == 0: Inf else: 1.0)
+          else: (if j == 3: NaN else: 0.5)
+      sg.spectrogramInto(x, amp, ws)
+      var got = ""
+      for a in amp:
+        got.add case a.classify
+          of fcNan: 'N'
+          of fcInf: 'I'
+          of fcNegInf: 'i'
+          of fcZero, fcNegZero: 'z'
+          else: 'f'
+      doAssert got == want, "kind " & $kind & " " & got
 
 when isMainModule: main()

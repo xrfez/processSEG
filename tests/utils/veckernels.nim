@@ -187,6 +187,25 @@ proc shiftOnce() =
   vec_shift_f32(x, 2.5, siLinear)
   vec_shift_f32(x, -2.5, siCubic)
 
+proc fkOnce() =
+  # modulusInto (fft/fk). Not generic: one call links it; both sample types
+  # share that kernel.
+  let plan = initFkPlan(float64, 2.0, traces = 4, samples = 8, taperFraction = 0.1)
+  var g = cmpGather[float64](0, newSeq[float64](4), 8, 2.0)
+  g.data[0, 0] = 1
+  var ws = initWorkspace()
+  ws.reserve(plan)
+  var amp = newSeq[float64](plan.nK * plan.nFreq)
+  discard plan.fkAmplitudeInto(g.data, initChunkMeta(g.rows, 2.0), 0, amp, ws)
+  let plan32 = initFkPlan(float32, 2.0, traces = 4, samples = 8)
+  var g32 = cmpGather[float32](0, newSeq[float64](4), 8, 2.0)
+  g32.data[0, 0] = 1
+  var ws32 = initWorkspace()
+  ws32.reserve(plan32)
+  var amp32 = newSeq[float64](plan32.nK * plan32.nFreq)
+  discard plan32.fkAmplitudeInto(g32.data, initChunkMeta(g32.rows, 2.0), 0, amp32, ws32)
+  echo amp[0], amp32[0]
+
 proc spectrogramOnce() =
   # laneMagnitude and amplitudesFinite (fft/spectrogram), both sample types.
   let sg = initSpectrogramPlan(float32, windowLen = 32, hop = 8, dtMs = 2.0,
@@ -216,6 +235,7 @@ proc spectrogramOnce() =
   echo amp[0], amp64[0]
 
 when isMainModule:
+  fkOnce()
   spectrogramOnce()
   signatureOnce()
   amplitudeOnce()

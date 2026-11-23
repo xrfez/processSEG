@@ -132,12 +132,43 @@ proc laneMagnitude(re, im: ptr UncheckedArray[float32],
     mag[i] = sqrt(r * r + m * m)
   {.pop.}
 
+func leavesFloat64Range(x: ptr UncheckedArray[float64], n: int): bool {.noinline,
+    raises: [].} =
+  ## A sample is NaN, infinite, a subnormal, below 1e-100 or above 1e140.
+  ## The sign bit is cleared first, so the bits compare as signed integers.
+  ## A value inside that range cannot overflow a square or flush one, even
+  ## after a frame's window and FFT (the gain cannot close that gap).
+  const
+    notSign = 0x7FFF_FFFF_FFFF_FFFF'i64
+    tinyBits = 0x2B2B_FF2E_E48E_0530'i64 # 1e-100
+    hugeBits = 0x5D00_CB70_D24B_7379'i64 # 1e140
+  var bad = 0'i64
+  {.push boundChecks: off, overflowChecks: off.}
+  for i in 0 ..< n:
+    let bits = cast[int64](x[i]) and notSign
+    let huge = int64(bits > hugeBits)
+    let tiny = int64(bits < tinyBits)
+    let nz = int64(bits != 0)
+    bad = bad or huge or (tiny and nz)
+  {.pop.}
+  bad != 0
+
 proc laneMagnitude(re, im: ptr UncheckedArray[float64],
     mag {.noalias.}: ptr UncheckedArray[float64], n: int) {.noinline, raises: [].} =
-  ## The float64 form of `laneMagnitude`.
+  ## The float64 form of `laneMagnitude`. No call and no branch, so the
+  ## square roots stay packed. A trace whose samples leave range takes
+  ## `hypotMagnitude`.
   {.push boundChecks: off, overflowChecks: off.}
   for i in 0 ..< n:
     mag[i] = sqrt(re[i] * re[i] + im[i] * im[i])
+  {.pop.}
+
+proc hypotMagnitude(re, im: ptr UncheckedArray[float64],
+    mag {.noalias.}: ptr UncheckedArray[float64], n: int) {.noinline, raises: [].} =
+  ## `mag[i] = hypot(re[i], im[i])` for a trace whose samples leave range.
+  {.push boundChecks: off, overflowChecks: off.}
+  for i in 0 ..< n:
+    mag[i] = hypot(re[i], im[i])
   {.pop.}
 
 func amplitudesFinite(x: ptr UncheckedArray[float64], n: int): bool {.noinline,
@@ -172,6 +203,10 @@ proc spectrogramInto*[T: SampleType](sg: SpectrogramPlan[T], x: openArray[T],
   let n = sg.fft.len
   let nb = sg.fft.bins
   let W = sg.window.len
+  let extreme = when T is float64:
+    x.len > 0 and leavesFloat64Range(cast[ptr UncheckedArray[float64]](addr x[0]), x.len)
+  else:
+    false
   let at = sg.fft.workspaceSize.elems(T)
   let buf = ws.scratch(T, fftLanes * (n + 2 * nb), at)
   let re = cast[ptr UncheckedArray[T]](addr buf[n * fftLanes])
@@ -198,11 +233,25 @@ proc spectrogramInto*[T: SampleType](sg: SpectrogramPlan[T], x: openArray[T],
     doAssert held >= fftLanes and count - held <= fftLanes
     doAssert (nb - 1) * fftLanes - 1 < held # bins before the last are in `mag`
     var tail: array[fftLanes, float64]
-    laneMagnitude(re, im, mag, held)
+    when T is float64:
+      if extreme: hypotMagnitude(re, im, mag, held)
+      else: laneMagnitude(re, im, mag, held)
+    else:
+      laneMagnitude(re, im, mag, held)
     if held < count:
-      laneMagnitude(cast[ptr UncheckedArray[T]](addr re[held]),
-        cast[ptr UncheckedArray[T]](addr im[held]),
-        cast[ptr UncheckedArray[float64]](addr tail[0]), count - held)
+      when T is float64:
+        if extreme:
+          hypotMagnitude(cast[ptr UncheckedArray[float64]](addr re[held]),
+            cast[ptr UncheckedArray[float64]](addr im[held]),
+            cast[ptr UncheckedArray[float64]](addr tail[0]), count - held)
+        else:
+          laneMagnitude(cast[ptr UncheckedArray[float64]](addr re[held]),
+            cast[ptr UncheckedArray[float64]](addr im[held]),
+            cast[ptr UncheckedArray[float64]](addr tail[0]), count - held)
+      else:
+        laneMagnitude(cast[ptr UncheckedArray[T]](addr re[held]),
+          cast[ptr UncheckedArray[T]](addr im[held]),
+          cast[ptr UncheckedArray[float64]](addr tail[0]), count - held)
     for l in 0 ..< used:
       let row = (first + l) * nb
       if not (sw[l] > 0):
