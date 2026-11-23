@@ -11,6 +11,8 @@
 ## float32 (`sqrt(re * re + im * im)` with no float64 cast): a 1e30 tone
 ## read Inf. `float32_magnitude_matches_a_direct_dft` failed while the
 ## magnitude tail was left unread, so the last bin was 0.
+## `average_spectrogram` failed while `amplitudesFinite` always returned
+## true: the NaN row was used, so 3 rows were used.
 
 import std/[assertions, math, random]
 import processSEG
@@ -168,6 +170,62 @@ proc main*() =
     let quiet = allocsIn:
       discard sg.averageSpectrogramInto(g.data, meta, amp, ws)
     doAssert quiet == 0
+
+  block average_nonfinite:
+    # Inf and -Inf in a covered sample drop that row, as a NaN does. A NaN
+    # or an Inf between frames does not: the check is the amplitudes, not
+    # every input sample. A subnormal row is finite and is used.
+    let sg = initSpectrogramPlan(float64, windowLen = 32, hop = 16, dtMs = 2.0,
+      samples = 128, nfft = 32)
+    let f = sg.binHz(4)
+    var ws = initWorkspace()
+    ws.reserve(sg.averageWorkspace)
+    var amp = newSeq[float64](sg.frames * sg.bins)
+    let mid = sg.frames div 2
+    for bad in [Inf, -Inf]:
+      var g = cmpGather[float64](0, newSeq[float64](2), 128, 2)
+      for r in 0 ..< 2:
+        for j in 0 ..< 128:
+          g.data[r, j] = cos(2 * PI * f * float64(j) * 2 / 1000) * 2
+      g.data[1, 20] = bad
+      let meta = initChunkMeta(g.rows, dtMs = 2)
+      let used = sg.averageSpectrogramInto(g.data, meta, amp, ws)
+      doAssert used == 1, $bad & " used " & $used
+      doAssert abs(amp[mid * sg.bins + 4] - 2.0) < 1e-3, $bad & " " &
+        $amp[mid * sg.bins + 4]
+    let sg32 = initSpectrogramPlan(float32, windowLen = 32, hop = 16,
+      dtMs = 2.0, samples = 128, nfft = 32)
+    var g32 = cmpGather[float32](0, newSeq[float64](2), 128, 2)
+    for r in 0 ..< 2:
+      for j in 0 ..< 128:
+        g32.data[r, j] = float32(cos(2 * PI * f * float64(j) * 2 / 1000) * 2)
+    g32.data[0, 20] = Inf
+    var ws32 = initWorkspace()
+    ws32.reserve(sg32.averageWorkspace)
+    let meta32 = initChunkMeta(g32.rows, dtMs = 2)
+    let used32 = sg32.averageSpectrogramInto(g32.data, meta32, amp, ws32)
+    doAssert used32 == 1, "float32 Inf used " & $used32
+    let gap = initSpectrogramPlan(float64, windowLen = 2, hop = 10, dtMs = 1.0,
+      samples = 40, nfft = 4)
+    var gg = cmpGather[float64](0, newSeq[float64](1), 40, 1)
+    for j in 0 ..< 40: gg.data[0, j] = 0.25
+    var wsg = initWorkspace()
+    wsg.reserve(gap.averageWorkspace)
+    var ag = newSeq[float64](gap.frames * gap.bins)
+    let mg = initChunkMeta(gg.rows, dtMs = 1)
+    for hole in [NaN, Inf, -Inf]:
+      gg.data[0, 5] = hole
+      let kept = gap.averageSpectrogramInto(gg.data, mg, ag, wsg)
+      doAssert kept == 1, "gap " & $hole & " used " & $kept
+    gg.data[0, 5] = 0.25
+    for covered in [NaN, Inf, -Inf]:
+      gg.data[0, 0] = covered
+      let dropped = gap.averageSpectrogramInto(gg.data, mg, ag, wsg)
+      doAssert dropped == 0, "covered " & $covered & " used " & $dropped
+    for j in 0 ..< 40: gg.data[0, j] = 1e-320
+    doAssert gap.averageSpectrogramInto(gg.data, mg, ag, wsg) == 1
+    for v in ag:
+      doAssert v.classify notin {fcNan, fcInf, fcNegInf}, $v
 
   block average_stop:
     # Fail-first: failed while the stop check was compiled out, seen 0.

@@ -140,6 +140,18 @@ proc laneMagnitude(re, im: ptr UncheckedArray[float64],
     mag[i] = sqrt(re[i] * re[i] + im[i] * im[i])
   {.pop.}
 
+func amplitudesFinite(x: ptr UncheckedArray[float64], n: int): bool {.noinline,
+    raises: [].} =
+  ## No NaN or infinity in `x[0 ..< n]`: none has every exponent bit set.
+  ## An OR of flags, the same rows `classify` dropped per value.
+  const expBits = 0x7FF0_0000_0000_0000'u64
+  var bad = 0'u64
+  {.push boundChecks: off, overflowChecks: off.}
+  for j in 0 ..< n:
+    bad = bad or typeof(bad)((cast[typeof(bad)](x[j]) and expBits) == expBits)
+  {.pop.}
+  bad == 0
+
 func workspaceSize*[T](sg: SpectrogramPlan[T]): WorkspaceSize {.raises: [].} =
   ## The scratch `spectrogramInto` needs.
   let extra = fftLanes * (sg.fft.len + 2 * sg.fft.bins)
@@ -261,14 +273,9 @@ proc averageSpectrogramInto*[T: SampleType](sg: SpectrogramPlan[T], b: RowBlock[
     if stop != nil and stop(): return Stopped
     let src = b.rowPtr(r)
     sg.spectrogramInto(src.toOpenArray(0, live - 1), tmp.toOpenArray(0, nb - 1), ws)
-    var finite = true
-    for k in 0 ..< nb:
-      if tmp[k].classify in {fcNan, fcInf, fcNegInf}:
-        finite = false
-        break
-    if not finite: continue
-    for k in 0 ..< nb: amp[k] += tmp[k] * tmp[k]
-    inc used
+    if amplitudesFinite(cast[ptr UncheckedArray[float64]](addr tmp[0]), nb):
+      for k in 0 ..< nb: amp[k] += tmp[k] * tmp[k]
+      inc used
   if used == 0: return 0
   let u = float64(used)
   for k in 0 ..< nb: amp[k] = sqrt(amp[k] / u)

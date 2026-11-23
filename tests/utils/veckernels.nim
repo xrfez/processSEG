@@ -188,23 +188,31 @@ proc shiftOnce() =
   vec_shift_f32(x, -2.5, siCubic)
 
 proc spectrogramOnce() =
-  # laneMagnitude (fft/spectrogram), both sample types.
+  # laneMagnitude and amplitudesFinite (fft/spectrogram), both sample types.
   let sg = initSpectrogramPlan(float32, windowLen = 32, hop = 8, dtMs = 2.0,
     samples = 64)
   var ws = initWorkspace()
-  ws.reserve(sg.workspaceSize)
+  ws.reserve(sg.averageWorkspace)
   var x = newSeq[float32](64)
   x[3] = 1
   var amp = newSeq[float64](sg.frames * sg.bins)
   sg.spectrogramInto(x, amp, ws)
+  var g = cmpGather[float32](0, newSeq[float64](2), 64, 2)
+  g.data[0, 3] = 1
+  let meta = initChunkMeta(g.rows, dtMs = 2.0)
+  discard sg.averageSpectrogramInto(g.data, meta, amp, ws)
   let sg64 = initSpectrogramPlan(float64, windowLen = 32, hop = 8, dtMs = 2.0,
     samples = 64)
   var ws64 = initWorkspace()
-  ws64.reserve(sg64.workspaceSize)
+  ws64.reserve(sg64.averageWorkspace)
   var y = newSeq[float64](64)
   y[3] = 1
   var amp64 = newSeq[float64](sg64.frames * sg64.bins)
   sg64.spectrogramInto(y, amp64, ws64)
+  var g64 = cmpGather[float64](0, newSeq[float64](2), 64, 2)
+  g64.data[0, 3] = 1
+  let meta64 = initChunkMeta(g64.rows, dtMs = 2.0)
+  discard sg64.averageSpectrogramInto(g64.data, meta64, amp64, ws64)
   echo amp[0], amp64[0]
 
 when isMainModule:

@@ -75,8 +75,10 @@ const
     # in the vibroseis modules that call it: `matchpeak` and `sweepedge`.
     ("rotateBins", "ZvibroseisZmatchpeak"), ("rotateBins", "ZvibroseisZsweepedge"),
     ("envelopeKernel", "ZfftZhilbert"),
-    # Spectrogram: unit-stride magnitudes (sqrt; -fno-math-errno there).
+    # Spectrogram: unit-stride magnitudes (sqrt; -fno-math-errno there),
+    # and one exponent-bit finite check per averaged row.
     ("laneMagnitude", "ZfftZspectrogram"),
+    ("amplitudesFinite", "ZfftZspectrogram"),
     ("addSample", "__vecsignature"),
     # A signal's spectrum times the reference's conjugate (crosscorrelate).
     ("crossKernel", "__vecsignature"),

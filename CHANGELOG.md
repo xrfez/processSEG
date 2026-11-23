@@ -3,6 +3,7 @@
 ## Unreleased
 
 - `fkAmplitudeInto`: the time FFTs run `fftLanes` traces at a time, and the modulus is a unit-stride `sqrt(re² + im²)` instead of `hypot` (last bits only; within 1e-6 of the panel peak).
+- `spectrogramInto` amplitudes are a packed float64 `sqrt(re² + im²)` instead of `hypot` per bin (last-bit differences only). `averageSpectrogramInto` drops a non-finite row with one exponent-bit check instead of `classify` per value.
 
 ## 0.12.0
 
