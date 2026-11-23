@@ -6,6 +6,10 @@
 ## Seen fail: `selectNth` swapped the pivot test (`a[i] < pivot` became
 ## `a[i] <= pivot`). `median_if_closer_contract` then died in `selectNth`
 ## (`index 4 not in 0 .. 3`) on four tied distances.
+##
+## Seen fail: `lineFit` left every weight at 1, or ran 1 reweighting round
+## instead of 40. `line_fit_reweights_outliers` then missed the
+## least-absolute-deviation line (intercept off by about 11 ms).
 
 import std/[algorithm, assertions, math, random]
 import processSEG
@@ -143,6 +147,23 @@ func medianSorted(xs: openArray[float64]): float64 =
   let h = s.len div 2
   if s.len mod 2 == 1: s[h] else: (s[h - 1] + s[h]) / 2
 
+func ladLine(x, t: openArray[float64]): tuple[a, s: float64] =
+  ## Least absolute deviations among rising lines through two of the points:
+  ## the line with the least sum of absolute residuals.
+  result = (NaN, NaN)
+  var best = Inf
+  for i in 0 ..< x.len:
+    for j in i + 1 ..< x.len:
+      if x[i] != x[j]:
+        let s = (t[j] - t[i]) / (x[j] - x[i])
+        if s > 0:
+          let a = t[i] - s * x[i]
+          var cost = 0.0
+          for k in 0 ..< x.len: cost += abs(t[k] - a - s * x[k])
+          if cost < best:
+            best = cost
+            result = (a, s)
+
 func closerSorted(dev: openArray[float64]; best: float64): float64 =
   ## `medianIfCloser` from its contract, the median taken by a full sort.
   result = Inf
@@ -270,6 +291,25 @@ proc main*() =
     doAssert skipped.ok and skipped.interceptMs == 10.0 and skipped.msPerUnit == 0.2
     let marked = lineFit(@[0.0, 10.0, 100.0], @[10.0, 999.0, 40.0], @[true, false, true])
     doAssert marked.ok and marked.interceptMs == 10.0 and marked.msPerUnit == 0.3
+
+  block line_fit_reweights_outliers:
+    ## 18 picks near `t = 15 + 0.25 x`, five of them 60 ms high. Within 0.05 ms
+    ## of intercept and 0.002 ms per unit of the least-absolute-deviation line.
+    let noise = [0.4, -1.1, 0.8, -0.3, 1.5, -0.7, 0.2, -1.4, 0.9, -0.5, 1.2,
+      -0.8, 0.1, 1.1, -1.3, 0.6, -0.2, 0.7]
+    var x = newSeq[float64](noise.len)
+    var t = newSeq[float64](noise.len)
+    var use = newSeq[bool](noise.len)
+    for i, n in noise:
+      x[i] = 12.0 * float64(i)
+      t[i] = 15.0 + 0.25 * x[i] + n
+      use[i] = true
+    for k in [2, 7, 9, 13, 16]: t[k] += 60.0
+    let fit = lineFit(x, t, use)
+    let lad = ladLine(x, t)
+    doAssert fit.ok
+    doAssert abs(fit.interceptMs - lad.a) < 0.05
+    doAssert abs(fit.msPerUnit - lad.s) < 0.002
 
   block keep_second_bounds:
     doAssert not keepSecond(MinSecondPicks - 1, 2.0, 1.0)
