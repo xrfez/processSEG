@@ -7,6 +7,8 @@
 ## failed when `matchOf` stored `top` instead of `min(top, 1.0)` (1.4 != 1.0).
 ## `rotation_edges` failed when `rotationOf` passed offset 0 instead of `offset`,
 ## and again when `rotationOfInto` did the same.
+## `peak_out_of_range` failed when `peakAt` read `y[i]` before the range guard
+## (IndexDefect, not ValueError) for empty, -1 and `len`.
 
 import std/[assertions, math, random]
 import processSEG
@@ -112,10 +114,16 @@ proc main*() =
     doAssert PreciseShiftPeakToSidelobe == srcPreciseShiftPeakToSidelobe
     doAssert PreciseShiftMatch == srcPreciseShiftMatch
 
-  block peak_ends_flat_and_parabola:
-    # Empty: the source indexes before the guard.
-    doAssertRaises IndexDefect:
+  block peak_out_of_range:
+    # Empty, -1 and len are outside 0 ..< y.len: ValueError, not IndexDefect.
+    doAssertRaises ValueError:
       discard peakAt(newSeq[float64](), 0)
+    doAssertRaises ValueError:
+      discard peakAt(@[0.4, 0.9], -1)
+    doAssertRaises ValueError:
+      discard peakAt(@[0.4, 0.9], 2)
+
+  block peak_ends_flat_and_parabola:
     # One sample, and a peak at either end: the sample itself.
     doAssert peakAt(@[0.4], 0) == (0.0, 0.4)
     let ends = @[0.2, 0.9, 0.3]

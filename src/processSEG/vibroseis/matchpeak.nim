@@ -73,11 +73,14 @@ type
 proc badParams(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
 
-func peakAt*(y: openArray[float64], i: int): tuple[offset, value: float64] {.raises: [].} =
+proc peakAt*(y: openArray[float64], i: int): tuple[offset, value: float64] =
   ## The vertex of the parabola through `y[i-1]`, `y[i]`, `y[i+1]` (`i` a
   ## maximum inside the array): its place in samples from `i` (within half a
   ## sample) and its height. A flat or noisy top (no downward curve) is the
   ## sample itself. An `i` at either end is that sample, at offset 0.
+  ## Raises `ValueError` when `i` is outside `0 ..< y.len` (an empty `y` too).
+  if i notin 0 ..< y.len:
+    badParams("peakAt: index " & $i & " of " & $y.len)
   result = (0.0, y[i])
   if i < 1 or i + 1 >= y.len: return
   let den = y[i - 1] - 2 * y[i] + y[i + 1]
