@@ -14,7 +14,10 @@
 ## `average_spectrogram` failed while `amplitudesFinite` always returned
 ## true: the NaN row was used, so 3 rows were used.
 ## `float64_extreme_magnitude` failed while the magnitude was squared in
-## float64: constant 1e200 read Inf at bin 0 (reference 1e200).
+## float64: constant 1e200 read Inf at bin 0 (reference 1e200). It failed
+## again while an extreme float64 row was squared into the average: rows
+## 1e200 and 1.0 used 2 and the average was Inf, and a single 1e200 row
+## was counted.
 
 import std/[assertions, math, random]
 import processSEG
@@ -174,9 +177,10 @@ proc main*() =
     doAssert quiet == 0
 
   block average_nonfinite:
-    # Inf and -Inf in a covered sample drop that row, as a NaN does. A NaN
-    # or an Inf between frames does not: the check is the amplitudes, not
-    # every input sample. A subnormal row is finite and is used.
+    # Inf and -Inf in a covered sample drop that row, as a NaN does.
+    # Fail-first: a float64 NaN or Inf between frames was kept, and a
+    # subnormal row was used, because only the amplitudes were checked.
+    # The live input samples are checked now, so both are left out.
     let sg = initSpectrogramPlan(float64, windowLen = 32, hop = 16, dtMs = 2.0,
       samples = 128, nfft = 32)
     let f = sg.binHz(4)
@@ -217,17 +221,17 @@ proc main*() =
     let mg = initChunkMeta(gg.rows, dtMs = 1)
     for hole in [NaN, Inf, -Inf]:
       gg.data[0, 5] = hole
-      let kept = gap.averageSpectrogramInto(gg.data, mg, ag, wsg)
-      doAssert kept == 1, "gap " & $hole & " used " & $kept
+      let droppedGap = gap.averageSpectrogramInto(gg.data, mg, ag, wsg)
+      doAssert droppedGap == 0, "gap " & $hole & " used " & $droppedGap
+      for v in ag: doAssert v == 0.0, "gap " & $hole & " amp " & $v
     gg.data[0, 5] = 0.25
     for covered in [NaN, Inf, -Inf]:
       gg.data[0, 0] = covered
       let dropped = gap.averageSpectrogramInto(gg.data, mg, ag, wsg)
       doAssert dropped == 0, "covered " & $covered & " used " & $dropped
     for j in 0 ..< 40: gg.data[0, j] = 1e-320
-    doAssert gap.averageSpectrogramInto(gg.data, mg, ag, wsg) == 1
-    for v in ag:
-      doAssert v.classify notin {fcNan, fcInf, fcNegInf}, $v
+    doAssert gap.averageSpectrogramInto(gg.data, mg, ag, wsg) == 0
+    for v in ag: doAssert v == 0.0, "subnormal amp " & $v
 
   block average_stop:
     # Fail-first: failed while the stop check was compiled out, seen 0.
@@ -331,8 +335,11 @@ proc main*() =
             $nfft & " frame " & $i & " bin " & $k & ": " & $got & " vs " & $want
 
   block float64_extreme_magnitude:
+    # Fail-first: an extreme float64 row was squared into the average.
+    # Rows [1e200, 1.0] used 2 and the average was Inf; [1e-200, 1.0] used
+    # 2 and the tiny row flushed to 0; a single 1e200 row was counted.
     # window = nfft = 16, one frame. Squares of 1e200 overflow; squares of
-    # 1e-200 flush. averageSpectrogramInto must keep the finite 1e200 row.
+    # 1e-200 flush. spectrogramInto still measures them with hypot.
     let sg = initSpectrogramPlan(float64, windowLen = 16, hop = 16, dtMs = 1.0,
       samples = 16, nfft = 16)
     doAssert sg.frames == 1 and sg.bins == 9
@@ -363,11 +370,67 @@ proc main*() =
           $scale & " bin " & $k & ": " & $amp[k] & " vs " & $want
       doAssert amp[0].classify == fcNormal and abs(amp[0] - scale) < 1e-6 * scale,
         $scale & " amp[0] " & $amp[0]
-    var g = cmpGather[float64](0, newSeq[float64](1), 16, 1.0)
-    for j in 0 ..< 16: g.data[0, j] = 1e200
-    var avg = newSeq[float64](sg.bins)
-    let used = sg.averageSpectrogramInto(g.data, initChunkMeta(g.rows, 1.0), avg, ws)
-    doAssert used == 1, "extreme finite row dropped, used " & $used
+    proc spectrum(scale: float64): seq[float64] =
+      var x = newSeq[float64](16)
+      for j in 0 ..< 16: x[j] = scale
+      result = newSeq[float64](sg.bins)
+      sg.spectrogramInto(x, result, ws)
+    proc averaged(scale: float64): tuple[used: int, amp: seq[float64]] =
+      var g = cmpGather[float64](0, newSeq[float64](1), 16, 1.0)
+      for j in 0 ..< 16: g.data[0, j] = scale
+      result.amp = newSeq[float64](sg.bins)
+      for v in result.amp.mitems: v = 7.0
+      result.used = sg.averageSpectrogramInto(g.data, initChunkMeta(g.rows, 1.0),
+        result.amp, ws)
+    let one = spectrum(1.0)
+    for bad in [1e200, 1e-200]:
+      var g = cmpGather[float64](0, newSeq[float64](2), 16, 1.0)
+      for j in 0 ..< 16:
+        g.data[0, j] = bad
+        g.data[1, j] = 1.0
+      var avg = newSeq[float64](sg.bins)
+      let used = sg.averageSpectrogramInto(g.data, initChunkMeta(g.rows, 1.0), avg, ws)
+      doAssert used == 1, $bad & " used " & $used
+      doAssert avg == one, $bad & " average is not the 1.0 spectrogram"
+    let dropped = averaged(1e200)
+    doAssert dropped.used == 0, "single 1e200 used " & $dropped.used
+    for v in dropped.amp: doAssert v == 0.0, "all-dropped amp " & $v
+    for scale in [1e140, 1e-100]:
+      let want = spectrum(scale)
+      let got = averaged(scale)
+      doAssert got.used == 1, $scale & " used " & $got.used
+      for k in 0 ..< sg.bins:
+        let tol = 1e-12 * max(abs(want[k]), 1e-300)
+        doAssert abs(got.amp[k] - want[k]) <= tol,
+          $scale & " bin " & $k & ": " & $got.amp[k] & " vs " & $want[k]
+    let zero = averaged(0.0)
+    doAssert zero.used == 1, "zero row used " & $zero.used
+    doAssert zero.amp == spectrum(0.0)
+
+  block float32_average_bits:
+    # Parent commit 44c73f8, FNV-1a of the float64 bits. float32 must stay
+    # the same bits: the range check is float64 only.
+    proc checksum(amp: openArray[float64]): uint64 =
+      result = 0xcbf29ce484222325'u64
+      for v in amp:
+        result = (result xor cast[uint64](v)) * 0x100000001b3'u64
+    let sg = initSpectrogramPlan(float32, windowLen = 32, hop = 16, dtMs = 2.0,
+      samples = 128, nfft = 32)
+    var g = cmpGather[float32](0, newSeq[float64](3), 128, 2.0)
+    let f = sg.binHz(4)
+    for r in 0 ..< 3:
+      for j in 0 ..< 128:
+        g.data[r, j] = float32(cos(2 * PI * f * float64(j) * 2 / 1000) *
+          float64(r + 1))
+    var ws = initWorkspace()
+    ws.reserve(sg.averageWorkspace)
+    var amp = newSeq[float64](sg.frames * sg.bins)
+    let meta = initChunkMeta(g.rows, 2.0)
+    doAssert sg.averageSpectrogramInto(g.data, meta, amp, ws) == 3
+    doAssert checksum(amp) == 0x1473953EDF002EB2'u64, $checksum(amp)
+    g.data[1, 20] = Inf
+    doAssert sg.averageSpectrogramInto(g.data, meta, amp, ws) == 2
+    doAssert checksum(amp) == 0xA05F6A671BF1BB29'u64, $checksum(amp)
 
   block float64_nan_inf_classes:
     # Class strings as commit 97632c5 (`hypot`), window 16, hop 8, 32 samples.

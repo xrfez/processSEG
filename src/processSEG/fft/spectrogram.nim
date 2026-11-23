@@ -268,6 +268,18 @@ proc spectrogramInto*[T: SampleType](sg: SpectrogramPlan[T], x: openArray[T],
         else: amp[row + nb - 1] = tail[last - held] * lastSide
     first += used
 
+func averagedRow[T: SampleType](x: ptr UncheckedArray[T], n: int): bool {.inline,
+    raises: [].} =
+  ## True when these input samples enter the power average. A float64 row
+  ## that `leavesFloat64Range` flags is left out (not summed, not counted,
+  ## no FFT): a NaN, an infinity, a subnormal, or a nonzero sample below
+  ## 1e-100 or above 1e140. A float32 row is kept here; a non-finite
+  ## spectrogram is still dropped afterwards.
+  when T is float64:
+    n <= 0 or not leavesFloat64Range(cast[ptr UncheckedArray[float64]](x), n)
+  else:
+    true
+
 func averageWorkspace*[T](sg: SpectrogramPlan[T]): WorkspaceSize {.raises: [].} =
   ## The scratch `averageSpectrogramInto` needs: the plan's, plus one frame
   ## of amplitudes.
@@ -280,8 +292,11 @@ proc averageSpectrogramInto*[T: SampleType](sg: SpectrogramPlan[T], b: RowBlock[
   ## The power average of `spectrogramInto` over the live rows of `b` in
   ## `rows` (clipped to the block), into `amp` (`frames·bins` values, the
   ## same layout). A sinusoid of amplitude A on a bin reads A, as one trace
-  ## does. A row whose spectrogram holds a NaN or an infinity is left out, as
-  ## is a row that is not live or has no live sample. Returns the rows used;
+  ## does. A float64 row whose live input samples leave the safe range (a
+  ## NaN, an infinity, a subnormal, or a nonzero sample below 1e-100 or
+  ## above 1e140) is left out before the transform, as is a row whose
+  ## spectrogram holds a NaN or an infinity, a row that is not live, or a
+  ## row with no live sample. Returns the rows used;
   ## with none, `amp` is all zero. `stop` (nil: never) is asked once per live
   ## row that has a sample, never per sample; true abandons the job and
   ## returns `Stopped`, and `amp` is then unspecified. The plan is unchanged
@@ -321,10 +336,11 @@ proc averageSpectrogramInto*[T: SampleType](sg: SpectrogramPlan[T], b: RowBlock[
         $sg.samples)
     if stop != nil and stop(): return Stopped
     let src = b.rowPtr(r)
-    sg.spectrogramInto(src.toOpenArray(0, live - 1), tmp.toOpenArray(0, nb - 1), ws)
-    if amplitudesFinite(cast[ptr UncheckedArray[float64]](addr tmp[0]), nb):
-      for k in 0 ..< nb: amp[k] += tmp[k] * tmp[k]
-      inc used
+    if averagedRow(src, live):
+      sg.spectrogramInto(src.toOpenArray(0, live - 1), tmp.toOpenArray(0, nb - 1), ws)
+      if amplitudesFinite(cast[ptr UncheckedArray[float64]](addr tmp[0]), nb):
+        for k in 0 ..< nb: amp[k] += tmp[k] * tmp[k]
+        inc used
   if used == 0: return 0
   let u = float64(used)
   for k in 0 ..< nb: amp[k] = sqrt(amp[k] / u)

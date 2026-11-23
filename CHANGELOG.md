@@ -3,7 +3,7 @@
 ## Unreleased
 
 - `fkAmplitudeInto`: the time FFTs run `fftLanes` traces at a time, and the modulus is a unit-stride `sqrt(re² + im²)` (within 1e-6 of the panel peak). A float64 window with a NaN, an infinity, a subnormal, or a sample below 1e-100 or above 1e140 is measured with `hypot`, so extreme values stay finite and accurate.
-- `spectrogramInto` amplitudes are a packed float64 `sqrt(re² + im²)` per bin (within 1e-6 of the frame peak on values in range). A float64 trace with a NaN, an infinity, a subnormal, or a sample below 1e-100 or above 1e140 is measured with `hypot`. `averageSpectrogramInto` drops a non-finite row with one exponent-bit check instead of `classify` per value.
+- `spectrogramInto` amplitudes are a packed float64 `sqrt(re² + im²)` per bin (within 1e-6 of the frame peak on values in range). A float64 trace with a NaN, an infinity, a subnormal, or a sample below 1e-100 or above 1e140 is measured with `hypot`. `averageSpectrogramInto` leaves out a float64 row that leaves that range (a NaN, an infinity, a subnormal, or a nonzero sample below 1e-100 or above 1e140: not summed, not counted, no FFT) and still drops a non-finite row with one exponent-bit check instead of `classify` per value.
 - `placedSinc`: interior samples are summed one tap across a block of outputs, so the loop vectorizes (about 4× on an 8000-sample trace). The sum stays tap order: float32 results are the same bits; float64 interiors of an optimised build differ from 0.12.0 by up to about 10 units in the last place (a fused multiply-add where it multiplied and added), and a float64 debug build differs from an optimised one by the same amount.
 
 ## 0.12.0
