@@ -245,10 +245,10 @@ auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guid
 | Proc | What |
 |---|---|
 | `FkAxes` (`nFreq`, `nK`, `dfHz`, `dkPerTrace`); `FkPlan[T]`; `initFkPlan(T, dtMs, traces, samples, taperFraction = 0.1)` | f-k of `traces` live rows by `samples` columns. Tukey both axes. Time padded to `nextFastLen(samples)`, traces to `nextFastLen(2·traces)`. `ValueError` for fewer than 4 traces, fewer than 8 samples, a bad `dtMs` or taper. |
-| `plan.axes`, `plan.nFreq`, `plan.nK`, `plan.dfHz`, `plan.dkPerTrace`, `plan.traces`, `plan.samples`, `plan.dtMs`, `plan.workspaceSize` | Axes (zero k at `nK div 2`, positive k is later on later traces) and scratch. `dkPerTrace` is cycles per trace; cycles/km stay in the viewer. |
+| `plan.axes`, `plan.nFreq`, `plan.nK`, `plan.dfHz`, `plan.dkPerTrace`, `plan.traces`, `plan.samples`, `plan.dtMs`, `plan.workspaceSize` | Axes (zero k at `nK div 2`, positive k is later on later traces) and scratch (piece buffers, the shared spectrum `2·traces·nFreq`, and the live-row indices; the float32 f64 region grows by that list, and the total can also be smaller than before). `dkPerTrace` is cycles per trace; cycles/km stay in the viewer. |
 | `fkRows(meta, cols, firstCol, nCols, rows = 0 .. high(int)): int` | Live rows that enter the window: the `traces` to build the plan for. |
 | `plan.fkAmplitudeInto(b \| samples, meta, firstCol, amp, ws, rows = 0 .. high(int), stop: StopCheck = nil): int` | Unscaled modulus, `nK·nFreq`, frequency fastest. Returns the live rows used, or `Stopped` when `stop` said to abandon (`amp` then unspecified). Checked once per trace that enters and once per frequency of the spatial pass; nil never stops. The plan and the workspace stay usable. `ValueError` when the live count is not the plan's. A wrong `amp` length is an `AssertionDefect` (every other Into kernel), not the `ValueError` the audit suggested. The pool form is `fkAmplitudeInto(pool, plan, ...)` (no workspace, no stop). |
-| `fkPoolScratch(plan)`; `fkLeavesRange(b, meta, firstCol, nSamples, rows)`; `fkTimeRun(...)`; `fkFreqRun(...)` | The pieces `ProcessPool.fkAmplitudeInto` calls. Not a second way to run the transform. |
+| `fkPoolScratch(plan)`; `fkLeavesRange(b, meta, firstCol, nSamples, rows)`; `fkTimeRun(...)`; `fkFreqRun(...)` | The pieces both `fkAmplitudeInto` forms call. Not a second way to run the transform. |
 
 ## filter/design: `FilterSpec`
 

@@ -142,17 +142,23 @@ func fftScratch[T](p: FkPlan[T]): WorkspaceSize {.inline.} =
   ## trace. Whichever scratch is larger.
   max(p.timeFft.workspaceSize, p.spaceFft.workspaceSize(batched = false))
 
-func panelScratch[T](p: FkPlan[T]): int {.inline.} =
-  ## Lane buffer, stored spectra and the spatial pass, in elements of `T`.
-  fftLanes * (p.timeFft.len + 2 * p.timeFft.bins) + p.traces * p.timeFft.bins * 2 +
-    2 * p.spaceFft.len + 4 * p.spaceFft.bins
+func fkPoolScratch*[T: SampleType](p: FkPlan[T]): WorkspaceSize {.raises: [].}
 
 func workspaceSize*[T](p: FkPlan[T]): WorkspaceSize {.raises: [].} =
-  ## The scratch `fkAmplitudeInto` needs.
-  result = fftScratch(p)
-  when T is float32: result.f32 += panelScratch(p)
-  else: result.f64 += panelScratch(p)
-  result.f64 += 3 * p.spaceFft.len # unit-stride re, im and modulus
+  ## The scratch `fkAmplitudeInto` needs: the piece scratch, the shared
+  ## spectrum (`2·traces·nFreq` of `T`, after every buffer the time and
+  ## spatial passes write) and the live-row index list (`traces` ints).
+  ## The spectrum is not overlaid on the old serial panel: `fkFreqRun`
+  ## places its spatial buffers at `spaceFft.workspaceSize`, which overlaps
+  ## that panel. The float32 f64 region grows by the index list; dropping
+  ## the old panel can also make the total smaller.
+  result = fkPoolScratch(p)
+  let spec = 2 * p.traces * p.timeFft.bins
+  when T is float32: result.f32 += spec
+  else: result.f64 += spec
+  when sizeof(int) == 8: result.f64 += p.traces
+  elif sizeof(int) == 4: result.u32 += p.traces
+  else: {.error: "int must be 4 or 8 bytes".}
 
 func leavesFloat64Range(x: ptr UncheckedArray[float64], n: int): bool {.inline,
     raises: [].} =
@@ -206,148 +212,11 @@ proc fkRows*(meta: ChunkMeta, cols, firstCol, nCols: int, rows = 0 .. int.high):
   for r in lo .. hi:
     if meta.isLive(r) and meta.liveSamples(r, cols) > firstCol: inc result
 
-proc fkAmplitudeInto*[T: SampleType](p: FkPlan[T], b: RowBlock[T], meta: ChunkMeta,
-    firstCol: int, amp: var openArray[float64], ws: var Workspace,
-    rows = 0 .. int.high, stop: StopCheck = nil): int =
-  ## The f-k modulus of the window `firstCol ..< firstCol + samples` into
-  ## `amp` (`nK·nFreq` values, frequency fastest, unscaled). Returns the live
-  ## rows used. `stop` (nil: never) is asked once per trace that enters and
-  ## once per frequency of the spatial pass, never per sample; true abandons
-  ## the job and returns `Stopped`, and `amp` is then unspecified. The plan
-  ## is unchanged and the workspace stays usable. Raises `ValueError`
-  ## when `b` does not match `meta`, the interval is not the plan's,
-  ## `firstCol` is negative, or the live rows in the window are not `traces`
-  ## (build the plan for `fkRows`). An `amp` of another length is an
-  ## `AssertionDefect`; a short workspace is an `IndexDefect`. Nothing
-  ## allocates.
-  ##
-  ## A wrong `amp` length is an `AssertionDefect`, not the `ValueError` the
-  ## viewer audit suggested: every other Into kernel treats a short buffer
-  ## as a defect, and a `ValueError` there would be the odd one out.
-  meta.checkShape(b)
-  if not sameInterval(meta.dtMs, p.dtMs):
-    badFk("the rows' interval " & $meta.dtMs & " ms is not the plan's " &
-      $(p.dtMs) & " ms")
-  if firstCol < 0: badFk("firstCol must be ≥ 0, got " & $firstCol)
-  let nFreq = p.timeFft.bins
-  let nK = p.spaceFft.len
-  doAssert amp.len == nK * nFreq, "amp needs nK·nFreq values"
-  doAssert ws.fits(p.workspaceSize), "reserve the plan's workspaceSize first"
-  let entered = fkRows(meta, b.cols, firstCol, p.samples, rows)
-  if entered != p.traces:
-    badFk("the window has " & $entered & " live rows, the plan was built for " &
-      $p.traces)
-  let nTime = p.timeFft.len
-  let sBins = p.spaceFft.bins
-  let at = fftScratch(p).elems(T)
-  let buf = ws.scratch(T, panelScratch(p), at)
-  var o = 0
-  template take(n: int): ptr UncheckedArray[T] =
-    let p = cast[ptr UncheckedArray[T]](addr buf[o])
-    o += n
-    p
-  let laneX = take(nTime * fftLanes)
-  let laneRe = take(nFreq * fftLanes)
-  let laneIm = take(nFreq * fftLanes)
-  let specRe = take(p.traces * nFreq)
-  let specIm = take(p.traces * nFreq)
-  let spatA = take(nK)
-  let spatB = take(nK)
-  let ar = take(sBins)
-  let ai = take(sBins)
-  let br = take(sBins)
-  let bi = take(sBins)
-  let magAt = when T is float32: 0 else: at + panelScratch(p)
-  let re64 = ws.scratch(float64, nK, magAt)
-  let im64 = ws.scratch(float64, nK, magAt + nK)
-  let mag = ws.scratch(float64, nK, magAt + 2 * nK)
-  let lo = max(rows.a, 0)
-  let hi = min(rows.b, b.len - 1)
-  when T is float64:
-    var extreme = false
-  var t = 0
-  var lane = 0
-  template flushTime() =
-    if lane > 0:
-      p.timeFft.forwardLanes(laneX.toOpenArray(0, nTime * fftLanes - 1),
-        laneRe.toOpenArray(0, nFreq * fftLanes - 1),
-        laneIm.toOpenArray(0, nFreq * fftLanes - 1), ws)
-      let base = t - lane
-      for l in 0 ..< lane:
-        let ti = base + l
-        for k in 0 ..< nFreq:
-          specRe[ti * nFreq + k] = laneRe[k * fftLanes + l]
-          specIm[ti * nFreq + k] = laneIm[k * fftLanes + l]
-      lane = 0
-  for r in lo .. hi:
-    if not meta.isLive(r): continue
-    let live = meta.liveSamples(r, b.cols)
-    if live <= firstCol: continue
-    if stop != nil and stop(): return Stopped
-    let src = b.rowPtr(r)
-    let last = min(live, firstCol + p.samples)
-    when T is float64:
-      if not extreme and leavesFloat64Range(cast[ptr UncheckedArray[float64]](
-          addr src[firstCol]), last - firstCol):
-        extreme = true
-    let tw = p.traceW[t]
-    if lane == 0: zeroMem(laneX, nTime * fftLanes * sizeof(T))
-    {.push boundChecks: off.}
-    for j in 0 ..< last - firstCol:
-      laneX[j * fftLanes + lane] = src[firstCol + j] * p.timeW[j] * tw
-    {.pop.}
-    inc lane
-    inc t
-    if lane == fftLanes: flushTime()
-  flushTime()
-  let half = nK div 2
-  for jf in 0 ..< nFreq:
-    if stop != nil and stop(): return Stopped
-    zeroMem(spatA, nK * sizeof(T))
-    zeroMem(spatB, nK * sizeof(T))
-    for t in 0 ..< p.traces:
-      spatA[t] = specRe[t * nFreq + jf]
-      spatB[t] = specIm[t * nFreq + jf]
-    p.spaceFft.forward(spatA.toOpenArray(0, nK - 1), ar.toOpenArray(0, sBins - 1),
-      ai.toOpenArray(0, sBins - 1), ws)
-    p.spaceFft.forward(spatB.toOpenArray(0, nK - 1), br.toOpenArray(0, sBins - 1),
-      bi.toOpenArray(0, sBins - 1), ws)
-    # Full complex DFT of a + i·b, then flipped so later-on-later is +k.
-    # Output index ik reads standard bin (nK/2 − ik), wrapped into 0 ..< nK.
-    # The fold is indexed; the modulus is a unit-stride loop so it packs.
-    for ik in 0 ..< nK:
-      let raw = half - ik
-      let sk = if raw >= 0: raw else: raw + nK
-      if sk <= half:
-        re64[ik] = float64(ar[sk]) - float64(bi[sk])
-        im64[ik] = float64(ai[sk]) + float64(br[sk])
-      else:
-        let k = nK - sk
-        re64[ik] = float64(ar[k]) + float64(bi[k])
-        im64[ik] = float64(br[k]) - float64(ai[k])
-    when T is float64:
-      if extreme: hypotModulus(re64, im64, mag, nK)
-      else: modulusInto(re64, im64, mag, nK)
-    else:
-      modulusInto(re64, im64, mag, nK)
-    for ik in 0 ..< nK:
-      amp[ik * nFreq + jf] = mag[ik]
-  entered
-
-proc fkAmplitudeInto*[T: SampleType](p: FkPlan[T], samples: Tensor[T],
-    meta: ChunkMeta, firstCol: int, amp: var openArray[float64],
-    ws: var Workspace, rows = 0 .. int.high, stop: StopCheck = nil): int =
-  ## `fkAmplitudeInto` on a `[rows, cols]` tensor. Returns the live rows
-  ## used, or `Stopped` when `stop` abandons (`amp` then unspecified). The
-  ## plan and the workspace stay usable.
-  meta.checkShape(samples)
-  p.fkAmplitudeInto(rowBlock(samples), meta, firstCol, amp, ws, rows, stop)
-
-# --------------------------------------------------------- pool pieces --
+# --------------------------------------------------------- shared pieces --
 #
-# `ProcessPool.fkAmplitudeInto` calls these. The serial body above is left
-# as it is, so its speed does not change; the pieces repeat its lane and
-# modulus steps so the bits stay the same.
+# Both `fkAmplitudeInto` forms call these. The serial spectrum is not placed
+# on the old panel: `fkFreqRun` puts its spatial buffers at
+# `spaceFft.workspaceSize`, which overlaps that panel.
 
 func timeLaneAt[T](p: FkPlan[T]): int {.inline.} =
   fftScratch(p).elems(T)
@@ -365,10 +234,31 @@ func modulusAt[T](p: FkPlan[T]): int {.inline.} =
   when T is float32: 0
   else: freqBufAt(p) + freqBufElems(p)
 
+func specAt[T](p: FkPlan[T]): int {.inline.} =
+  ## Shared spectrum, after every buffer the time and spatial passes write.
+  when T is float32: fkPoolScratch(p).f32
+  else: fkPoolScratch(p).f64
+
+func liveAt[T](p: FkPlan[T]): int {.inline.} =
+  ## Live-row indices, int-sized slots the serial form fills before the runs.
+  when sizeof(int) == 8:
+    when T is float32: fkPoolScratch(p).f64
+    else: specAt(p) + 2 * p.traces * p.timeFft.bins
+  else:
+    0
+
+proc liveIndices[T](p: FkPlan[T], ws: var Workspace): ptr UncheckedArray[int] =
+  when sizeof(int) == 8:
+    cast[ptr UncheckedArray[int]](ws.scratch(float64, p.traces, liveAt(p)))
+  elif sizeof(int) == 4:
+    cast[ptr UncheckedArray[int]](ws.scratch(uint32, p.traces, 0))
+  else:
+    {.error: "int must be 4 or 8 bytes".}
+
 func fkPoolScratch*[T: SampleType](p: FkPlan[T]): WorkspaceSize {.raises: [].} =
   ## Scratch one worker of `ProcessPool.fkAmplitudeInto` reserves: the time
   ## lanes or the spatial pass, plus the float64 modulus buffers. Not the
-  ## shared spectrum panel. For the pool.
+  ## shared spectrum. The serial `workspaceSize` adds that spectrum after this.
   let pass1 = timeLaneAt(p) + timeLaneElems(p)
   let pass2 = freqBufAt(p) + freqBufElems(p)
   let nK = p.spaceFft.len
@@ -381,8 +271,8 @@ func fkLeavesRange*[T: SampleType](b: RowBlock[T], meta: ChunkMeta, firstCol,
     nSamples: int, rows: Slice[int]): bool {.raises: [].} =
   ## True when a float64 sample that enters the window leaves the range
   ## `fkAmplitudeInto` measures with `hypot`. False for float32, and for a
-  ## window whose samples stay in range. The pool decides this once, on the
-  ## caller, before its jobs, over the same samples the serial form scans.
+  ## window whose samples stay in range. Both forms decide this once, before
+  ## the runs, over the samples that enter.
   when T is float64:
     let lo = max(rows.a, 0)
     let hi = min(rows.b, b.len - 1)
@@ -400,7 +290,8 @@ func fkLeavesRange*[T: SampleType](b: RowBlock[T], meta: ChunkMeta, firstCol,
 proc fkTimeRun*[T: SampleType](p: FkPlan[T], b: RowBlock[T], meta: ChunkMeta,
     firstCol: int, live: ptr UncheckedArray[int], firstTrace, count: int,
     specRe, specIm: ptr UncheckedArray[T], ws: var Workspace) {.raises: [].} =
-  ## One run of the time pass, for `ProcessPool.fkAmplitudeInto`. Traces
+  ## One run of the time pass. The serial form calls it in groups of
+  ## `fftLanes`; the pool splits those groups across workers. Traces
   ## `firstTrace ..< firstTrace + count` of `live` (row indices of traces
   ## that enter, in order) go into the shared spectrum, trace-major.
   ## `firstTrace` is a multiple of `fftLanes`. A short tail is zero-padded
@@ -447,7 +338,8 @@ proc fkTimeRun*[T: SampleType](p: FkPlan[T], b: RowBlock[T], meta: ChunkMeta,
 proc fkFreqRun*[T: SampleType](p: FkPlan[T], specRe, specIm: ptr UncheckedArray[T],
     firstFreq, count: int, amp: ptr UncheckedArray[float64], extreme: bool,
     ws: var Workspace) {.raises: [].} =
-  ## One run of the spatial pass, for `ProcessPool.fkAmplitudeInto`.
+  ## One run of the spatial pass. The serial form calls it once, for every
+  ## frequency; the pool splits frequencies across workers.
   ## Frequencies `firstFreq ..< firstFreq + count` of the shared spectrum,
   ## then the modulus into `amp` (frequency fastest). `extreme` is the
   ## window's float64 `hypot` decision, already made for the whole window.
@@ -502,3 +394,68 @@ proc fkFreqRun*[T: SampleType](p: FkPlan[T], specRe, specIm: ptr UncheckedArray[
       modulusInto(re64, im64, mag, nK)
     for ik in 0 ..< nK:
       amp[ik * nFreq + jf] = mag[ik]
+
+proc fkAmplitudeInto*[T: SampleType](p: FkPlan[T], b: RowBlock[T], meta: ChunkMeta,
+    firstCol: int, amp: var openArray[float64], ws: var Workspace,
+    rows = 0 .. int.high, stop: StopCheck = nil): int =
+  ## The f-k modulus of the window `firstCol ..< firstCol + samples` into
+  ## `amp` (`nK·nFreq` values, frequency fastest, unscaled). Returns the live
+  ## rows used. `stop` (nil: never) is asked once per trace that enters and
+  ## once per frequency of the spatial pass, never per sample; true abandons
+  ## the job and returns `Stopped`, and `amp` is then unspecified. The plan
+  ## is unchanged and the workspace stays usable. Raises `ValueError`
+  ## when `b` does not match `meta`, the interval is not the plan's,
+  ## `firstCol` is negative, or the live rows in the window are not `traces`
+  ## (build the plan for `fkRows`). An `amp` of another length is an
+  ## `AssertionDefect`; a short workspace is an `IndexDefect`. Nothing
+  ## allocates.
+  ##
+  ## A wrong `amp` length is an `AssertionDefect`, not the `ValueError` the
+  ## viewer audit suggested: every other Into kernel treats a short buffer
+  ## as a defect, and a `ValueError` there would be the odd one out.
+  meta.checkShape(b)
+  if not sameInterval(meta.dtMs, p.dtMs):
+    badFk("the rows' interval " & $meta.dtMs & " ms is not the plan's " &
+      $(p.dtMs) & " ms")
+  if firstCol < 0: badFk("firstCol must be ≥ 0, got " & $firstCol)
+  let nFreq = p.timeFft.bins
+  let nK = p.spaceFft.len
+  doAssert amp.len == nK * nFreq, "amp needs nK·nFreq values"
+  doAssert ws.fits(p.workspaceSize), "reserve the plan's workspaceSize first"
+  let entered = fkRows(meta, b.cols, firstCol, p.samples, rows)
+  if entered != p.traces:
+    badFk("the window has " & $entered & " live rows, the plan was built for " &
+      $p.traces)
+  let live = liveIndices(p, ws)
+  var n = 0
+  let lo = max(rows.a, 0)
+  let hi = min(rows.b, b.len - 1)
+  for r in lo .. hi:
+    if meta.isLive(r) and meta.liveSamples(r, b.cols) > firstCol:
+      if stop != nil and stop(): return Stopped
+      live[n] = r
+      inc n
+  doAssert n == entered, "live rows changed under the check"
+  let extreme = fkLeavesRange(b, meta, firstCol, p.samples, rows)
+  let spec = ws.scratch(T, 2 * entered * nFreq, specAt(p))
+  let specRe = spec
+  let specIm = cast[ptr UncheckedArray[T]](addr spec[entered * nFreq])
+  var first = 0
+  while first < entered:
+    let count = min(fftLanes, entered - first)
+    fkTimeRun(p, b, meta, firstCol, live, first, count, specRe, specIm, ws)
+    first += count
+  for _ in 0 ..< nFreq:
+    if stop != nil and stop(): return Stopped
+  fkFreqRun(p, specRe, specIm, 0, nFreq,
+    cast[ptr UncheckedArray[float64]](addr amp[0]), extreme, ws)
+  entered
+
+proc fkAmplitudeInto*[T: SampleType](p: FkPlan[T], samples: Tensor[T],
+    meta: ChunkMeta, firstCol: int, amp: var openArray[float64],
+    ws: var Workspace, rows = 0 .. int.high, stop: StopCheck = nil): int =
+  ## `fkAmplitudeInto` on a `[rows, cols]` tensor. Returns the live rows
+  ## used, or `Stopped` when `stop` abandons (`amp` then unspecified). The
+  ## plan and the workspace stay usable.
+  meta.checkShape(samples)
+  p.fkAmplitudeInto(rowBlock(samples), meta, firstCol, amp, ws, rows, stop)
