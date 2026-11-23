@@ -160,15 +160,6 @@ proc rotationOf*(c: openArray[float32], dtMs: float64, at: int, offset: float64)
   ## sample `at`, taken `offset` (within half a sample) towards the next one
   ## by its phase's step. NaN when it cannot be read, including a `dtMs` that
   ## is not finite or not greater than 0. Allocates a Hilbert plan,
-  ## a workspace and the analytic buffers. `rotationOfInto` takes the caller's
-  ## workspace for the transform scratch.
+  ## a workspace and the analytic buffers.
   var ws = initWorkspace()
-  result = rotationPhase(c, dtMs, at, offset, ws)
-
-proc rotationOfInto*(c: openArray[float32], dtMs: float64, at: int, offset: float64,
-    ws: var Workspace): float64 =
-  ## `rotationOf` using `ws` for the Hilbert scratch, grown to the plan's
-  ## `workspaceSize` when it does not already fit. The Hilbert plan and the
-  ## analytic buffers are still allocated. NaN when the phase cannot be read,
-  ## including a `dtMs` that is not finite or not greater than 0.
   result = rotationPhase(c, dtMs, at, offset, ws)
