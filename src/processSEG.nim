@@ -58,6 +58,8 @@
 ##   (`RecordingFilter`, `applyRecordingFilter`, `suggestedShift`);
 ## - `processSEG/vibroseis/crosscorrelate`: a signal against its reference: correlation over lags,
 ##   envelope, the lag window's spectrum and phase, comparisons (`CrossCorrelationPlan`);
+## - `processSEG/vibroseis/matchpeak`: the correlation envelope's peak, its time shift and the
+##   correlation's phase there (`matchOf`, `peakAt`, `rotationOf`);
 ## - `processSEG/vibroseis/vibqc`: vibrator QC of a record: roles, ground force from M and B, limits,
 ##   summaries (`VibUnit`, `analyzeVibrators`);
 ## - `processSEG/continuous/slice`: continuous recordings cut into records at shot times
@@ -83,7 +85,7 @@ import processSEG/stack/[nmo, binning, stack]
 import processSEG/qc/[geometry, firstbreak, snr, shotfit, breakfit, fold, record]
 import processSEG/qc/[amplitude, exclusion]
 import processSEG/vibroseis/[taper, sweep, pilot, correlate, vstack, sweeptrack]
-import processSEG/vibroseis/[crosscorrelate, vibqc, recfilter]
+import processSEG/vibroseis/[crosscorrelate, matchpeak, vibqc, recfilter]
 import processSEG/continuous/slice
 import processSEG/survey/patch
 import processSEG/synth
@@ -93,4 +95,4 @@ export types, rows, workspace, basic, mute, plan, spectrum, hilbert, spectrogram
     formats, moveout, elevation, nmo, binning, stack, batch, geometry, firstbreak, snr,
     shotfit, breakfit, filescales
 export taper, sweep, pilot, correlate, vstack, slice, patch, fold, record, amplitude, units,
-    calibrate, sweeptrack, crosscorrelate, vibqc, recfilter, synth, exclusion
+    calibrate, sweeptrack, crosscorrelate, matchpeak, vibqc, recfilter, synth, exclusion
