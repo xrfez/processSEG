@@ -17,7 +17,8 @@
 ## in time to `nextFastLen(samples)` and across traces to
 ## `nextFastLen(2·traces)`, then transformed: a real FFT in time (`fftLanes`
 ## traces at a time) and the complex FFT across traces as two real FFTs. The
-## modulus is unscaled, `sqrt(re² + im²)` (the caller applies `toDbInto`).
+## modulus is unscaled (the caller applies `toDbInto`): a packed
+## `sqrt(re² + im²)`, or `hypot` when a float64 sample is extreme.
 ## Dead, auxiliary and failed rows, and live rows
 ## with no sample in the window, are left out, so `dkPerTrace` is per trace
 ## that entered, in order.
@@ -153,13 +154,44 @@ func workspaceSize*[T](p: FkPlan[T]): WorkspaceSize {.raises: [].} =
   else: result.f64 += panelScratch(p)
   result.f64 += 3 * p.spaceFft.len # unit-stride re, im and modulus
 
+func leavesFloat64Range(x: ptr UncheckedArray[float64], n: int): bool {.inline,
+    raises: [].} =
+  ## A sample is NaN, infinite, a subnormal, below 1e-100 or above 1e140.
+  ## The sign bit is cleared first, so the bits compare as signed integers.
+  ## A value inside that range cannot overflow a square or flush one, even
+  ## after both FFTs (their gain cannot close that gap).
+  const
+    notSign = 0x7FFF_FFFF_FFFF_FFFF'i64
+    tinyBits = 0x2B2B_FF2E_E48E_0530'i64 # 1e-100
+    hugeBits = 0x5D00_CB70_D24B_7379'i64 # 1e140
+  var bad = 0'i64
+  {.push boundChecks: off, overflowChecks: off.}
+  for i in 0 ..< n:
+    let bits = cast[int64](x[i]) and notSign
+    let huge = int64(bits > hugeBits)
+    let tiny = int64(bits < tinyBits)
+    let nz = int64(bits != 0)
+    bad = bad or huge or (tiny and nz)
+  {.pop.}
+  bad != 0
+
 proc modulusInto(re {.noalias.}, im {.noalias.}, mag {.noalias.}: ptr UncheckedArray[
     float64], n: int) {.noinline, raises: [].} =
   ## `mag[i] = sqrt(re[i]² + im[i]²)`, unit stride, no call and no branch.
-  ## `-fno-math-errno` on this module packs the square roots.
+  ## `-fno-math-errno` on this module packs the square roots. Extreme samples
+  ## take `hypotModulus` instead: a call in this proc would align the stack
+  ## on the fast path.
   {.push boundChecks: off, overflowChecks: off.}
   for i in 0 ..< n:
     mag[i] = sqrt(re[i] * re[i] + im[i] * im[i])
+  {.pop.}
+
+proc hypotModulus(re {.noalias.}, im {.noalias.}, mag {.noalias.}: ptr UncheckedArray[
+    float64], n: int) {.noinline, raises: [].} =
+  ## `mag[i] = hypot(re[i], im[i])` for a window whose samples leave range.
+  {.push boundChecks: off, overflowChecks: off.}
+  for i in 0 ..< n:
+    mag[i] = hypot(re[i], im[i])
   {.pop.}
 
 proc fkRows*(meta: ChunkMeta, cols, firstCol, nCols: int, rows = 0 .. int.high): int {.
@@ -231,6 +263,8 @@ proc fkAmplitudeInto*[T: SampleType](p: FkPlan[T], b: RowBlock[T], meta: ChunkMe
   let mag = ws.scratch(float64, nK, magAt + 2 * nK)
   let lo = max(rows.a, 0)
   let hi = min(rows.b, b.len - 1)
+  when T is float64:
+    var extreme = false
   var t = 0
   var lane = 0
   template flushTime() =
@@ -252,6 +286,10 @@ proc fkAmplitudeInto*[T: SampleType](p: FkPlan[T], b: RowBlock[T], meta: ChunkMe
     if stop != nil and stop(): return Stopped
     let src = b.rowPtr(r)
     let last = min(live, firstCol + p.samples)
+    when T is float64:
+      if not extreme and leavesFloat64Range(cast[ptr UncheckedArray[float64]](
+          addr src[firstCol]), last - firstCol):
+        extreme = true
     let tw = p.traceW[t]
     if lane == 0: zeroMem(laneX, nTime * fftLanes * sizeof(T))
     {.push boundChecks: off.}
@@ -287,7 +325,11 @@ proc fkAmplitudeInto*[T: SampleType](p: FkPlan[T], b: RowBlock[T], meta: ChunkMe
         let k = nK - sk
         re64[ik] = float64(ar[k]) + float64(bi[k])
         im64[ik] = float64(br[k]) - float64(ai[k])
-    modulusInto(re64, im64, mag, nK)
+    when T is float64:
+      if extreme: hypotModulus(re64, im64, mag, nK)
+      else: modulusInto(re64, im64, mag, nK)
+    else:
+      modulusInto(re64, im64, mag, nK)
     for ik in 0 ..< nK:
       amp[ik * nFreq + jf] = mag[ik]
   entered
