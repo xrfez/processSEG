@@ -160,6 +160,27 @@ proc shiftSamples*[T: SampleType](x: var openArray[T], shift: float64,
   {.pop.}
 
 const SincHalf = 24 # taps each side of the Kaiser-windowed sinc
+const SincTaps = 2 * SincHalf + 1
+
+# Interior of `placedSinc`: one tap across a block of outputs, so output i
+# is still tap 0, then 1, then 2, ... . The multiply-add is the scalar
+# loop's expression (`acc + w * x`).
+proc sincBlock[T](dst {.noalias.}: ptr UncheckedArray[T],
+    src {.noalias.}: ptr UncheckedArray[T], len, tap0: int,
+    w: ptr UncheckedArray[float64]) {.noinline, raises: [].} =
+  ## `len` <= `blockLen`. `src[tap0 - t + i]` is in range for every tap.
+  var acc {.noinit.}: array[blockLen, float64]
+  {.push boundChecks: off, overflowChecks: off.}
+  for i in 0 ..< len:
+    acc[i] = 0.0
+  for t in 0 ..< SincTaps:
+    let weight = w[t]
+    let s = cast[ptr UncheckedArray[T]](addr src[tap0 - t])
+    for i in 0 ..< len:
+      acc[i] = acc[i] + weight * float64(s[i])
+  for i in 0 ..< len:
+    dst[i] = T(acc[i])
+  {.pop.}
 
 # Thirty terms of (x/(2k))^2. Not `vibroseis/kaiser.besselI0`: that series
 # multiplies by (x*x/4)/k^2 and stops early, and the two differ (1 ulp at
@@ -224,9 +245,10 @@ func placedSinc*[T: SampleType](stored: openArray[T], shiftMs,
       let w = besselI0(beta * sqrt(1 - r * r)) / norm
       taps[i] = (if abs(x) < 1e-12: 1.0 else: sin(PI * x) / (PI * x)) * w
   # k = j - whole - (i - SincHalf) runs from j - whole + SincHalf down
-  # to j - whole - SincHalf. Inside [lo, hi) every tap is in `stored`, so
-  # the same products are added in the same order with the range test
-  # left out.
+  # to j - whole - SincHalf. Inside [lo, hi) every tap is in `stored`.
+  # Those outputs are summed a block at a time, one tap across the block,
+  # so each sample's products still accumulate in tap order. The ends keep
+  # the range test.
   let lo = min(n, max(0, whole + SincHalf))
   let hi = min(n, stored.len + whole - SincHalf)
   template addGuarded(j: int) =
@@ -237,12 +259,16 @@ func placedSinc*[T: SampleType](stored: openArray[T], shiftMs,
     result[j] = T(sum)
   for j in 0 ..< lo: addGuarded(j)
   if hi > lo:
-    {.push boundChecks: off, overflowChecks: off.}
-    for j in lo ..< hi:
-      var sum = 0.0
-      for i in 0 .. 2 * SincHalf:
-        let k = j - whole - (i - SincHalf)
-        sum += float64(stored[k]) * taps[i]
-      result[j] = T(sum)
-    {.pop.}
+    let sp = cast[ptr UncheckedArray[T]](addr stored[0])
+    let rp = cast[ptr UncheckedArray[T]](addr result[0])
+    let wp = cast[ptr UncheckedArray[float64]](addr taps[0])
+    var j0 = lo
+    while j0 < hi:
+      let len = min(blockLen, hi - j0)
+      # Same index expression as the scalar loop, wrapping the same way.
+      {.push overflowChecks: off.}
+      let tap0 = j0 - whole + SincHalf
+      {.pop.}
+      sincBlock(cast[ptr UncheckedArray[T]](addr rp[j0]), sp, len, tap0, wp)
+      j0 += len
   for j in max(hi, lo) ..< n: addGuarded(j)

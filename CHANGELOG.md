@@ -4,6 +4,7 @@
 
 - `fkAmplitudeInto`: the time FFTs run `fftLanes` traces at a time, and the modulus is a unit-stride `sqrt(re² + im²)` instead of `hypot` (last bits only; within 1e-6 of the panel peak).
 - `spectrogramInto` amplitudes are a packed float64 `sqrt(re² + im²)` instead of `hypot` per bin (last-bit differences only). `averageSpectrogramInto` drops a non-finite row with one exponent-bit check instead of `classify` per value.
+- `placedSinc`: interior samples are summed one tap across a block of outputs, so the loop vectorizes (about 4× on an 8000-sample trace). The sum stays tap order.
 
 ## 0.12.0
 

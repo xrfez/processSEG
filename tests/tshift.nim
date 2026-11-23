@@ -1,11 +1,58 @@
 ## Fractional shifts (core/shift): integer shifts exact, in place equal to
 ## a copy-based reference for every direction and fraction (the in-place
 ## read order), polynomials reproduced, zeros outside, NaN and large
-## shifts, float32, and no allocation.
+## shifts, float32, and no allocation. `placedSinc` matches `oldPlacedSinc`
+## (the previous per-sample sum) on every bit.
+##
+## Break check, restored: `sincBlock`'s `acc[i] = acc[i] + weight *
+## float64(s[i])` with the multiply removed failed that equality.
 
 import std/[assertions, math, random]
 import processSEG
 import utils/[allocs, synth]
+
+const OldSincHalf = 24
+
+func oldBessel(x: float64): float64 =
+  var term = 1.0
+  result = 1.0
+  for k in 1 .. 30:
+    term *= (x / (2 * float64(k))) ^ 2
+    result += term
+
+func oldPlacedSinc[T](stored: openArray[T], shiftMs, dtMs: float64): seq[T] =
+  ## Copy of the previous per-sample sum: 49 taps, tap 0 then 1 then 2,
+  ## `sum += sample * tap`, zero outside the trace. The range test stays on
+  ## every sample. The old interior dropped it; GCC 12 at `-O3` then
+  ## reassociates that float64 reduction, so those bits are not tap order.
+  if not (dtMs > 0) or stored.len == 0 or shiftMs.isNaN: return @stored
+  let d = shiftMs / dtMs
+  if not (abs(d) < 9223372036854775808.0): return @stored
+  let whole = int(floor(d))
+  let frac = d - float64(whole)
+  if frac < 1e-9: return placedWhole(stored, whole)
+  let n = max(0, stored.len + int(ceil(d)))
+  result = newSeq[T](n)
+  let beta = 8.0
+  let norm = oldBessel(beta)
+  var taps = newSeq[float64](2 * OldSincHalf + 1)
+  for i in 0 .. 2 * OldSincHalf:
+    let m = i - OldSincHalf
+    let x = float64(m) - frac
+    let r = abs(x) / float64(OldSincHalf)
+    if r < 1:
+      let w = oldBessel(beta * sqrt(1 - r * r)) / norm
+      taps[i] = (if abs(x) < 1e-12: 1.0 else: sin(PI * x) / (PI * x)) * w
+  for j in 0 ..< n:
+    var sum = 0.0
+    for i in 0 .. 2 * OldSincHalf:
+      let k = j - whole - (i - OldSincHalf)
+      if k >= 0 and k < stored.len: sum += float64(stored[k]) * taps[i]
+    result[j] = T(sum)
+
+proc bitsEqual[T: float32 | float64](a, b: T): bool =
+  when T is float32: cast[uint32](a) == cast[uint32](b)
+  else: cast[uint64](a) == cast[uint64](b)
 
 proc main*() =
   func reference[T](x: openArray[T], shift: float64, interp: ShiftInterp): seq[float64] =
@@ -150,5 +197,26 @@ proc main*() =
     e.shiftSamples(1.5)
     var y = zeroSignal[float32](100)
     doAssert allocsIn(y.shiftSamples(1.5, siCubic)) == 0
+
+  block placed_sinc_matches_old_bits:
+    proc check[T: float32 | float64](n: int, shift, dt: float64, nanAt = -1) =
+      var stored = newSeq[T](n)
+      for i in 0 ..< n:
+        stored[i] = T(float64((i * 17 + 3) mod 97) * 0.01 - 0.2)
+      if nanAt >= 0 and nanAt < n: stored[nanAt] = T(NaN)
+      let got = placedSinc(stored, shift, dt)
+      let old = oldPlacedSinc(stored, shift, dt)
+      doAssert got.len == old.len, $T & " n " & $n & " shift " & $shift
+      for j in 0 ..< got.len:
+        doAssert bitsEqual(got[j], old[j]), $T & " n " & $n & " shift " & $shift &
+            " at " & $j
+    proc run[T: float32 | float64]() =
+      for n in [1, 2, 48, 49, 50, 1000]:
+        for shift in [0.0, 0.5, -0.5, 0.25, 123.75, -3.1, float64(n) + 2.7,
+            -float64(n) - 2.7]:
+          check[T](n, shift, 1.0)
+        if n > 1: check[T](n, 0.3, 1.0, nanAt = n div 2)
+    run[float32]()
+    run[float64]()
 
 when isMainModule: main()
