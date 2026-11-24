@@ -86,9 +86,11 @@
 ## each side for the interpolation.
 ##
 ## **Gaps.** Window samples no segment covers are zero and reported per output
-## trace, as column runs (`report.gaps(trace)`); so are the columns of a row
-## that is not live (failed) at extract time. With interpolation the samples
-## next to a gap mix in its zeros.
+## trace, as column runs (`report.gaps(trace)`). A row that is not live, or a
+## piece the caller could not read (`addPiece` with `failed`), is zero-filled
+## the same way but recorded apart (`report.failedPieces(trace)`), so a read
+## error is not a hole in the recording. With interpolation the samples next
+## to either mix in its zeros.
 ##
 ## **Overlaps.** Where two segments of one receiver overlap, the later one
 ## (by start time) wins: the earlier one is trimmed where the later covers it.
@@ -237,12 +239,17 @@ type
     maxAbsDiff*: float64 ## The largest difference.
 
   SliceReport* = object
-    ## What `extractInto` found: gaps per trace and overlap comparisons.
+    ## What `extractInto` found: gaps and failed reads per trace, and overlap
+    ## comparisons.
     ## Sized by `initSliceReport`; reused without allocating.
     gaps: seq[SliceGap]
     gapAt: seq[int] ## Per trace: index of its first gap run.
     gapEnd: seq[int] ## Per trace: one past its last gap run.
     gapSamples: seq[int]
+    failedRuns: seq[SliceGap]
+    failedAt: seq[int] ## Per trace: index of its first failed run.
+    failedEnd: seq[int] ## Per trace: one past its last failed run.
+    failedSamples: seq[int]
     checks: seq[SliceOverlapCheck]
     capacity: int
     openTrace: int ## The trace `beginSliceTrace` opened, or −1.
@@ -738,8 +745,9 @@ func fraction*(plan: SlicePlan, trace: int): float64 {.inline, raises: [].} =
   plan.fraction[trace]
 
 func gapSamples*(plan: SlicePlan, trace: int): int {.inline, raises: [].} =
-  ## The output samples of `trace` that no segment covers (known at plan
-  ## time; `report.gapSamples` adds rows that fail to read).
+  ## The output samples of `trace` that no segment covers, known at plan
+  ## time. A row that fails to read is not one of these: see
+  ## `report.failedSamples`.
   plan.gapSamples[trace]
 
 iterator pieces*(plan: SlicePlan, trace: int): SlicePiece =
@@ -848,6 +856,10 @@ proc initSliceReport*(plan: SlicePlan): SliceReport =
   result.gapAt = newSeq[int](plan.len)
   result.gapEnd = newSeq[int](plan.len)
   result.gapSamples = newSeq[int](plan.len)
+  result.failedRuns = newSeqOfCap[SliceGap](plan.spans.len)
+  result.failedAt = newSeq[int](plan.len)
+  result.failedEnd = newSeq[int](plan.len)
+  result.failedSamples = newSeq[int](plan.len)
   result.checks = newSeq[SliceOverlapCheck](plan.overlaps.len)
   result.doneBits = newSeq[uint64]((plan.len + 63) shr 6)
 
@@ -864,9 +876,23 @@ func gapCount*(report: SliceReport, trace: int): int {.inline, raises: [].} =
   report.gapEnd[trace] - report.gapAt[trace]
 
 iterator gaps*(report: SliceReport, trace: int): SliceGap =
-  ## The zero-filled column runs of `trace`, ascending.
+  ## The zero-filled column runs of `trace` that no segment covers, ascending.
   for i in report.gapAt[trace] ..< report.gapEnd[trace]:
     yield report.gaps[i]
+
+func failedSamples*(report: SliceReport, trace: int): int {.inline, raises: [].} =
+  ## The output samples of `trace` zero-filled because a piece failed to read.
+  report.failedSamples[trace]
+
+func failedCount*(report: SliceReport, trace: int): int {.inline, raises: [].} =
+  ## The number of failed column runs of `trace`.
+  report.failedEnd[trace] - report.failedAt[trace]
+
+iterator failedPieces*(report: SliceReport, trace: int): SliceGap =
+  ## The column runs of `trace` that failed to read, ascending. The same
+  ## shape as `gaps`: `first` and `count` are output columns.
+  for i in report.failedAt[trace] ..< report.failedEnd[trace]:
+    yield report.failedRuns[i]
 
 func overlapCheck*(report: SliceReport, i: int): SliceOverlapCheck {.inline,
     raises: [].} =
@@ -895,7 +921,9 @@ func pieceSource*(plan: SlicePlan, pc: SlicePiece, rowSamples: int): tuple[
 
 proc checkReport(plan: SlicePlan, report: SliceReport) =
   if report.gapSamples.len != plan.len or report.gapAt.len != plan.len or
-      report.gapEnd.len != plan.len or report.checks.len != plan.overlaps.len or
+      report.gapEnd.len != plan.len or report.failedSamples.len != plan.len or
+      report.failedAt.len != plan.len or report.failedEnd.len != plan.len or
+      report.checks.len != plan.overlaps.len or
       report.capacity < plan.spans.len or
       report.doneBits.len != (plan.len + 63) shr 6:
     badSlice("the report was not sized for this plan (initSliceReport)")
@@ -913,32 +941,40 @@ proc checkTrace(plan: SlicePlan, trace: int, report: SliceReport) =
     badSlice("trace " & $trace & " is outside 0 ..< " & $plan.len)
   checkReport(plan, report)
 
+template noteRun(runs: var seq[SliceGap], at: int, samples: var int, lo, hi: int) =
+  samples += hi - lo
+  let last = runs.len - 1
+  if last >= at and runs[last].first + runs[last].count == lo:
+    runs[last].count += hi - lo
+  else:
+    runs.add SliceGap(first: lo, count: hi - lo)
+
 template placePiece(plan: SlicePlan, trace: int, pc: SlicePiece, src: pointer,
-    srcLen: int, gap: bool, target: ptr UncheckedArray, shift: int,
+    srcLen: int, gap: bool, failed: bool, target: ptr UncheckedArray, shift: int,
     report: var SliceReport) =
   # Columns `placeAt ..< placeAt + count` of `target`, as whole runs. A loop
   # over the samples keeps its overflow checks in a `-d:release` build, which
   # keeps the compiler from vectorizing it: 3.8 ms against 2.1 ms for 2000
   # traces of 3000 float32 (`-d:danger` takes 2.1 ms either way).
   let placeAt = pc.dst + shift
-  if not gap and srcLen > 0:
+  let blank = gap or failed
+  if not blank and srcLen > 0:
     copyMem(addr target[placeAt], src, srcLen * sizeof(target[0]))
-  if gap or srcLen < pc.count:
-    let zeroFrom = if gap: 0 else: srcLen
+  if blank or srcLen < pc.count:
+    let zeroFrom = if blank: 0 else: srcLen
     if pc.count > zeroFrom:
       zeroMem(addr target[placeAt + zeroFrom],
         (pc.count - zeroFrom) * sizeof(target[0]))
-  if gap:
-    let gapLo = max(pc.dst, 0)
-    let gapHi = min(pc.dst + pc.count, plan.samples)
-    if gapHi > gapLo:
-      report.gapSamples[trace] += gapHi - gapLo
-      let gapLast = report.gaps.len - 1
-      if gapLast >= report.gapAt[trace] and
-          report.gaps[gapLast].first + report.gaps[gapLast].count == gapLo:
-        report.gaps[gapLast].count += gapHi - gapLo
+  if blank:
+    let runLo = max(pc.dst, 0)
+    let runHi = min(pc.dst + pc.count, plan.samples)
+    if runHi > runLo:
+      if failed:
+        noteRun(report.failedRuns, report.failedAt[trace],
+          report.failedSamples[trace], runLo, runHi)
       else:
-        report.gaps.add SliceGap(first: gapLo, count: gapHi - gapLo)
+        noteRun(report.gaps, report.gapAt[trace], report.gapSamples[trace],
+          runLo, runHi)
 
 template shiftPlaced(plan: SlicePlan, trace: int, buf: ptr UncheckedArray,
     outRow: ptr UncheckedArray) =
@@ -962,15 +998,19 @@ proc paddedRow[T: SampleType](plan: SlicePlan, dst: var openArray[T],
     (ws.scratch(T, width), plan.margin)
 
 proc prepareSliceReport*(plan: SlicePlan, report: var SliceReport) =
-  ## Clears `report` for another fill of `plan`: no gaps, every overlap
-  ## `osNotRead`, no trace open or finished. Allocates nothing. Raises
+  ## Clears `report` for another fill of `plan`: no gaps, no failed pieces,
+  ## every overlap `osNotRead`, no trace open or finished. Allocates nothing. Raises
   ## `ValueError` when `report` was not sized for `plan`.
   checkReport(plan, report)
   report.gaps.setLen(0)
+  report.failedRuns.setLen(0)
   for i in 0 ..< report.gapSamples.len:
     report.gapAt[i] = 0
     report.gapEnd[i] = 0
     report.gapSamples[i] = 0
+    report.failedAt[i] = 0
+    report.failedEnd[i] = 0
+    report.failedSamples[i] = 0
   for i in 0 ..< report.checks.len:
     report.checks[i] = SliceOverlapCheck(status: osNotRead)
   clearFinished(report)
@@ -994,6 +1034,9 @@ proc beginSliceTrace*(plan: SlicePlan, trace: int, report: var SliceReport) =
   report.gapAt[trace] = report.gaps.len
   report.gapEnd[trace] = report.gaps.len
   report.gapSamples[trace] = 0
+  report.failedAt[trace] = report.failedRuns.len
+  report.failedEnd[trace] = report.failedRuns.len
+  report.failedSamples[trace] = 0
 
 proc addPiece*[T: SampleType](plan: SlicePlan, trace: int, pc: SlicePiece,
     samples: openArray[T], dst: var openArray[T], report: var SliceReport,
@@ -1003,9 +1046,10 @@ proc addPiece*[T: SampleType](plan: SlicePlan, trace: int, pc: SlicePiece,
   ## must be given exactly the count `pieceSource` returned for a row that
   ## covers the piece (`pc.count`); any other length raises `ValueError`
   ## naming the trace, the piece and both counts, and nothing is written. A
-  ## gap piece (`row = -1`) or `failed` is zero-filled and reported, the same
-  ## fill `extractInto` uses for a margin the segment does not cover or a row
-  ## that is not live. With `saNearest` the piece is written into `dst`;
+  ## gap piece (`row = -1`) is zero-filled and reported as a gap. `failed`
+  ## zero-fills a piece the caller could not read and records it apart from
+  ## gaps, the same fill `extractInto` uses for a row that is not live. With
+  ## `saNearest` the piece is written into `dst`;
   ## otherwise into the padded row of `ws` (`sliceWorkspace`), and
   ## `finishSliceTrace` writes `dst`. Raises `ValueError` for a bad trace,
   ## report, `dst` or piece write, and when `trace` is not the open trace or
@@ -1037,11 +1081,13 @@ proc addPiece*[T: SampleType](plan: SlicePlan, trace: int, pc: SlicePiece,
     badSlice("piece writes " & $pc.count & " columns at " & $a &
       ", outside 0 ..< " & $width)
   let none: pointer = nil
-  if failed or pc.row < 0:
-    placePiece(plan, trace, pc, none, 0, true, target, shift, report)
+  if pc.row < 0:
+    placePiece(plan, trace, pc, none, 0, true, false, target, shift, report)
+  elif failed:
+    placePiece(plan, trace, pc, none, 0, false, true, target, shift, report)
   else:
     let src = if samples.len == 0: none else: cast[pointer](addr samples[0])
-    placePiece(plan, trace, pc, src, samples.len, false, target, shift, report)
+    placePiece(plan, trace, pc, src, samples.len, false, false, target, shift, report)
   inc report.nextSpan
 
 proc finishSliceTrace*[T: SampleType](plan: SlicePlan, trace: int,
@@ -1065,6 +1111,7 @@ proc finishSliceTrace*[T: SampleType](plan: SlicePlan, trace: int,
   if shift != 0:
     shiftPlaced(plan, trace, target, cast[ptr UncheckedArray[T]](addr dst[0]))
   report.gapEnd[trace] = report.gaps.len
+  report.failedEnd[trace] = report.failedRuns.len
   report.doneBits[trace shr 6] = report.doneBits[trace shr 6] or
     (1'u64 shl (trace and 63))
   report.openTrace = -1
@@ -1104,7 +1151,7 @@ proc extractInto*[T: SampleType](plan: SlicePlan, data, dst: RowBlock[T], meta: 
   ## and `meta` hold either every row of the planning meta, or only the rows
   ## `plan.rowsNeeded`, in that order: read from a file, those are the traces
   ## `plan.tracesNeeded` (`chunkMeta(f, plan.tracesNeeded)`). A row not live
-  ## in `meta` (failed) is a gap. `ws` must hold `sliceWorkspace(T, plan)`
+  ## in `meta` is a failed piece, not a gap. `ws` must hold `sliceWorkspace(T, plan)`
   ## (an `AssertionDefect` otherwise). Allocates nothing.
   ##
   ## Raises `ValueError` when `meta` and `data` disagree, `meta` has neither
@@ -1141,11 +1188,15 @@ proc extractInto*[T: SampleType](plan: SlicePlan, data, dst: RowBlock[T], meta: 
     (if compact: plan.neededIndex(row) else: row)
 
   report.gaps.setLen(0)
+  report.failedRuns.setLen(0)
   clearFinished(report)
   for trace in 0 ..< plan.len:
     report.gapAt[trace] = report.gaps.len
     report.gapEnd[trace] = report.gaps.len
     report.gapSamples[trace] = 0
+    report.failedAt[trace] = report.failedRuns.len
+    report.failedEnd[trace] = report.failedRuns.len
+    report.failedSamples[trace] = 0
     let outRow = dst.rowPtr(trace)
     # Into the padded scratch row, or straight into dst.
     let target = if buf != nil: buf else: outRow
@@ -1156,13 +1207,16 @@ proc extractInto*[T: SampleType](plan: SlicePlan, data, dst: RowBlock[T], meta: 
       let none: pointer = nil
       if r >= 0 and meta.isLive(r) and pc.count > 0:
         placePiece(plan, trace, pc, cast[pointer](addr data.rowPtr(r)[pc.first]),
-          pc.count, false, target, shift, report)
+          pc.count, false, false, target, shift, report)
       elif r >= 0 and meta.isLive(r):
-        placePiece(plan, trace, pc, none, 0, false, target, shift, report)
+        placePiece(plan, trace, pc, none, 0, false, false, target, shift, report)
+      elif r >= 0:
+        placePiece(plan, trace, pc, none, 0, false, true, target, shift, report)
       else:
-        placePiece(plan, trace, pc, none, 0, true, target, shift, report)
+        placePiece(plan, trace, pc, none, 0, true, false, target, shift, report)
     if buf != nil: shiftPlaced(plan, trace, buf, outRow)
     report.gapEnd[trace] = report.gaps.len
+    report.failedEnd[trace] = report.failedRuns.len
 
   for i, o in plan.overlaps:
     if plan.neededIndex(o.earlier) >= 0 and plan.neededIndex(o.later) >= 0:

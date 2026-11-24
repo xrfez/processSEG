@@ -310,18 +310,35 @@ proc main*() =
       checkDirect(dst, 0, 150, "compact")
       checkDirect(dst, 1, 320, "compact")
 
-    block failed_row_is_a_gap:
+    block failed_row_is_not_a_gap:
+      # Seen failing when a row that is not live was stored as a coverage gap:
+      # a read error could not be told from a hole, and a failed run next to a
+      # hole was merged into it.
       let s = segmentsOf[T]([(0, 100), (100, 100)])
       let rows = rowsOf(s.keys, s.counts)
       let plan = planSlices(initChunkMeta(rows, dtMs = Dt), [shotAt(90)], window(20))
-      let failed = @[1]
-      let meta = initChunkMeta(rows, dtMs = Dt, failed = failed)
+      let meta = initChunkMeta(rows, dtMs = Dt, failed = @[1])
       var dst = zeros[T](plan.len, plan.samples)
       var report = initSliceReport(plan)
       var ws = initWorkspace()
       extractInto(plan, s.data, dst, meta, report, ws)
-      doAssert report.gapSamples(0) == 10
-      for g in report.gaps(0): doAssert g.first == 10 and g.count == 10
+      doAssert report.gapSamples(0) == 0 and report.gapCount(0) == 0
+      doAssert report.failedSamples(0) == 10 and report.failedCount(0) == 1
+      for g in report.failedPieces(0): doAssert g.first == 10 and g.count == 10
+      for j in 10 ..< 20: doAssert dst[0, j] == 0
+      doAssert plan.sliceKeys(0).status == tsLive
+      # A hole beside a failed row stays two records.
+      let one = segmentsOf[T]([(0, 100)])
+      let oneRows = rowsOf(one.keys, one.counts)
+      let hole = planSlices(initChunkMeta(oneRows, dtMs = Dt), [shotAt(90)], window(20))
+      let holeMeta = initChunkMeta(oneRows, dtMs = Dt, failed = @[0])
+      var holeDst = zeros[T](hole.len, hole.samples)
+      var holeReport = initSliceReport(hole)
+      extractInto(hole, one.data, holeDst, holeMeta, holeReport, ws)
+      doAssert holeReport.gapSamples(0) == 10 and holeReport.gapCount(0) == 1
+      doAssert holeReport.failedSamples(0) == 10 and holeReport.failedCount(0) == 1
+      for g in holeReport.gaps(0): doAssert g.first == 10 and g.count == 10
+      for g in holeReport.failedPieces(0): doAssert g.first == 0 and g.count == 10
 
     block dead_and_untimed_rows:
       var s = segmentsOf[T]([(0, 100), (100, 100), (200, 100)])
@@ -461,10 +478,13 @@ proc main*() =
       proc sameReport(a, b: SliceReport, plan: SlicePlan) =
         for t in 0 ..< plan.len:
           doAssert a.gapSamples(t) == b.gapSamples(t)
-          var ga, gb: seq[SliceGap]
+          doAssert a.failedSamples(t) == b.failedSamples(t)
+          var ga, gb, fa, fb: seq[SliceGap]
           for g in a.gaps(t): ga.add g
           for g in b.gaps(t): gb.add g
-          doAssert ga == gb
+          for g in a.failedPieces(t): fa.add g
+          for g in b.failedPieces(t): fb.add g
+          doAssert ga == gb and fa == fb
         for i in 0 ..< plan.overlaps.len:
           doAssert a.overlapCheck(i) == b.overlapCheck(i)
 
@@ -486,7 +506,7 @@ proc main*() =
           doAssert report.gapSamples(traceAt(plan, 0, 0)) > 0
           doAssert report.gapSamples(traceAt(plan, 0, 4)) == plan.samples
 
-      # A row that fails at extract time is a gap on both paths.
+      # A row that fails at extract time is a failed piece on both paths, not a gap.
       let rows = rowsOf(s.keys, s.counts)
       let failedPlan = planSlices(meta, [shotAt(90.4)], window(20), align = saCubic)
       let failedMeta = initChunkMeta(rows, dtMs = Dt, failed = @[1])
