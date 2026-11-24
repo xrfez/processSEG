@@ -81,16 +81,21 @@
 ## nearest the window start, `shot.time + startMs / 1000`, measured on the
 ## grid of the segment that holds the window's first data. The rest,
 ## `plan.fraction(trace)` samples in `[-0.5, 0.5]` (0 within the tolerance), is
-## left as is with `saNearest`, or shifted out (`core/shift`, linear or cubic)
-## with `saLinear` and `saCubic`, which read `plan.margin` extra samples on
-## each side for the interpolation.
+## left as is with `saNearest` (a quick look), or shifted out (`core/shift`)
+## with `saLinear`, `saCubic` and `saSinc`. Linear and cubic attenuate the
+## high end; `saSinc` is the Kaiser-windowed sinc of `placedSinc` (`SincHalf`
+## taps each side) and is the cut to use before correlation. Each reads
+## `plan.margin` extra samples on each side.
 ##
 ## **Gaps.** Window samples no segment covers are zero and reported per output
 ## trace, as column runs (`report.gaps(trace)`). A row that is not live, or a
 ## piece the caller could not read (`addPiece` with `failed`), is zero-filled
 ## the same way but recorded apart (`report.failedPieces(trace)`), so a read
 ## error is not a hole in the recording. With interpolation the samples next
-## to either mix in its zeros.
+## to either mix in its zeros. With `saSinc` that mix reaches `SincHalf`
+## samples into the trace: where a segment does not cover the margin, the
+## first and last half-length output samples are pulled toward zero, not a
+## band-limited shift of the recorded samples alone.
 ##
 ## **Overlaps.** Where two segments of one receiver overlap, the later one
 ## (by start time) wins: the earlier one is trimmed where the later covers it.
@@ -121,7 +126,8 @@
 ## long segment then holds hours of samples to cut seconds. Cut that trace
 ## from the columns the plan names. `pieceSource` is how many source samples
 ## a piece needs and where they start: the piece already includes the
-## alignment margin (`saLinear` 1, `saCubic` 2; `saNearest` 0), clipped where
+## alignment margin (`saLinear` 1, `saCubic` 2, `saSinc` `SincHalf`;
+## `saNearest` 0), clipped where
 ## the segment does not cover it, so the read starts at `SlicePiece.first`
 ## (the window column minus the margin, already clipped) and does not
 ## subtract `margin` again. A margin the segment does not cover is its own
@@ -171,6 +177,7 @@ type
     saNearest ## Start at the nearest stream sample; no interpolation.
     saLinear  ## Shift it out by linear interpolation (one sample margin).
     saCubic   ## Shift it out by cubic (Catmull-Rom) interpolation (two samples).
+    saSinc    ## Shift it out with a Kaiser-windowed sinc (`SincHalf` taps each side).
 
   SliceShot* = object
     ## A source event. Build it with `initSliceShot` (unknown fields NaN).
@@ -190,8 +197,8 @@ type
     ## A run of output columns of one trace and where it comes from.
     row*: int   ## The input row (of the planning meta); −1 for a gap.
     first*: int ## The row's first column read (0 for a gap).
-    dst*: int   ## The first output column; with `saLinear`/`saCubic` the
-                ## pieces reach `margin` columns before 0 and after `samples`.
+    dst*: int   ## The first output column; with interpolation the pieces
+                ## reach `margin` columns before 0 and after `samples`.
     count*: int ## The number of columns.
 
   SliceOverlap* = object
@@ -341,6 +348,7 @@ func marginOf(align: SliceAlign): int =
   of saNearest: 0
   of saLinear: 1
   of saCubic: 2
+  of saSinc: SincHalf
 
 func firstEndingAfter(ivs: seq[Interval], lo, hi, pos: int): int =
   # The first of the sorted, disjoint intervals `ivs[lo ..< hi]` that ends
@@ -996,11 +1004,21 @@ template shiftPlaced(plan: SlicePlan, trace: int, buf: ptr UncheckedArray,
     outRow: ptr UncheckedArray) =
   let shiftN = plan.samples
   let shiftM = plan.margin
-  if plan.fraction[trace] != 0:
-    let shiftInterp = if plan.align == saCubic: siCubic else: siLinear
-    shiftSamples(toOpenArray(buf, 0, shiftN + 2 * shiftM - 1),
-      plan.fraction[trace], shiftInterp)
-  copyMem(outRow, addr buf[shiftM], shiftN * sizeof(buf[0]))
+  # The padded row is the only scratch. `saSinc` writes the output directly
+  # through the shifter's `sincBlock`; linear and cubic shift in place, then
+  # the interior is copied. A zero fraction is that copy alone.
+  if plan.align == saSinc:
+    if plan.fraction[trace] != 0:
+      sincInto(toOpenArray(buf, 0, shiftN + 2 * shiftM - 1),
+        toOpenArray(outRow, 0, shiftN - 1), shiftM, plan.fraction[trace])
+    else:
+      copyMem(outRow, addr buf[shiftM], shiftN * sizeof(buf[0]))
+  else:
+    if plan.fraction[trace] != 0:
+      let shiftInterp = if plan.align == saCubic: siCubic else: siLinear
+      shiftSamples(toOpenArray(buf, 0, shiftN + 2 * shiftM - 1),
+        plan.fraction[trace], shiftInterp)
+    copyMem(outRow, addr buf[shiftM], shiftN * sizeof(buf[0]))
 
 proc paddedRow[T: SampleType](plan: SlicePlan, dst: var openArray[T],
     ws: var Workspace): tuple[p: ptr UncheckedArray[T], shift: int] =

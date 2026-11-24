@@ -24,8 +24,8 @@
 ## - `processSEG/gain/gain`: fixed dB gain, normalization (`NormalizePlan`), AGC (`AgcPlan`);
 ## - `processSEG/gain/curves`: time-variant gain (`GainCurve`, `GainCurvePlan`);
 ## - `processSEG/gain/stats`: per-trace and panel RMS, max and percentile clip;
-## - `processSEG/core/shift`: fractional time shifts of a row (`shiftSamples`);
-##   a stored trace placed later (`placedWhole`, `placedSinc`);
+## - `processSEG/core/shift`: fractional time shifts of a row (`shiftSamples`,
+##   `sincInto`, `SincHalf`); a stored trace placed later (`placedWhole`, `placedSinc`);
 ## - `processSEG/core/timeshift`: a whole-sample shift of a trace (`timeShift`,
 ##   `wholeSamples`);
 ## - `processSEG/velocity/model`: velocity functions, Dix, fields (`VelocityField`);

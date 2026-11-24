@@ -163,6 +163,81 @@ proc main*() =
       doAssert abs(up.fraction(0) + 0.4) < 1e-3
       checkDirect(cut(s, meta, up, report), 0, 101, "rounded up")
 
+    block sinc_alignment:
+      # Seen failing when `saSinc` shifted with linear interpolation: a
+      # band-limited sum missed the analytical shift by more than 1e-4 of
+      # its peak, and at 0.7 Nyquist the sinc error was not the smallest.
+      func band(k: float64): float64 =
+        sin(2 * PI * 0.05 * k) + 0.6 * sin(2 * PI * 0.13 * k + 0.7) +
+          0.3 * sin(2 * PI * 0.22 * k + 1.3)
+      func tone(k: float64): float64 = sin(2 * PI * 0.35 * k)
+      let fracs = [0.1, 0.25, 0.5, 0.9]
+      var shots: seq[SliceShot]
+      for f in fracs: shots.add shotAt(200.0 + f)
+      let segs = segmentsOf[T]([(0, 220), (220, 280)], point = 1,
+        value = proc (k: int): float64 = band(float64(k))).join(
+        segmentsOf[T]([(0, 500)], point = 2,
+          value = proc (k: int): float64 = band(float64(k))))
+      let meta = initChunkMeta(rowsOf(segs.keys, segs.counts), dtMs = Dt)
+      let win = window(64)
+      for order in [soReceiverGathers, soShotRecords]:
+        let plan = planSlices(meta, shots, win, order, saSinc)
+        doAssert plan.margin == SincHalf
+        var report: SliceReport
+        let dst = cut(segs, meta, plan, report)
+        for si in 0 .. fracs.high:
+          let f = fracs[si]
+          let shot = 200.0 + f
+          let covered = if order == soReceiverGathers: plan.shotCount + si
+            else: si * plan.receiverCount + 1
+          var err = 0.0
+          var peak = 0.0
+          for j in 0 ..< 64:
+            let want = band(shot + float64(j))
+            err = max(err, abs(float64(dst[covered, j]) - want))
+            peak = max(peak, abs(want))
+          doAssert err <= 1e-4 * peak, $order & " frac " & $f & " err " & $err
+          let span = if order == soReceiverGathers: si else: si * plan.receiverCount
+          if f == 0.25:
+            var nData = 0
+            for pc in plan.pieces(span):
+              if pc.row >= 0: inc nData
+            doAssert nData == 2, "a shot spanning two segments"
+            err = 0.0
+            peak = 0.0
+            for j in 0 ..< 64:
+              let want = band(shot + float64(j))
+              err = max(err, abs(float64(dst[span, j]) - want))
+              peak = max(peak, abs(want))
+            doAssert err <= 1e-4 * peak, "span " & $order & " err " & $err
+      let toneSeg = segmentsOf[T]([(0, 500)],
+        value = proc (k: int): float64 = tone(float64(k)))
+      let toneMeta = initChunkMeta(rowsOf(toneSeg.keys, toneSeg.counts), dtMs = Dt)
+      proc toneErr(align: SliceAlign, shot: float64): float64 =
+        let plan = planSlices(toneMeta, [shotAt(shot)], win, align = align)
+        var report: SliceReport
+        let dst = cut(toneSeg, toneMeta, plan, report)
+        for j in SincHalf ..< 64 - SincHalf:
+          result = max(result, abs(float64(dst[0, j]) - tone(shot + float64(j))))
+      for f in fracs:
+        let shot = 200.0 + f
+        let eSinc = toneErr(saSinc, shot)
+        let eCub = toneErr(saCubic, shot)
+        let eLin = toneErr(saLinear, shot)
+        doAssert eSinc < eCub and eSinc < eLin,
+          "0.7 Nyquist frac " & $f & " sinc " & $eSinc & " cubic " & $eCub &
+          " linear " & $eLin
+        if f == 0.5:
+          let eNear = toneErr(saNearest, shot)
+          doAssert eSinc < eCub and eCub < eLin and eLin < eNear,
+            "order sinc " & $eSinc & " cubic " & $eCub & " linear " & $eLin &
+            " nearest " & $eNear
+      let near = planSlices(toneMeta, [shotAt(200.004)], win)
+      let sinc = planSlices(toneMeta, [shotAt(200.004)], win, align = saSinc)
+      doAssert near.fraction(0) == 0 and sinc.fraction(0) == 0
+      var same: SliceReport
+      doAssert cut(toneSeg, toneMeta, near, same) == cut(toneSeg, toneMeta, sinc, same)
+
     block overlap_later_segment_wins:
       # Row 1 starts 3 samples before row 0 ends.
       var s = segmentsOf[T]([(0, 100), (97, 100)])
@@ -351,7 +426,7 @@ proc main*() =
     block no_allocation_after_reserve:
       let s = segmentsOf[T]([(0, 100), (100, 40), (140, 30), (170, 50), (220, 200)])
       let meta = initChunkMeta(rowsOf(s.keys, s.counts), dtMs = Dt)
-      for align in [saNearest, saCubic]:
+      for align in [saNearest, saCubic, saSinc]:
         let plan = planSlices(meta, [shotAt(95.3), shotAt(135), shotAt(400)], window(80),
           align = align)
         var dst = zeros[T](plan.len, plan.samples)
@@ -489,7 +564,7 @@ proc main*() =
           doAssert a.overlapCheck(i) == b.overlapCheck(i)
 
       for order in [soReceiverGathers, soShotRecords]:
-        for align in [saNearest, saLinear, saCubic]:
+        for align in [saNearest, saLinear, saCubic, saSinc]:
           let plan = planSlices(meta, shots, window(40), order, align)
           let span = traceAt(plan, 0, 2)
           doAssert plan.fraction(span) != 0
@@ -767,7 +842,7 @@ proc main*() =
         for i in 0 ..< rng.rand(0 .. 5): shots.add shotAt(rng.rand(-50.0 .. 450.0), float64(i))
         let w = window(rng.rand(1 .. 90), startMs = float64(rng.rand(-10 .. 10)) * Dt)
         let order = if rng.rand(1) == 0: soReceiverGathers else: soShotRecords
-        let align = [saNearest, saLinear, saCubic][rng.rand(2)]
+        let align = [saNearest, saLinear, saCubic, saSinc][rng.rand(3)]
         let plan = planSlices(byKeys, shots, w, order, align)
         doAssert samePlans(plan, planSlices(meta, shots, w, order, align)), $trial
         doAssert samePlans(planSlices(byTimes, shots, w, order, align),
@@ -1048,7 +1123,7 @@ proc main*() =
     # Seen failing when extractInto wrote a different sample than the piecewise
     # path: the two loops had drifted.
     var rng = initRand(20241124)
-    let aligns = [saNearest, saLinear, saCubic]
+    let aligns = [saNearest, saLinear, saCubic, saSinc]
     for trial in 0 ..< 200:
       var spans: seq[(int, int)]
       var pos = 0
@@ -1067,7 +1142,7 @@ proc main*() =
         let frac = if rng.rand(2) == 0: 0.0 else: 0.3
         shots.add shotAt(float64(rng.rand(-10 .. pos + 10)) + frac)
       let plan = planSlices(meta, shots, window(rng.rand(8 .. 24)),
-        align = aligns[trial mod 3])
+        align = aligns[trial mod 4])
       var fullReport: SliceReport
       let full = cut(seg, meta, plan, fullReport)
       var piece = zeros[float32](plan.len, plan.samples)
@@ -1107,7 +1182,7 @@ proc main*() =
             checkSliceOverlap(plan, i, toOpenArray(src.rowPtr(o.earlier), o.first,
               o.first + o.samples - 1), toOpenArray(src.rowPtr(o.later), 0,
               o.samples - 1), pieceReport)
-      doAssert piece == full, "trial " & $trial & " " & $aligns[trial mod 3]
+      doAssert piece == full, "trial " & $trial & " " & $aligns[trial mod 4]
       for t in 0 ..< plan.len:
         doAssert pieceReport.gapSamples(t) == fullReport.gapSamples(t), "trial " & $trial
         doAssert pieceReport.failedSamples(t) == fullReport.failedSamples(t), "trial " & $trial

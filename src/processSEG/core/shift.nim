@@ -21,6 +21,11 @@
 ## Kaiser-windowed sinc; both return a new trace. A positive amount places
 ## the stored samples later (zeros before them), the opposite sign from
 ## `shiftSamples`.
+##
+## `sincInto` is that Kaiser sinc keeping the length: `dst[j]` is `src` at
+## sample `at + j + shift`, zeros outside, and it allocates nothing. A
+## positive `shift` reads later in `src`, as `shiftSamples` does, not as
+## `placedSinc`.
 
 import std/math
 import parseSEG
@@ -159,11 +164,12 @@ proc shiftSamples*[T: SampleType](x: var openArray[T], shift: float64,
   if someHi < n: zeroMem(addr p[someHi], (n - someHi) * sizeof(T))
   {.pop.}
 
-const SincHalf = 24 # taps each side of the Kaiser-windowed sinc
-const SincTaps = 2 * SincHalf + 1
+const
+  SincHalf* = 24 ## Taps each side of the Kaiser-windowed sinc.
+  SincTaps = 2 * SincHalf + 1
 
-# Interior of `placedSinc`: one tap across a block of outputs, so output i
-# is still tap 0, then 1, then 2, ... . The multiply-add is the scalar
+# Interior of the Kaiser sinc: one tap across a block of outputs, so output
+# i is still tap 0, then 1, then 2, ... . The multiply-add is the scalar
 # loop's expression (`acc + w * x`).
 proc sincBlock[T](dst {.noalias.}: ptr UncheckedArray[T],
     src {.noalias.}: ptr UncheckedArray[T], len, tap0: int,
@@ -192,6 +198,21 @@ func besselI0(x: float64): float64 =
   for k in 1 .. 30:
     term *= (x / (2 * float64(k))) ^ 2
     result += term
+
+proc fillSincTaps(taps: var openArray[float64], frac: float64) {.raises: [].} =
+  # Kaiser window, beta 8, on a sinc delayed by `frac` in [0, 1). Same
+  # weights `placedSinc` uses; every tap is written, including the zeros.
+  let beta = 8.0
+  let norm = besselI0(beta)
+  for i in 0 .. SincHalf * 2:
+    let m = i - SincHalf
+    let x = float64(m) - frac
+    let r = abs(x) / float64(SincHalf)
+    if r < 1:
+      let w = besselI0(beta * sqrt(1 - r * r)) / norm
+      taps[i] = (if abs(x) < 1e-12: 1.0 else: sin(PI * x) / (PI * x)) * w
+    else:
+      taps[i] = 0
 
 func placedWhole*[T: SampleType](stored: openArray[T],
     wholeSamples: int): seq[T] {.raises: [ValueError].} =
@@ -234,16 +255,8 @@ func placedSinc*[T: SampleType](stored: openArray[T], shiftMs,
   if frac < 1e-9: return placedWhole(stored, whole)
   let n = max(0, stored.len + int(ceil(d)))
   result = newSeq[T](n)
-  let beta = 8.0
-  let norm = besselI0(beta)
-  var taps = newSeq[float64](2 * SincHalf + 1)
-  for i in 0 .. 2 * SincHalf:
-    let m = i - SincHalf
-    let x = float64(m) - frac
-    let r = abs(x) / float64(SincHalf)
-    if r < 1:
-      let w = besselI0(beta * sqrt(1 - r * r)) / norm
-      taps[i] = (if abs(x) < 1e-12: 1.0 else: sin(PI * x) / (PI * x)) * w
+  var taps = newSeq[float64](SincTaps)
+  fillSincTaps(taps, frac)
   # k = j - whole - (i - SincHalf) runs from j - whole + SincHalf down
   # to j - whole - SincHalf. Inside [lo, hi) every tap is in `stored`.
   # Those outputs are summed a block at a time, one tap across the block,
@@ -272,3 +285,47 @@ func placedSinc*[T: SampleType](stored: openArray[T], shiftMs,
       sincBlock(cast[ptr UncheckedArray[T]](addr rp[j0]), sp, len, tap0, wp)
       j0 += len
   for j in max(hi, lo) ..< n: addGuarded(j)
+
+proc sincInto*[T: SampleType](src: openArray[T], dst: var openArray[T],
+    at: int, shift: float64) {.raises: [].} =
+  ## `dst[j]` is `src` at sample `at + j + shift` (positive reads later in
+  ## `src`, as `shiftSamples`; the opposite sign from `placedSinc`), zero
+  ## outside `src`. A Kaiser-windowed sinc, `SincHalf` taps each side, beta 8,
+  ## the same weights as `placedSinc`. A NaN or infinite shift, or one past
+  ## the range of a sample index, leaves `dst` untouched. Allocates nothing.
+  ## `src` and `dst` must not overlap.
+  let n = dst.len
+  if n == 0 or shift.classify in {fcNan, fcInf, fcNegInf}: return
+  if not (abs(shift) < 9223372036854775808.0): return
+  # `placedSinc` delay is the opposite sign: its output index is `at + j`.
+  let wholeD = int(floor(-shift))
+  let fracD = -shift - float64(wholeD)
+  var taps {.noinit.}: array[SincTaps, float64]
+  fillSincTaps(taps, fracD)
+  let srcLen = src.len
+  # Every tap is in `src` for jPs in [wholeD + SincHalf, srcLen + wholeD - SincHalf).
+  let jPsLo = wholeD + SincHalf
+  let jPsHi = srcLen + wholeD - SincHalf
+  let lo = max(0, min(n, jPsLo - at))
+  let hi = max(lo, min(n, jPsHi - at))
+  template addGuarded(j: int) =
+    var sum = 0.0
+    let jPs = at + j
+    for i in 0 .. SincHalf * 2:
+      let k = jPs - wholeD - (i - SincHalf)
+      if k >= 0 and k < srcLen: sum += float64(src[k]) * taps[i]
+    dst[j] = T(sum)
+  for j in 0 ..< lo: addGuarded(j)
+  if hi > lo and srcLen > 0:
+    let sp = cast[ptr UncheckedArray[T]](addr src[0])
+    let dp = cast[ptr UncheckedArray[T]](addr dst[0])
+    let wp = cast[ptr UncheckedArray[float64]](addr taps[0])
+    var j0 = lo
+    while j0 < hi:
+      let len = min(blockLen, hi - j0)
+      {.push overflowChecks: off.}
+      let tap0 = (at + j0) - wholeD + SincHalf
+      {.pop.}
+      sincBlock(cast[ptr UncheckedArray[T]](addr dp[j0]), sp, len, tap0, wp)
+      j0 += len
+  for j in hi ..< n: addGuarded(j)

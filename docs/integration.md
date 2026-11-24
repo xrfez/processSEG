@@ -92,6 +92,12 @@ for trace in 0 ..< plan.len:
   for miss in report.failedPieces(trace): discard
 ```
 
+`saNearest` keeps the sub-sample remainder (`plan.fraction`): enough for a quick look.
+`saLinear` and `saCubic` shift it out and attenuate the high end. Before correlation,
+use `saSinc`: the same Kaiser-windowed sinc as `placedSinc` (`SincHalf` taps each side).
+Where a segment does not cover that margin, the missing samples are zero, so the first
+and last half-length output samples mix in those zeros.
+
 ## Data contract
 
 **One data model, owned by parseSEG.** No header value is copied into a processSEG object.
