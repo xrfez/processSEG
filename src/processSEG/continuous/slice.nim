@@ -609,6 +609,8 @@ func exactWindow(shotUs: int64, startMs, firstStart, dtMs: float64): tuple[
   if dtInt:
     if samplesTooFar(delta, dtUs): return (false, SamplePos())
     let q = floorDiv(delta, dtUs)
+    # q * dtUs can pass the low end when delta is within one interval of it.
+    if q < low(int64) div dtUs: return (false, SamplePos())
     let r = delta - q * dtUs
     return (true, SamplePos(whole: q, frac: float64(r) / float64(dtUs)))
   let u = float64(delta) / dtUsF

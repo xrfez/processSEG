@@ -1267,4 +1267,22 @@ proc main*() =
     doAssert maxFloat > 1e-4
     echo "float path remainder error ", maxFloat, " exact path ", maxExact
 
+  block gps_shot_one_interval_from_low:
+    # A segment starting at 0 and a shot one interval above the int64 low end:
+    # the sample index sits just past the low end, so it is out of reach.
+    var k = initTraceKeys()
+    k.status = tsLive
+    k.time = 0
+    k.t0Ms = 0
+    k.intervalUs = 10_000
+    k.rcvLine = 1
+    k.rcvPoint = 1
+    let meta = initChunkMeta(rowsOf([k], [100]), dtMs = 10)
+    let win = SliceWindow(startMs: 0.0, lengthMs: 200.0)
+    let shot = SliceShot(time: 0.0, timeUs: low(int64) + 1000, timeUsKnown: true, id: 1)
+    let plan = planSlices(meta, [shot], win)
+    for pc in plan.pieces(0):
+      doAssert pc.row < 0, "a shot out of reach gave a data piece"
+    doAssert plan.gapSamples(0) == 20
+
 when isMainModule: main()
