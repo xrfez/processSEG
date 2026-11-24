@@ -46,7 +46,7 @@
 ## correlated: live and unknown rows, and auxiliary ones (a recorded pilot
 ## correlates to the Klauder wavelet, a QC). Dead and failed rows give
 ## zeros. A record's live length (`liveSamples`) is what is correlated; the
-## rest of the row is zero. The rows go through the batched FFT, `fftLanes`
+## rest of the row is zero. The rows go through the batched FFT, `lanesFor`
 ## at a time (one record alone through the one-trace FFT, a third of the
 ## time of a batch); nothing allocates once the workspace is reserved. A
 ## NaN in a row makes that row NaN.

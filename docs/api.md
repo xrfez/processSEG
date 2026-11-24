@@ -198,7 +198,7 @@ auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guid
 | Proc | What |
 |---|---|
 | `fftLanes` (8) | Most traces a batch runs. `lanesFor` never returns more. Workspaces stay sized for this. |
-| `lanesFor(nfft, T)`, `lanesFor(plan)` | Width of a batched transform: float32 8 below 262144, else 4; float64 8 below 65536, 4 below 262144, else 2. |
+| `lanesFor(nfft, T)`, `lanesFor(plan)` | Width of a batched transform: float32 8 below 262144, else 4; float64 8 below 65536, 4 below 262144, else 2. Where the width differs from 8, an optimised build can differ in the last place from the previous release. |
 | `isFastLen(n)`, `nextFastLen(n, even = true)` | 2·3·5-smooth lengths; the next one up (even by default: about twice as fast). |
 | `FftPlan[T]`; `initFftPlan(T, n)`, `p.len`, `p.bins`, `p.workspaceSize(batched = true)` | A real FFT of length `n` (`ValueError` unless smooth); `n div 2 + 1` bins. |
 | `p.forward(x, re, im, ws)`, `p.inverse(re, im, x, ws)` | One trace: unscaled forward, inverse scaled by 1/n. |
