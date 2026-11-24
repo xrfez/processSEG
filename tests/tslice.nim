@@ -164,9 +164,6 @@ proc main*() =
       checkDirect(cut(s, meta, up, report), 0, 101, "rounded up")
 
     block sinc_alignment:
-      # Seen failing when `saSinc` shifted with linear interpolation: a
-      # band-limited sum missed the analytical shift by more than 1e-4 of
-      # its peak, and at 0.7 Nyquist the sinc error was not the smallest.
       func band(k: float64): float64 =
         sin(2 * PI * 0.05 * k) + 0.6 * sin(2 * PI * 0.13 * k + 0.7) +
           0.3 * sin(2 * PI * 0.22 * k + 1.3)
@@ -386,9 +383,6 @@ proc main*() =
       checkDirect(dst, 1, 320, "compact")
 
     block failed_row_is_not_a_gap:
-      # Seen failing when a row that is not live was stored as a coverage gap:
-      # a read error could not be told from a hole, and a failed run next to a
-      # hole was merged into it.
       let s = segmentsOf[T]([(0, 100), (100, 100)])
       let rows = rowsOf(s.keys, s.counts)
       let plan = planSlices(initChunkMeta(rows, dtMs = Dt), [shotAt(90)], window(20))
@@ -491,9 +485,6 @@ proc main*() =
         doAssert dst[1, j] == 0 and dst[1, 10 + j] == T(streamValue(200 + j))
 
     block piecewise_matches_extract:
-      # Seen failing when the copy placed samples at `dst` instead of
-      # `dst + margin` (the alignment margin dropped): a fractional linear
-      # window no longer matched `extractInto`.
       # Receiver 1 overlaps itself by 3 samples; receiver 2 is short. Shots
       # sit before the first sample, on a segment boundary, and past the last.
       let s = segmentsOf[T]([(0, 100), (97, 80)], point = 1).join(
@@ -932,9 +923,6 @@ proc main*() =
       doAssert report.mismatches == 0
 
   block piece_length_must_match_pieceSource:
-    # Seen failing when the length check only rejected a long buffer
-    # (`samples.len > pc.count`) and zero-filled a short tail: a data piece
-    # of 20 given 15 samples was accepted and the tail was not a gap.
     let s = segmentsOf[float32]([(0, 100)])
     let meta = initChunkMeta(rowsOf(s.keys, s.counts), dtMs = Dt)
     let plan = planSlices(meta, [shotAt(10)], window(20))
@@ -971,9 +959,6 @@ proc main*() =
     for v in dst: doAssert v == 7
 
   block call_order_is_checked:
-    # Seen failing when a second begin, a repeated piece and a finish with
-    # pieces missing were accepted: the second begin reset the gap start and
-    # the repeated piece wrote over the first.
     let s = segmentsOf[float32]([(0, 100), (100, 100)])
     let meta = initChunkMeta(rowsOf(s.keys, s.counts), dtMs = Dt)
     let plan = planSlices(meta, [shotAt(90), shotAt(10)], window(20))
@@ -1051,8 +1036,6 @@ proc main*() =
       doAssert revReport.gapCount(t) == fullReport.gapCount(t)
 
   block finish_requires_the_same_dst:
-    # Seen failing when finishSliceTrace with saNearest ignored a different
-    # dst: the row addPiece wrote was not the row finish returned.
     let s = segmentsOf[float32]([(0, 100), (100, 100)])
     let meta = initChunkMeta(rowsOf(s.keys, s.counts), dtMs = Dt)
     let plan = planSlices(meta, [shotAt(90)], window(20))
@@ -1120,8 +1103,6 @@ proc main*() =
     for j in 0 ..< shifted.samples: doAssert sDst[j] == sFull[0, j]
 
   block both_paths_agree_on_seeded_plans:
-    # Seen failing when extractInto wrote a different sample than the piecewise
-    # path: the two loops had drifted.
     var rng = initRand(20241124)
     let aligns = [saNearest, saLinear, saCubic, saSinc]
     for trial in 0 ..< 200:
@@ -1188,7 +1169,21 @@ proc main*() =
         doAssert pieceReport.failedSamples(t) == fullReport.failedSamples(t), "trial " & $trial
         doAssert pieceReport.gapCount(t) == fullReport.gapCount(t)
         doAssert pieceReport.failedCount(t) == fullReport.failedCount(t)
+        var fa, fb: seq[(int, int)]
+        for g in pieceReport.failedPieces(t): fa.add((g.first, g.count))
+        for g in fullReport.failedPieces(t): fb.add((g.first, g.count))
+        doAssert fa == fb, "trial " & $trial & " trace " & $t & ": failed pieces differ"
+        var ga, gb: seq[(int, int)]
+        for g in pieceReport.gaps(t): ga.add((g.first, g.count))
+        for g in fullReport.gaps(t): gb.add((g.first, g.count))
+        doAssert ga == gb, "trial " & $trial & " trace " & $t & ": gap runs differ"
       for i in 0 ..< plan.overlaps.len:
-        doAssert pieceReport.overlapCheck(i).status == fullReport.overlapCheck(i).status
+        let oa = pieceReport.overlapCheck(i)
+        let ob = fullReport.overlapCheck(i)
+        doAssert oa.status == ob.status, "trial " & $trial & " overlap " & $i & ": status"
+        doAssert oa.differing == ob.differing, "trial " & $trial & " overlap " & $i &
+          ": differing"
+        doAssert oa.maxAbsDiff == ob.maxAbsDiff or (oa.maxAbsDiff.isNaN and ob.maxAbsDiff.isNaN),
+          "trial " & $trial & " overlap " & $i & ": maxAbsDiff"
 
 when isMainModule: main()

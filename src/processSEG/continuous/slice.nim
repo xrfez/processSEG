@@ -94,8 +94,9 @@
 ## error is not a hole in the recording. With interpolation the samples next
 ## to either mix in its zeros. With `saSinc` that mix reaches `SincHalf`
 ## samples into the trace: where a segment does not cover the margin, the
-## first and last half-length output samples are pulled toward zero, not a
-## band-limited shift of the recorded samples alone.
+## first and last `SincHalf` output samples RING (they oscillate around the
+## true value, because the missing input is zero), and are not a band-limited
+## shift of the recorded samples alone.
 ##
 ## **Overlaps.** Where two segments of one receiver overlap, the later one
 ## (by start time) wins: the earlier one is trimmed where the later covers it.
@@ -925,11 +926,12 @@ func pieceSource*(plan: SlicePlan, pc: SlicePiece, rowSamples: int): tuple[
   ## How many source samples piece `pc` needs and where they start in a row of
   ## `rowSamples` columns: `pc.first ..< pc.first + pc.count` clipped to
   ## `[0, rowSamples)`. The piece already includes the alignment margin
-  ## (`plan.margin`: 0, 1 or 2), clipped where the segment does not cover it,
-  ## so this does not subtract `margin` again. A gap piece (`row = -1`), or a
-  ## piece with nothing inside the row, needs no samples: `(0, 0)`. A margin
-  ## the segment does not cover is its own gap piece; `addPiece` zero-fills
-  ## it, the same fill `extractInto` uses. `rowSamples` below 0 is an empty row.
+  ## (`plan.margin`: 0, 1, 2, or `SincHalf` for `saSinc`), clipped where the
+  ## segment does not cover it, so this does not subtract `margin` again. A
+  ## gap piece (`row = -1`), or a piece with nothing inside the row, needs no
+  ## samples: `(0, 0)`. A margin the segment does not cover is its own gap
+  ## piece; `addPiece` zero-fills it, the same fill `extractInto` uses.
+  ## `rowSamples` below 0 is an empty row.
   if pc.row < 0 or pc.count <= 0 or rowSamples <= 0: return (0, 0)
   let a = max(pc.first, 0)
   let b = min(pc.first + pc.count, rowSamples)
