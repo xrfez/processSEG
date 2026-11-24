@@ -79,7 +79,10 @@
 ##
 ## **Window start.** Output column 0 is the sample of the receiver's stream
 ## nearest the window start, `shot.time + startMs / 1000`, measured on the
-## grid of the segment that holds the window's first data. The rest,
+## grid of the segment that holds the window's first data. A shot from
+## `initSliceShotGps` carries that instant in microseconds (`timeUs`); the
+## index and the remainder are then exact. A shot from `initSliceShot` keeps
+## the float formula, the same bits as before. The rest,
 ## `plan.fraction(trace)` samples in `[-0.5, 0.5]` (0 within the tolerance), is
 ## left as is with `saNearest` (a quick look), or shifted out (`core/shift`)
 ## with `saLinear`, `saCubic` and `saSinc`. Linear and cubic attenuate the
@@ -181,9 +184,12 @@ type
     saSinc    ## Shift it out with a Kaiser-windowed sinc (`SincHalf` taps each side).
 
   SliceShot* = object
-    ## A source event. Build it with `initSliceShot` (unknown fields NaN).
-    time*: float64   ## UTC POSIX seconds of the source's time zero.
-    id*: float64     ## Its record (FFID) number: the output `record`.
+    ## A source event. Build it with `initSliceShot` or `initSliceShotGps`
+    ## (unknown fields NaN).
+    time*: float64 ## UTC POSIX seconds of the source's time zero.
+    timeUs*: int64 ## UTC microseconds since 1970 when `timeUsKnown`.
+    timeUsKnown*: bool ## Set by `initSliceShotGps`. A float shot has no exact microseconds.
+    id*: float64 ## Its record (FFID) number: the output `record`.
     srcLine*, srcPoint*: float64
     srcX*, srcY*, srcZ*: float64
     srcIndex*: int16 ## The source point index; 0: unknown.
@@ -309,9 +315,24 @@ type
 func initSliceShot*(time, id: float64, srcLine = NaN, srcPoint = NaN, srcX = NaN,
     srcY = NaN, srcZ = NaN, srcIndex = 0'i16): SliceShot =
   ## A shot at UTC POSIX seconds `time` with record number `id`, and its
-  ## source station and position when known.
+  ## source station and position when known. `timeUsKnown` stays false: a
+  ## float64 second near today is about a quarter microsecond coarse, so the
+  ## exact microsecond is not known, and the planner keeps this float path.
   SliceShot(time: time, id: id, srcLine: srcLine, srcPoint: srcPoint, srcX: srcX,
     srcY: srcY, srcZ: srcZ, srcIndex: srcIndex)
+
+proc initSliceShotGps*(gpsUs: int64, id: float64, srcLine = NaN, srcPoint = NaN,
+    srcX = NaN, srcY = NaN, srcZ = NaN, srcIndex = 0'i16): SliceShot
+    {.raises: [].} =
+  ## A shot whose time break is `gpsUs`, microseconds since the GPS epoch
+  ## (1980-01-06T00:00:00 GPS), converted with the current leap table.
+  ## `timeUs` is the exact UTC microseconds and `time` those seconds as
+  ## float64 (about a quarter microsecond coarse near today). The same source
+  ## fields as `initSliceShot`.
+  let utcUs = gpsUsToUtcUs(gpsUs)
+  SliceShot(time: float64(utcUs) / 1e6, timeUs: utcUs, timeUsKnown: true, id: id,
+    srcLine: srcLine, srcPoint: srcPoint, srcX: srcX, srcY: srcY, srcZ: srcZ,
+    srcIndex: srcIndex)
 
 proc badSlice(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
@@ -519,6 +540,82 @@ proc initSliceStreams*(meta: ChunkMeta): SliceStreams =
   ## then `channel` and `component`.
   streamsOf(meta, keyTimes(meta), defaultReceivers(meta))
 
+type
+  SamplePos = object
+    whole: int64
+    frac: float64 # in [0, 1)
+
+func addUs(a, b: int64): tuple[v: int64, ok: bool] {.inline.} =
+  if b > 0 and a > high(int64) - b: return (0'i64, false)
+  if b < 0 and a < low(int64) - b: return (0'i64, false)
+  (a + b, true)
+
+func floorDiv(a, b: int64): int64 {.inline.} =
+  # b > 0. Toward -inf: Nim `div` truncates toward zero.
+  var q = a div b
+  if a mod b < 0: dec q
+  q
+
+func roundHalfEven(whole: int64, frac: float64): int64 {.inline.} =
+  # `frac` in [0, 1). Nearest integer, ties to even, as `round` does.
+  if frac < 0.5: whole
+  elif frac > 0.5: whole + 1
+  elif (whole and 1) == 0: whole
+  else: whole + 1
+
+func subSamples(pos: SamplePos, resid: float64): SamplePos =
+  let shifted = pos.frac - resid
+  if shifted >= 0.0 and shifted < 1.0:
+    return SamplePos(whole: pos.whole, frac: shifted)
+  let n = int64(floor(shifted))
+  SamplePos(whole: pos.whole + n, frac: shifted - float64(n))
+
+func signedFrac(pos: SamplePos, k0: int64): float64 {.inline.} =
+  float64(pos.whole - k0) + pos.frac
+
+func finiteTime(x: float64): bool {.inline.} =
+  x.classify in {fcNormal, fcZero, fcNegZero, fcSubnormal}
+
+const SampleLimit = 1_000_000_000_000_000'i64 # |u| > 1e15 is a gap
+
+func samplesTooFar(delta, dtUs: int64): bool {.inline.} =
+  if dtUs <= 0: true
+  elif delta >= 0: delta div dtUs > SampleLimit
+  elif delta == low(int64): true
+  else: (-delta) div dtUs > SampleLimit
+
+func fitsInt(k: int64): bool {.inline.} =
+  k <= int64(high(int)) and k >= int64(low(int))
+
+func exactWindow(shotUs: int64, startMs, firstStart, dtMs: float64): tuple[
+    ok: bool, pos: SamplePos] =
+  # Sample position of the window start from exact UTC microseconds.
+  # False when a time is not finite or the ints do not fit: the caller
+  # then treats the window as out of reach, as `|u| > 1e15` does.
+  if not finiteTime(startMs) or not finiteTime(firstStart) or not finiteTime(dtMs):
+    return (false, SamplePos())
+  let startUsF = startMs * 1000.0
+  let firstUsF = firstStart * 1e6
+  let dtUsF = dtMs * 1000.0
+  if abs(startUsF) > 9.0e18 or abs(firstUsF) > 9.0e18 or dtUsF <= 0.0:
+    return (false, SamplePos())
+  let startUs = int64(round(startUsF))
+  let firstUs = int64(round(firstUsF))
+  let (sum, ok1) = addUs(shotUs, startUs)
+  let (delta, ok2) = addUs(sum, -firstUs)
+  if not ok1 or not ok2: return (false, SamplePos())
+  let dtUs = int64(round(dtUsF))
+  let dtInt = dtUs > 0 and abs(dtUsF - float64(dtUs)) <= 1e-9 * dtUsF
+  if dtInt:
+    if samplesTooFar(delta, dtUs): return (false, SamplePos())
+    let q = floorDiv(delta, dtUs)
+    let r = delta - q * dtUs
+    return (true, SamplePos(whole: q, frac: float64(r) / float64(dtUs)))
+  let u = float64(delta) / dtUsF
+  if abs(u) > 1e15: return (false, SamplePos())
+  let whole = int64(floor(u))
+  (true, SamplePos(whole: whole, frac: u - float64(whole)))
+
 proc layOut(streams: SliceStreams, shots: openArray[SliceShot], window: SliceWindow,
     samples: int, order: SliceOrder, align: SliceAlign): SlicePlan =
   # The pieces of every trace and the rows they read; the lists a plan
@@ -546,28 +643,57 @@ proc layOut(streams: SliceStreams, shots: openArray[SliceShot], window: SliceWin
     result.spanStart.add result.spans.len
     let lo = streams.ivStart[r]
     let hi = streams.ivStart[r + 1]
-    let u = (shots[s].time + window.startMs / 1000 - streams.firstStart[r]) / dtS
     var gaps = 0
     template gap(a, b: int, k0: int) =
       result.spans.add SlicePiece(row: -1, first: 0, dst: a - k0, count: b - a)
       gaps += max(0, min(b, k0 + samples) - max(a, k0))
-    if abs(u) > 1e15: # no data can reach it (and keeps the ints below safe)
+    var huge = false
+    var near = 0
+    var k0 = 0
+    var frac = 0.0
+    if shots[s].timeUsKnown:
+      # Whole samples by integer division; only the remainder is a float,
+      # so a 12-hour span does not lose the microsecond.
+      let placed = exactWindow(shots[s].timeUs, window.startMs,
+        streams.firstStart[r], streams.dtMs)
+      if not placed.ok: huge = true
+      else:
+        let near64 = roundHalfEven(placed.pos.whole, placed.pos.frac)
+        if not fitsInt(near64): huge = true
+        else:
+          near = int(near64)
+          let kLook = firstEndingAfter(streams.ivs, lo, hi, near - m)
+          var resid = 0.0
+          if kLook < hi and streams.ivs[kLook].a < near + samples + m:
+            resid = streams.ivs[kLook].resid
+          let adj = subSamples(placed.pos, resid)
+          let k64 = roundHalfEven(adj.whole, adj.frac)
+          if not fitsInt(k64): huge = true
+          else:
+            k0 = int(k64)
+            frac = signedFrac(adj, k64)
+    else:
+      let u = (shots[s].time + window.startMs / 1000 - streams.firstStart[r]) / dtS
+      if abs(u) > 1e15: # no data can reach it (and keeps the ints below safe)
+        huge = true
+      else:
+        near = int(round(u))
+        let kLook = firstEndingAfter(streams.ivs, lo, hi, near - m)
+        var resid = 0.0
+        if kLook < hi and streams.ivs[kLook].a < near + samples + m:
+          resid = streams.ivs[kLook].resid
+        let base = u - resid
+        k0 = int(round(base))
+        frac = base - float64(k0)
+    if huge:
       result.spans.add SlicePiece(row: -1, dst: -m, count: samples + 2 * m)
       gaps = samples
     else:
-      # The first interval reaching the window, whose segment sets the grid.
-      let near = int(round(u))
-      var k = firstEndingAfter(streams.ivs, lo, hi, near - m)
-      var resid = 0.0
-      if k < hi and streams.ivs[k].a < near + samples + m: resid = streams.ivs[k].resid
-      let base = u - resid
-      let k0 = int(round(base))
-      var frac = base - float64(k0)
       if abs(frac) <= tol: frac = 0
       result.fraction[trace] = frac
       let wlo = k0 - m
       let whi = k0 + samples + m
-      k = firstEndingAfter(streams.ivs, lo, hi, wlo)
+      var k = firstEndingAfter(streams.ivs, lo, hi, wlo)
       var pos = wlo
       while pos < whi:
         if k < hi and streams.ivs[k].a < whi:
