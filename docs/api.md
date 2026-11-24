@@ -778,7 +778,7 @@ Guide: [vibrator QC](guide/vibrator-qc.md); the viewer's plot → call table:
 The table is one process-wide table shared with parseSEG (`useLeapTable` here is the
 same proc). This library does not read a file: pass the `.nif` text. Copies are not
 reclaimed, so do not swap in a loop. A float64 second near today is about a quarter
-microsecond coarse; `utcUsOfGps` keeps the microsecond.
+microsecond coarse; `utcUsOfGps` keeps the microsecond. An instant inside an inserted leap second maps to the following POSIX second, so `utcUsToGpsUs` of the result differs from the input by one second there.
 
 | Proc | What |
 |---|---|

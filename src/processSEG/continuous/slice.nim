@@ -325,7 +325,7 @@ proc initSliceShotGps*(gpsUs: int64, id: float64, srcLine = NaN, srcPoint = NaN,
     srcX = NaN, srcY = NaN, srcZ = NaN, srcIndex = 0'i16): SliceShot
     {.raises: [].} =
   ## A shot whose time break is `gpsUs`, microseconds since the GPS epoch
-  ## (1980-01-06T00:00:00 GPS), converted with the current leap table.
+  ## (1980-01-06T00:00:00 GPS), converted with the current leap table. An instant inside an inserted leap second maps to the following POSIX second, so `utcUsToGpsUs` of the result differs from the input by one second there.
   ## `timeUs` is the exact UTC microseconds and `time` those seconds as
   ## float64 (about a quarter microsecond coarse near today). The same source
   ## fields as `initSliceShot`.

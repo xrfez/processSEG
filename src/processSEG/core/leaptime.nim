@@ -27,11 +27,11 @@ proc utcUsOfGps*(gpsUs: int64): int64 {.gcsafe, raises: [].} =
   ## UTC microseconds since 1970 of `gpsUs` (microseconds since the GPS
   ## epoch, 1980-01-06). Integer arithmetic through `gpsUsToUtcUs` and the
   ## current leap table, so the microsecond is exact. An input within one day
-  ## of either `int64` end saturates, as `gpsUsToUtcUs` does.
+  ## of either `int64` end saturates, as `gpsUsToUtcUs` does. An instant inside an inserted leap second maps to the following POSIX second, so `utcUsToGpsUs` of the result differs from the input by one second there.
   gpsUsToUtcUs(gpsUs)
 
 proc gpsUsToUtcSeconds*(gpsUs: int64): float64 {.gcsafe, raises: [].} =
   ## UTC POSIX seconds of `gpsUs`. A float64 second near today is about a
   ## quarter microsecond coarse (the unit in the last place of 1.7e9 is
-  ## 2⁻²² seconds); use `utcUsOfGps` when the microsecond matters.
+  ## 2⁻²² seconds); use `utcUsOfGps` when the microsecond matters. An instant inside an inserted leap second maps to the following POSIX second, so `utcUsToGpsUs` of the result differs from the input by one second there.
   float64(utcUsOfGps(gpsUs)) / 1e6
