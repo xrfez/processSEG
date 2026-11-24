@@ -128,15 +128,19 @@
 ## gap piece (`row = -1`). `addPiece` zero-fills a gap, and a row the caller
 ## marks failed, the same fill `extractInto` uses, so samples next to it mix
 ## in those zeros when the shift interpolates. `finishSliceTrace` applies the
-  ## same shift and writes the output row, and the same gap entries. Call
-  ## `beginSliceTrace`, then that trace's pieces in the iterator's order, each
-  ## once, then `finishSliceTrace`. Traces themselves may be cut in any order
-  ## (each thread with its own report). A call out of that order raises
-  ## `ValueError` and leaves the report as it was. The
-  ## earlier row's trimmed overlap tail is in no piece: `checkSliceOverlap`
-  ## writes `osMatch` or `osMismatch` when both of those runs were given, and
-  ## the check stays `osNotRead` until then. `extractInto` is this path over a
-  ## block already in memory, so the two agree to the bit.
+## same shift and writes the output row, and the same gap entries. `addPiece`
+## and `finishSliceTrace` take the same `dst`: a different row raises
+## `ValueError` and leaves the report as it was. With `saNearest` the pieces
+## are already in that row, so finishing it is a no-op; otherwise `finish`
+## copies the scratch row into it. Call
+## `beginSliceTrace`, then that trace's pieces in the iterator's order, each
+## once, then `finishSliceTrace`. Traces themselves may be cut in any order
+## (each thread with its own report). A call out of that order raises
+## `ValueError` and leaves the report as it was. The
+## earlier row's trimmed overlap tail is in no piece: `checkSliceOverlap`
+## writes `osMatch` or `osMismatch` when both of those runs were given, and
+## the check stays `osNotRead` until then. `extractInto` is this path over a
+## block already in memory, so the two agree to the bit.
 ##
 ## ```nim
 ## beginSliceTrace(plan, trace, report)
@@ -255,6 +259,7 @@ type
     openTrace: int ## The trace `beginSliceTrace` opened, or −1.
     nextSpan: int ## Index into the plan's pieces of the next `addPiece`.
     doneBits: seq[uint64] ## A bit per trace, set when it has been finished.
+    dstAt: pointer ## `addr` of the row `addPiece` is writing, or nil.
 
   Segment = object
     recv, row, n, p: int
@@ -935,6 +940,14 @@ proc clearFinished(report: var SliceReport) =
   for w in 0 ..< report.doneBits.len: report.doneBits[w] = 0
   report.openTrace = -1
   report.nextSpan = 0
+  report.dstAt = nil
+
+proc rowAt[T](dst: openArray[T]): pointer {.inline.} =
+  if dst.len == 0: nil else: cast[pointer](addr dst[0])
+
+proc checkDst(report: SliceReport, dstAt: pointer) =
+  if report.dstAt != nil and dstAt != report.dstAt:
+    badSlice("addPiece and finishSliceTrace must be given the same dst")
 
 proc checkTrace(plan: SlicePlan, trace: int, report: SliceReport) =
   if trace < 0 or trace >= plan.len:
@@ -1037,6 +1050,7 @@ proc beginSliceTrace*(plan: SlicePlan, trace: int, report: var SliceReport) =
   report.failedAt[trace] = report.failedRuns.len
   report.failedEnd[trace] = report.failedRuns.len
   report.failedSamples[trace] = 0
+  report.dstAt = nil
 
 proc addPiece*[T: SampleType](plan: SlicePlan, trace: int, pc: SlicePiece,
     samples: openArray[T], dst: var openArray[T], report: var SliceReport,
@@ -1051,7 +1065,9 @@ proc addPiece*[T: SampleType](plan: SlicePlan, trace: int, pc: SlicePiece,
   ## gaps, the same fill `extractInto` uses for a row that is not live. With
   ## `saNearest` the piece is written into `dst`;
   ## otherwise into the padded row of `ws` (`sliceWorkspace`), and
-  ## `finishSliceTrace` writes `dst`. Raises `ValueError` for a bad trace,
+  ## `finishSliceTrace` writes that same `dst`. A different `dst` than the one
+  ## already used for this trace raises `ValueError` and nothing is written.
+  ## Raises `ValueError` for a bad trace,
   ## report, `dst` or piece write, and when `trace` is not the open trace or
   ## `pc` is not its next piece. Nothing is written, and the report is left as
   ## it was. An `AssertionDefect` when `ws` was not reserved. Allocates nothing.
@@ -1074,6 +1090,7 @@ proc addPiece*[T: SampleType](plan: SlicePlan, trace: int, pc: SlicePiece,
       " samples, pieceSource asked for " & $pc.count)
   elif samples.len > pc.count:
     badSlice("piece samples are " & $samples.len & ", the piece holds " & $pc.count)
+  checkDst(report, rowAt(dst))
   let (target, shift) = paddedRow(plan, dst, ws)
   let a = pc.dst + shift
   let width = plan.samples + 2 * shift
@@ -1088,16 +1105,20 @@ proc addPiece*[T: SampleType](plan: SlicePlan, trace: int, pc: SlicePiece,
   else:
     let src = if samples.len == 0: none else: cast[pointer](addr samples[0])
     placePiece(plan, trace, pc, src, samples.len, false, false, target, shift, report)
+  if report.dstAt == nil: report.dstAt = rowAt(dst)
   inc report.nextSpan
 
 proc finishSliceTrace*[T: SampleType](plan: SlicePlan, trace: int,
     dst: var openArray[T], report: var SliceReport, ws: var Workspace) =
   ## Closes trace `trace`: applies the same shift as `extractInto` (none with
-  ## `saNearest`) and writes the output row into `dst`. The gap runs of this
-  ## trace end at the runs recorded so far. Raises `ValueError` for a bad
+  ## `saNearest`) and leaves the output row in `dst`. `dst` must be the row
+  ## `addPiece` wrote; a different one raises `ValueError` and the report is
+  ## left as it was. With `saNearest` the pieces are already there, so this
+  ## write is a no-op; otherwise the scratch row is copied in. The gap runs of
+  ## this trace end at the runs recorded so far. Raises `ValueError` for a bad
   ## trace, report or `dst`, when `trace` is not the open one, or when pieces
-  ## of it are still unplaced. The report is left as it was. An
-  ## `AssertionDefect` when `ws` was not reserved. Allocates nothing.
+  ## of it are still unplaced. An `AssertionDefect` when `ws` was not reserved.
+  ## Allocates nothing.
   checkTrace(plan, trace, report)
   if report.openTrace < 0:
     badSlice("trace " & $trace & " has not been begun")
@@ -1107,6 +1128,7 @@ proc finishSliceTrace*[T: SampleType](plan: SlicePlan, trace: int,
   if left != 0:
     badSlice("trace " & $trace & " still has " & $left &
       (if left == 1: " piece" else: " pieces") & " to place")
+  checkDst(report, rowAt(dst))
   let (target, shift) = paddedRow(plan, dst, ws)
   if shift != 0:
     shiftPlaced(plan, trace, target, cast[ptr UncheckedArray[T]](addr dst[0]))
@@ -1115,6 +1137,7 @@ proc finishSliceTrace*[T: SampleType](plan: SlicePlan, trace: int,
   report.doneBits[trace shr 6] = report.doneBits[trace shr 6] or
     (1'u64 shl (trace and 63))
   report.openTrace = -1
+  report.dstAt = nil
 
 proc checkSliceOverlap*[T: SampleType](plan: SlicePlan, i: int, earlier,
     later: openArray[T], report: var SliceReport) =

@@ -975,4 +975,73 @@ proc main*() =
       doAssert revReport.gapSamples(t) == fullReport.gapSamples(t)
       doAssert revReport.gapCount(t) == fullReport.gapCount(t)
 
+  block finish_requires_the_same_dst:
+    # Seen failing when finishSliceTrace with saNearest ignored a different
+    # dst: the row addPiece wrote was not the row finish returned.
+    let s = segmentsOf[float32]([(0, 100), (100, 100)])
+    let meta = initChunkMeta(rowsOf(s.keys, s.counts), dtMs = Dt)
+    let plan = planSlices(meta, [shotAt(90)], window(20))
+    var pieces: seq[SlicePiece]
+    for pc in plan.pieces(0): pieces.add pc
+    doAssert pieces.len == 2
+    var report = initSliceReport(plan)
+    var ws = initWorkspace()
+    prepareSliceReport(plan, report)
+    var dst = newSeq[float32](plan.samples)
+    var other = newSeq[float32](plan.samples)
+    for i in 0 ..< dst.len: dst[i] = 3
+    for i in 0 ..< other.len: other[i] = 9
+    proc take(pc: SlicePiece): seq[float32] =
+      result = newSeq[float32](pc.count)
+      if pc.row >= 0:
+        for j in 0 ..< pc.count: result[j] = s.data[pc.row, pc.first + j]
+    proc raised(body: proc () {.closure.}): string =
+      try: body()
+      except ValueError as e: result = e.msg
+    beginSliceTrace(plan, 0, report)
+    addPiece(plan, 0, pieces[0], take(pieces[0]), dst, report, ws)
+    let saved = dst
+    let mid = raised do ():
+      addPiece(plan, 0, pieces[1], take(pieces[1]), other, report, ws)
+    doAssert mid.find("same dst") >= 0, mid
+    doAssert dst == saved
+    for v in other: doAssert v == 9
+    doAssert report.gapCount(0) == 0
+    addPiece(plan, 0, pieces[1], take(pieces[1]), dst, report, ws)
+    let wrong = raised do (): finishSliceTrace(plan, 0, other, report, ws)
+    doAssert wrong.find("same dst") >= 0, wrong
+    for v in other: doAssert v == 9
+    finishSliceTrace(plan, 0, dst, report, ws)
+    var full = zeros[float32](plan.len, plan.samples)
+    var fullReport = initSliceReport(plan)
+    extractInto(plan, s.data, full, meta, fullReport, ws)
+    for j in 0 ..< plan.samples: doAssert dst[j] == full[0, j]
+    # A shifted cut copies the scratch row into that same dst, not another.
+    let shifted = planSlices(meta, [shotAt(90.4)], window(20), align = saLinear)
+    var sp: seq[SlicePiece]
+    for pc in shifted.pieces(0): sp.add pc
+    var sReport = initSliceReport(shifted)
+    var sws = initWorkspace()
+    sws.reserve(sliceWorkspace(float32, shifted))
+    prepareSliceReport(shifted, sReport)
+    var sDst = newSeq[float32](shifted.samples)
+    var sOther = newSeq[float32](shifted.samples)
+    for i in 0 ..< sOther.len: sOther[i] = 9
+    beginSliceTrace(shifted, 0, sReport)
+    for pc in sp:
+      let src = take(pc)
+      if pc.row < 0:
+        addPiece(shifted, 0, pc, src.toOpenArray(0, -1), sDst, sReport, sws)
+      else:
+        addPiece(shifted, 0, pc, src, sDst, sReport, sws)
+    let moved = raised do (): finishSliceTrace(shifted, 0, sOther, sReport, sws)
+    doAssert moved.find("same dst") >= 0, moved
+    for v in sOther: doAssert v == 9
+    for v in sDst: doAssert v == 0
+    finishSliceTrace(shifted, 0, sDst, sReport, sws)
+    var sFull = zeros[float32](shifted.len, shifted.samples)
+    var sFullReport = initSliceReport(shifted)
+    extractInto(shifted, s.data, sFull, meta, sFullReport, sws)
+    for j in 0 ..< shifted.samples: doAssert sDst[j] == sFull[0, j]
+
 when isMainModule: main()
