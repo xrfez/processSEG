@@ -126,11 +126,15 @@
 ## gap piece (`row = -1`). `addPiece` zero-fills a gap, and a row the caller
 ## marks failed, the same fill `extractInto` uses, so samples next to it mix
 ## in those zeros when the shift interpolates. `finishSliceTrace` applies the
-## same shift and writes the output row, and the same gap entries. The
-## earlier row's trimmed overlap tail is in no piece: `checkSliceOverlap`
-## writes `osMatch` or `osMismatch` when both of those runs were given, and
-## the check stays `osNotRead` until then. `extractInto` is this path over a
-## block already in memory, so the two agree to the bit.
+  ## same shift and writes the output row, and the same gap entries. Call
+  ## `beginSliceTrace`, then that trace's pieces in the iterator's order, each
+  ## once, then `finishSliceTrace`. Traces themselves may be cut in any order
+  ## (each thread with its own report). A call out of that order raises
+  ## `ValueError` and leaves the report as it was. The
+  ## earlier row's trimmed overlap tail is in no piece: `checkSliceOverlap`
+  ## writes `osMatch` or `osMismatch` when both of those runs were given, and
+  ## the check stays `osNotRead` until then. `extractInto` is this path over a
+  ## block already in memory, so the two agree to the bit.
 ##
 ## ```nim
 ## beginSliceTrace(plan, trace, report)
@@ -236,10 +240,14 @@ type
     ## What `extractInto` found: gaps per trace and overlap comparisons.
     ## Sized by `initSliceReport`; reused without allocating.
     gaps: seq[SliceGap]
-    gapStart: seq[int] ## Per trace, into `gaps`; `len + 1` entries.
+    gapAt: seq[int] ## Per trace: index of its first gap run.
+    gapEnd: seq[int] ## Per trace: one past its last gap run.
     gapSamples: seq[int]
     checks: seq[SliceOverlapCheck]
     capacity: int
+    openTrace: int ## The trace `beginSliceTrace` opened, or −1.
+    nextSpan: int ## Index into the plan's pieces of the next `addPiece`.
+    doneBits: seq[uint64] ## A bit per trace, set when it has been finished.
 
   Segment = object
     recv, row, n, p: int
@@ -835,11 +843,13 @@ func sliceWorkspace*(T: typedesc[SampleType], plan: SlicePlan): WorkspaceSize =
 
 proc initSliceReport*(plan: SlicePlan): SliceReport =
   ## A report sized for `plan`, so `extractInto` fills it without allocating.
-  result = SliceReport(capacity: plan.spans.len)
+  result = SliceReport(capacity: plan.spans.len, openTrace: -1)
   result.gaps = newSeqOfCap[SliceGap](plan.spans.len)
-  result.gapStart = newSeq[int](plan.len + 1)
+  result.gapAt = newSeq[int](plan.len)
+  result.gapEnd = newSeq[int](plan.len)
   result.gapSamples = newSeq[int](plan.len)
   result.checks = newSeq[SliceOverlapCheck](plan.overlaps.len)
+  result.doneBits = newSeq[uint64]((plan.len + 63) shr 6)
 
 func len*(report: SliceReport): int {.inline, raises: [].} =
   ## The number of traces reported on.
@@ -851,11 +861,11 @@ func gapSamples*(report: SliceReport, trace: int): int {.inline, raises: [].} =
 
 func gapCount*(report: SliceReport, trace: int): int {.inline, raises: [].} =
   ## The number of zero-filled column runs of `trace`.
-  report.gapStart[trace + 1] - report.gapStart[trace]
+  report.gapEnd[trace] - report.gapAt[trace]
 
 iterator gaps*(report: SliceReport, trace: int): SliceGap =
   ## The zero-filled column runs of `trace`, ascending.
-  for i in report.gapStart[trace] ..< report.gapStart[trace + 1]:
+  for i in report.gapAt[trace] ..< report.gapEnd[trace]:
     yield report.gaps[i]
 
 func overlapCheck*(report: SliceReport, i: int): SliceOverlapCheck {.inline,
@@ -884,9 +894,19 @@ func pieceSource*(plan: SlicePlan, pc: SlicePiece, rowSamples: int): tuple[
   if b <= a: (0, 0) else: (a, b - a)
 
 proc checkReport(plan: SlicePlan, report: SliceReport) =
-  if report.gapSamples.len != plan.len or report.checks.len != plan.overlaps.len or
-      report.capacity < plan.spans.len:
+  if report.gapSamples.len != plan.len or report.gapAt.len != plan.len or
+      report.gapEnd.len != plan.len or report.checks.len != plan.overlaps.len or
+      report.capacity < plan.spans.len or
+      report.doneBits.len != (plan.len + 63) shr 6:
     badSlice("the report was not sized for this plan (initSliceReport)")
+
+proc traceFinished(report: SliceReport, trace: int): bool {.inline.} =
+  (report.doneBits[trace shr 6] and (1'u64 shl (trace and 63))) != 0
+
+proc clearFinished(report: var SliceReport) =
+  for w in 0 ..< report.doneBits.len: report.doneBits[w] = 0
+  report.openTrace = -1
+  report.nextSpan = 0
 
 proc checkTrace(plan: SlicePlan, trace: int, report: SliceReport) =
   if trace < 0 or trace >= plan.len:
@@ -914,7 +934,7 @@ template placePiece(plan: SlicePlan, trace: int, pc: SlicePiece, src: pointer,
     if gapHi > gapLo:
       report.gapSamples[trace] += gapHi - gapLo
       let gapLast = report.gaps.len - 1
-      if gapLast >= report.gapStart[trace] and
+      if gapLast >= report.gapAt[trace] and
           report.gaps[gapLast].first + report.gaps[gapLast].count == gapLo:
         report.gaps[gapLast].count += gapHi - gapLo
       else:
@@ -943,22 +963,36 @@ proc paddedRow[T: SampleType](plan: SlicePlan, dst: var openArray[T],
 
 proc prepareSliceReport*(plan: SlicePlan, report: var SliceReport) =
   ## Clears `report` for another fill of `plan`: no gaps, every overlap
-  ## `osNotRead`. Allocates nothing. Raises `ValueError` when `report` was
-  ## not sized for `plan`.
+  ## `osNotRead`, no trace open or finished. Allocates nothing. Raises
+  ## `ValueError` when `report` was not sized for `plan`.
   checkReport(plan, report)
   report.gaps.setLen(0)
-  for i in 0 .. report.gapStart.high: report.gapStart[i] = 0
-  for i in 0 ..< report.gapSamples.len: report.gapSamples[i] = 0
+  for i in 0 ..< report.gapSamples.len:
+    report.gapAt[i] = 0
+    report.gapEnd[i] = 0
+    report.gapSamples[i] = 0
   for i in 0 ..< report.checks.len:
     report.checks[i] = SliceOverlapCheck(status: osNotRead)
+  clearFinished(report)
 
 proc beginSliceTrace*(plan: SlicePlan, trace: int, report: var SliceReport) =
-  ## Opens output trace `trace` on `report`: its gap runs start at the runs
-  ## already recorded, and its gap count is 0. Fill traces in order (or one
-  ## trace, after `prepareSliceReport`). Raises `ValueError` for a trace
-  ## outside the plan or a report not sized for it. Allocates nothing.
+  ## Opens output trace `trace` on `report`: its gap runs will be those
+  ## recorded until `finishSliceTrace`, and its gap count starts at 0. Then
+  ## place that trace's pieces in the iterator's order, each once. Traces may
+  ## be cut in any order. Raises `ValueError` when a trace is already open,
+  ## when `trace` was already finished in this report, when it is outside the
+  ## plan, or the report was not sized for the plan. The report is left as it
+  ## was. Allocates nothing.
   checkTrace(plan, trace, report)
-  report.gapStart[trace] = report.gaps.len
+  if report.openTrace >= 0:
+    badSlice("trace " & $report.openTrace &
+      " is still open; finish it before beginning trace " & $trace)
+  if traceFinished(report, trace):
+    badSlice("trace " & $trace & " was already finished in this report")
+  report.openTrace = trace
+  report.nextSpan = plan.spanStart[trace]
+  report.gapAt[trace] = report.gaps.len
+  report.gapEnd[trace] = report.gaps.len
   report.gapSamples[trace] = 0
 
 proc addPiece*[T: SampleType](plan: SlicePlan, trace: int, pc: SlicePiece,
@@ -974,9 +1008,22 @@ proc addPiece*[T: SampleType](plan: SlicePlan, trace: int, pc: SlicePiece,
   ## that is not live. With `saNearest` the piece is written into `dst`;
   ## otherwise into the padded row of `ws` (`sliceWorkspace`), and
   ## `finishSliceTrace` writes `dst`. Raises `ValueError` for a bad trace,
-  ## report, `dst` or piece write. An `AssertionDefect` when `ws` was not
-  ## reserved. Allocates nothing.
+  ## report, `dst` or piece write, and when `trace` is not the open trace or
+  ## `pc` is not its next piece. Nothing is written, and the report is left as
+  ## it was. An `AssertionDefect` when `ws` was not reserved. Allocates nothing.
   checkTrace(plan, trace, report)
+  if report.openTrace < 0:
+    badSlice("trace " & $trace & " has not been begun")
+  if report.openTrace != trace:
+    badSlice("trace " & $report.openTrace & " is open, not trace " & $trace)
+  let spanEnd = plan.spanStart[trace + 1]
+  if report.nextSpan >= spanEnd or plan.spans[report.nextSpan] != pc:
+    let want = if report.nextSpan < spanEnd: plan.spans[report.nextSpan]
+      else: SlicePiece(row: -1, first: 0, dst: 0, count: 0)
+    badSlice("trace " & $trace & " expects piece row " & $want.row & " first " &
+      $want.first & " dst " & $want.dst & " count " & $want.count &
+      ", not row " & $pc.row & " first " & $pc.first & " dst " & $pc.dst &
+      " count " & $pc.count)
   if pc.row >= 0 and samples.len != pc.count:
     badSlice("trace " & $trace & " piece row " & $pc.row & " first " & $pc.first &
       " dst " & $pc.dst & " count " & $pc.count & ": " & $samples.len &
@@ -995,19 +1042,32 @@ proc addPiece*[T: SampleType](plan: SlicePlan, trace: int, pc: SlicePiece,
   else:
     let src = if samples.len == 0: none else: cast[pointer](addr samples[0])
     placePiece(plan, trace, pc, src, samples.len, false, target, shift, report)
+  inc report.nextSpan
 
 proc finishSliceTrace*[T: SampleType](plan: SlicePlan, trace: int,
     dst: var openArray[T], report: var SliceReport, ws: var Workspace) =
   ## Closes trace `trace`: applies the same shift as `extractInto` (none with
   ## `saNearest`) and writes the output row into `dst`. The gap runs of this
   ## trace end at the runs recorded so far. Raises `ValueError` for a bad
-  ## trace, report or `dst`. An `AssertionDefect` when `ws` was not reserved.
-  ## Allocates nothing.
+  ## trace, report or `dst`, when `trace` is not the open one, or when pieces
+  ## of it are still unplaced. The report is left as it was. An
+  ## `AssertionDefect` when `ws` was not reserved. Allocates nothing.
   checkTrace(plan, trace, report)
+  if report.openTrace < 0:
+    badSlice("trace " & $trace & " has not been begun")
+  if report.openTrace != trace:
+    badSlice("trace " & $report.openTrace & " is open, not trace " & $trace)
+  let left = plan.spanStart[trace + 1] - report.nextSpan
+  if left != 0:
+    badSlice("trace " & $trace & " still has " & $left &
+      (if left == 1: " piece" else: " pieces") & " to place")
   let (target, shift) = paddedRow(plan, dst, ws)
   if shift != 0:
     shiftPlaced(plan, trace, target, cast[ptr UncheckedArray[T]](addr dst[0]))
-  report.gapStart[trace + 1] = report.gaps.len
+  report.gapEnd[trace] = report.gaps.len
+  report.doneBits[trace shr 6] = report.doneBits[trace shr 6] or
+    (1'u64 shl (trace and 63))
+  report.openTrace = -1
 
 proc checkSliceOverlap*[T: SampleType](plan: SlicePlan, i: int, earlier,
     later: openArray[T], report: var SliceReport) =
@@ -1081,8 +1141,10 @@ proc extractInto*[T: SampleType](plan: SlicePlan, data, dst: RowBlock[T], meta: 
     (if compact: plan.neededIndex(row) else: row)
 
   report.gaps.setLen(0)
+  clearFinished(report)
   for trace in 0 ..< plan.len:
-    report.gapStart[trace] = report.gaps.len
+    report.gapAt[trace] = report.gaps.len
+    report.gapEnd[trace] = report.gaps.len
     report.gapSamples[trace] = 0
     let outRow = dst.rowPtr(trace)
     # Into the padded scratch row, or straight into dst.
@@ -1100,7 +1162,7 @@ proc extractInto*[T: SampleType](plan: SlicePlan, data, dst: RowBlock[T], meta: 
       else:
         placePiece(plan, trace, pc, none, 0, true, target, shift, report)
     if buf != nil: shiftPlaced(plan, trace, buf, outRow)
-  report.gapStart[plan.len] = report.gaps.len
+    report.gapEnd[trace] = report.gaps.len
 
   for i, o in plan.overlaps:
     if plan.neededIndex(o.earlier) >= 0 and plan.neededIndex(o.later) >= 0:

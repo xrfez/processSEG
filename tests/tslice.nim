@@ -875,4 +875,84 @@ proc main*() =
     doAssert msg.find("trace 0") >= 0 and msg.find("21") >= 0 and msg.find("20") >= 0, msg
     for v in dst: doAssert v == 7
 
+  block call_order_is_checked:
+    # Seen failing when a second begin, a repeated piece and a finish with
+    # pieces missing were accepted: the second begin reset the gap start and
+    # the repeated piece wrote over the first.
+    let s = segmentsOf[float32]([(0, 100), (100, 100)])
+    let meta = initChunkMeta(rowsOf(s.keys, s.counts), dtMs = Dt)
+    let plan = planSlices(meta, [shotAt(90), shotAt(10)], window(20))
+    var pieces0: seq[SlicePiece]
+    for pc in plan.pieces(0): pieces0.add pc
+    doAssert pieces0.len == 2
+    var report = initSliceReport(plan)
+    var ws = initWorkspace()
+    ws.reserve(sliceWorkspace(float32, plan))
+    var dst = newSeq[float32](plan.samples)
+    for i in 0 ..< dst.len: dst[i] = 3
+    proc take(pc: SlicePiece): seq[float32] =
+      result = newSeq[float32](pc.count)
+      if pc.row >= 0:
+        for j in 0 ..< pc.count: result[j] = s.data[pc.row, pc.first + j]
+    proc raised(body: proc () {.closure.}): string =
+      try: body()
+      except ValueError as e: result = e.msg
+    prepareSliceReport(plan, report)
+    let again = raised do (): beginSliceTrace(plan, 0, report)
+    doAssert again.len == 0
+    let second = raised do (): beginSliceTrace(plan, 0, report)
+    doAssert second.find("still open") >= 0, second
+    doAssert report.gapSamples(0) == 0 and report.gapCount(0) == 0
+    let other = raised do (): beginSliceTrace(plan, 1, report)
+    doAssert other.find("still open") >= 0, other
+    # Out of turn: the second piece first. Nothing written.
+    let skip = raised do ():
+      addPiece(plan, 0, pieces0[1], take(pieces0[1]), dst, report, ws)
+    doAssert skip.find("expects piece") >= 0, skip
+    for v in dst: doAssert v == 3
+    doAssert report.gapCount(0) == 0
+    # The first piece, then the same piece again.
+    addPiece(plan, 0, pieces0[0], take(pieces0[0]), dst, report, ws)
+    let saved = dst
+    let dup = raised do ():
+      addPiece(plan, 0, pieces0[0], take(pieces0[0]), dst, report, ws)
+    doAssert dup.find("expects piece") >= 0, dup
+    doAssert dst == saved
+    let early = raised do (): finishSliceTrace(plan, 0, dst, report, ws)
+    doAssert early.find("still has") >= 0, early
+    let wrong = raised do (): finishSliceTrace(plan, 1, dst, report, ws)
+    doAssert wrong.find("is open") >= 0, wrong
+    addPiece(plan, 0, pieces0[1], take(pieces0[1]), dst, report, ws)
+    finishSliceTrace(plan, 0, dst, report, ws)
+    let rebegin = raised do (): beginSliceTrace(plan, 0, report)
+    doAssert rebegin.find("already finished") >= 0, rebegin
+    # Trace 1, never begun.
+    var dst1 = newSeq[float32](plan.samples)
+    let naked = raised do ():
+      addPiece(plan, 1, pieces0[0], take(pieces0[0]), dst1, report, ws)
+    doAssert naked.find("not been begun") >= 0, naked
+    let bare = raised do (): finishSliceTrace(plan, 1, dst1, report, ws)
+    doAssert bare.find("not been begun") >= 0, bare
+    # Traces in reverse order still match extractInto.
+    var full = zeros[float32](plan.len, plan.samples)
+    var fullReport = initSliceReport(plan)
+    extractInto(plan, s.data, full, meta, fullReport, ws)
+    var rev = zeros[float32](plan.len, plan.samples)
+    var revReport = initSliceReport(plan)
+    let revRows = rowBlock(rev)
+    prepareSliceReport(plan, revReport)
+    for trace in countdown(plan.len - 1, 0):
+      beginSliceTrace(plan, trace, revReport)
+      for pc in plan.pieces(trace):
+        let src = take(pc)
+        if pc.row < 0:
+          addPiece(plan, trace, pc, src.toOpenArray(0, -1), revRows.row(trace), revReport, ws)
+        else:
+          addPiece(plan, trace, pc, src, revRows.row(trace), revReport, ws)
+      finishSliceTrace(plan, trace, revRows.row(trace), revReport, ws)
+    doAssert rev == full
+    for t in 0 ..< plan.len:
+      doAssert revReport.gapSamples(t) == fullReport.gapSamples(t)
+      doAssert revReport.gapCount(t) == fullReport.gapCount(t)
+
 when isMainModule: main()
