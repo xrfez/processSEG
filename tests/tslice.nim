@@ -1044,4 +1044,76 @@ proc main*() =
     extractInto(shifted, s.data, sFull, meta, sFullReport, sws)
     for j in 0 ..< shifted.samples: doAssert sDst[j] == sFull[0, j]
 
+  block both_paths_agree_on_seeded_plans:
+    # Seen failing when extractInto wrote a different sample than the piecewise
+    # path: the two loops had drifted.
+    var rng = initRand(20241124)
+    let aligns = [saNearest, saLinear, saCubic]
+    for trial in 0 ..< 200:
+      var spans: seq[(int, int)]
+      var pos = 0
+      for _ in 0 ..< rng.rand(1 .. 4):
+        let n = rng.rand(8 .. 40)
+        let back = if pos > 0 and rng.rand(3) == 0: rng.rand(0 .. min(4, pos)) else: 0
+        if pos > 0 and rng.rand(4) == 0: pos += rng.rand(1 .. 6)
+        spans.add (pos - back, n + back)
+        pos += n
+      let seg = segmentsOf[float32](spans)
+      var failed: seq[int]
+      if spans.len > 1 and rng.rand(3) == 0: failed.add rng.rand(0 .. spans.high)
+      let meta = initChunkMeta(rowsOf(seg.keys, seg.counts), dtMs = Dt, failed = failed)
+      var shots: seq[SliceShot]
+      for _ in 0 ..< rng.rand(1 .. 3):
+        let frac = if rng.rand(2) == 0: 0.0 else: 0.3
+        shots.add shotAt(float64(rng.rand(-10 .. pos + 10)) + frac)
+      let plan = planSlices(meta, shots, window(rng.rand(8 .. 24)),
+        align = aligns[trial mod 3])
+      var fullReport: SliceReport
+      let full = cut(seg, meta, plan, fullReport)
+      var piece = zeros[float32](plan.len, plan.samples)
+      var pieceReport = initSliceReport(plan)
+      var ws = initWorkspace()
+      ws.reserve(sliceWorkspace(float32, plan))
+      var hold = newSeq[float32](1)
+      let src = rowBlock(seg.data)
+      let dstb = rowBlock(piece)
+      prepareSliceReport(plan, pieceReport)
+      for trace in 0 ..< plan.len:
+        beginSliceTrace(plan, trace, pieceReport)
+        for pc in plan.pieces(trace):
+          let width = if pc.row >= 0: src.cols else: 0
+          let (first, count) = pieceSource(plan, pc, width)
+          let dead = pc.row >= 0 and not meta.isLive(pc.row)
+          if count == 0:
+            addPiece(plan, trace, pc, hold.toOpenArray(0, -1), dstb.row(trace),
+              pieceReport, ws, failed = dead)
+          else:
+            if count > hold.len: hold.setLen(count)
+            for j in 0 ..< count: hold[j] = src.rowPtr(pc.row)[first + j]
+            addPiece(plan, trace, pc, hold.toOpenArray(0, count - 1), dstb.row(trace),
+              pieceReport, ws, failed = dead)
+        finishSliceTrace(plan, trace, dstb.row(trace), pieceReport, ws)
+      proc rowNeeded(row: int): bool =
+        for r in plan.rowsNeeded:
+          if r == row: return true
+      for i, o in plan.overlaps:
+        if rowNeeded(o.earlier) and rowNeeded(o.later) and
+            meta.isLive(o.earlier) and meta.isLive(o.later) and
+            o.first + o.samples <= src.cols:
+          if o.samples == 0:
+            var none: array[0, float32]
+            checkSliceOverlap(plan, i, none, none, pieceReport)
+          else:
+            checkSliceOverlap(plan, i, toOpenArray(src.rowPtr(o.earlier), o.first,
+              o.first + o.samples - 1), toOpenArray(src.rowPtr(o.later), 0,
+              o.samples - 1), pieceReport)
+      doAssert piece == full, "trial " & $trial & " " & $aligns[trial mod 3]
+      for t in 0 ..< plan.len:
+        doAssert pieceReport.gapSamples(t) == fullReport.gapSamples(t), "trial " & $trial
+        doAssert pieceReport.failedSamples(t) == fullReport.failedSamples(t), "trial " & $trial
+        doAssert pieceReport.gapCount(t) == fullReport.gapCount(t)
+        doAssert pieceReport.failedCount(t) == fullReport.failedCount(t)
+      for i in 0 ..< plan.overlaps.len:
+        doAssert pieceReport.overlapCheck(i).status == fullReport.overlapCheck(i).status
+
 when isMainModule: main()

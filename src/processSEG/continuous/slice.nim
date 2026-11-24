@@ -1169,8 +1169,11 @@ proc extractInto*[T: SampleType](plan: SlicePlan, data, dst: RowBlock[T], meta: 
     report: var SliceReport, ws: var Workspace) =
   ## Cuts the traces of `plan` from the segments `data` into `dst`
   ## (`plan.len` rows of `plan.samples`), zero-filling and reporting gaps, and
-  ## compares overlaps (see the module documentation). This is `addPiece` and
-  ## `finishSliceTrace` over a block already in memory: the same bits. `data`
+  ## compares overlaps (see the module documentation). The same bits as
+  ## `addPiece` and `finishSliceTrace`, through the shared templates rather
+  ## than by calling them: on this machine that call added about 3–7%
+  ## (2000 × 3000 float32, `-d:danger`; nearest 1.87 → 1.90–2.01 ms, linear
+  ## 4.45 → 4.56–4.66, cubic 5.58 → 5.73–5.86). `data`
   ## and `meta` hold either every row of the planning meta, or only the rows
   ## `plan.rowsNeeded`, in that order: read from a file, those are the traces
   ## `plan.tracesNeeded` (`chunkMeta(f, plan.tracesNeeded)`). A row not live
