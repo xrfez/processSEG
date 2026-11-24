@@ -1,6 +1,9 @@
 ## continuous/slice: cutting segmented continuous recordings into records.
 ## A synthetic stream with known samples is split into segments (rows), and
 ## every window is checked against a direct slice of the unsegmented stream.
+##
+## Broken by planning a GPS shot from `time` alone: the 12-hour remainder
+## kept the float error, past 1e-9 sample.
 
 import std/[algorithm, assertions, math, os, random, strutils]
 import parseSEG, processSEG
@@ -1185,5 +1188,83 @@ proc main*() =
           ": differing"
         doAssert oa.maxAbsDiff == ob.maxAbsDiff or (oa.maxAbsDiff.isNaN and ob.maxAbsDiff.isNaN),
           "trial " & $trial & " overlap " & $i & ": maxAbsDiff"
+
+  block gps_shot_exact_remainder:
+    const
+      DtMs = 0.25
+      Base = 1.7e9
+      BaseUs = 1_700_000_000_000_000'i64
+      SpanUs = 12'i64 * 3600 * 1_000_000
+      Samples = 80
+    var k = initTraceKeys()
+    k.status = tsLive
+    k.time = Base
+    k.t0Ms = 0
+    k.intervalUs = 250
+    k.rcvLine = 1
+    k.rcvPoint = 1
+    let n = int(SpanUs div 250) + Samples + 10
+    let meta = initChunkMeta(rowsOf([k], [n]), dtMs = DtMs)
+    let win = SliceWindow(startMs: 0.0, lengthMs: float64(Samples) * DtMs)
+    proc piecesOf(plan: SlicePlan): seq[tuple[row, first, dst, count: int]] =
+      for pc in plan.pieces(0):
+        result.add (pc.row, pc.first, pc.dst, pc.count)
+    proc planOf(shot: SliceShot): SlicePlan =
+      planSlices(meta, [shot], win)
+    proc placed(plan: SlicePlan): float64 =
+      var first = -1
+      for pc in plan.pieces(0):
+        if pc.row >= 0:
+          first = pc.first
+          break
+      doAssert first >= 0, "window has no data piece"
+      float64(first) + plan.fraction(0)
+
+    doAssert not initSliceShot(Base, 1.0).timeUsKnown
+    let utcUs = BaseUs + SpanUs + 100
+    let gpsUs = utcUsToGpsUs(utcUs)
+    let byGps = initSliceShotGps(gpsUs, 7, srcLine = 3, srcPoint = 4, srcX = 1,
+      srcY = 2, srcZ = 3, srcIndex = 5)
+    doAssert byGps.timeUsKnown and byGps.timeUs == utcUs
+    doAssert byGps.id == 7 and byGps.srcLine == 3 and byGps.srcIndex == 5
+    let equiv = initSliceShot(gpsUsToUtcSeconds(gpsUs), 7, srcLine = 3,
+      srcPoint = 4, srcX = 1, srcY = 2, srcZ = 3, srcIndex = 5)
+    let pg = planOf(byGps)
+    let pf = planOf(equiv)
+    doAssert piecesOf(pg) == piecesOf(pf), "GPS and UTC shots plan different windows"
+    doAssert abs(pg.fraction(0) - 100.0 / 250.0) < 1e-9
+    doAssert abs(pf.fraction(0) - 100.0 / 250.0) > 1e-4
+
+    let onUs = BaseUs + SpanUs
+    let onGps = utcUsToGpsUs(onUs)
+    let onG = planOf(initSliceShotGps(onGps, 1))
+    let onF = planOf(initSliceShot(gpsUsToUtcSeconds(onGps), 1))
+    doAssert piecesOf(onG) == piecesOf(onF)
+    doAssert onG.fraction(0) == 0 and onF.fraction(0) == 0
+
+    # One sample period at +12 h. Remainders inside the 0.01 tolerance are
+    # zeroed on both paths; outside it the float path is coarser.
+    var maxFloat = 0.0
+    var maxExact = 0.0
+    for r in 0 ..< 250:
+      let us = BaseUs + SpanUs + int64(r)
+      let gps = utcUsToGpsUs(us)
+      var idx = SpanUs div 250
+      var srem = float64(r) / 250.0
+      if srem > 0.5:
+        idx += 1
+        srem -= 1.0
+      elif srem == 0.5 and (idx and 1) == 1:
+        idx += 1
+        srem = -0.5
+      if abs(srem) <= 0.01: continue
+      let truth = float64(idx) + srem
+      let ge = planOf(initSliceShotGps(gps, 1))
+      let fl = planOf(initSliceShot(gpsUsToUtcSeconds(gps), 1))
+      maxExact = max(maxExact, abs(placed(ge) - truth))
+      maxFloat = max(maxFloat, abs(placed(fl) - truth))
+    doAssert maxExact < 1e-9
+    doAssert maxFloat > 1e-4
+    echo "float path remainder error ", maxFloat, " exact path ", maxExact
 
 when isMainModule: main()
