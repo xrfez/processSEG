@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.13.0
 
 - Batched FFTs use `lanesFor`: float32 stays at 8 lanes below 262144 and drops to 4; float64 stays at 8 below 65536, drops to 4 below 262144, then to 2. `fftLanes` is still the maximum, and workspace sizes stay sized for it. An optimised build already gave different last bits per width, so sizes whose lane count changes can differ in the last place from the previous release. Below the thresholds the width is still 8.
 - `ProcessPool.averageSpectrogramInto`: the averaged spectrogram on the pool (row block and tensor). Rows are summed in fixed batches of 16, then the batches in order, so the bits do not depend on the worker count; they can differ from the serial running sum in the last bits. No `stop` (the pool runs the job to completion).
