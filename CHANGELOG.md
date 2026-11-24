@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.14.0
 
 - `core/leaptime`: the GPS−UTC leap-second table, one process-wide table shared with parseSEG (`useLeapTable`, `useLeapTableNif`, `currentLeapTable`, `defaultLeapTable`, `parseLeapTable`, `withLeap`, `leapKnownAt`). `gpsUsToUtcSeconds` and `utcUsOfGps` convert microseconds since the GPS epoch. A float64 second near today is about a quarter microsecond coarse.
 - `continuous/slice`: `initSliceShotGps` takes a shot time in GPS microseconds. `SliceShot.timeUs` holds the exact UTC microseconds when `timeUsKnown`; the planner uses it. `initSliceShot` does not set `timeUsKnown`, and those shots plan exactly as before.
