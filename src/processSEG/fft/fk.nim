@@ -15,7 +15,7 @@
 ## **Transform.** Live rows that have a sample in the window are tapered on
 ## both axes (a Tukey ramp, `taperWeight(tpCos2, (d+0.5)/ramp)`), zero-padded
 ## in time to `nextFastLen(samples)` and across traces to
-## `nextFastLen(2·traces)`, then transformed: a real FFT in time (`fftLanes`
+## `nextFastLen(2·traces)`, then transformed: a real FFT in time (`lanesFor`
 ## traces at a time) and the complex FFT across traces as two real FFTs. The
 ## modulus is unscaled (the caller applies `toDbInto`): a packed
 ## `sqrt(re² + im²)`, or `hypot` when a float64 sample is extreme.
@@ -138,7 +138,7 @@ func elems(s: WorkspaceSize, T: typedesc): int {.inline.} =
   when T is float32: s.f32 else: s.f64
 
 func fftScratch[T](p: FkPlan[T]): WorkspaceSize {.inline.} =
-  ## The time FFT runs `fftLanes` traces at a time; the spatial FFT is one
+  ## The time FFT runs `lanesFor` traces at a time; the spatial FFT is one
   ## trace. Whichever scratch is larger.
   max(p.timeFft.workspaceSize, p.spaceFft.workspaceSize(batched = false))
 
@@ -181,8 +181,8 @@ func leavesFloat64Range(x: ptr UncheckedArray[float64], n: int): bool {.inline,
   {.pop.}
   bad != 0
 
-proc modulusInto(re {.noalias.}, im {.noalias.}, mag {.noalias.}: ptr UncheckedArray[
-    float64], n: int) {.noinline, raises: [].} =
+proc modulusInto(re {.noalias.}, im {.noalias.},
+    mag {.noalias.}: ptr UncheckedArray[float64], n: int) {.noinline, raises: [].} =
   ## `mag[i] = sqrt(re[i]² + im[i]²)`, unit stride, no call and no branch.
   ## `-fno-math-errno` on this module packs the square roots. Extreme samples
   ## take `hypotModulus` instead: a call in this proc would align the stack
@@ -192,15 +192,16 @@ proc modulusInto(re {.noalias.}, im {.noalias.}, mag {.noalias.}: ptr UncheckedA
     mag[i] = sqrt(re[i] * re[i] + im[i] * im[i])
   {.pop.}
 
-proc hypotModulus(re {.noalias.}, im {.noalias.}, mag {.noalias.}: ptr UncheckedArray[
-    float64], n: int) {.noinline, raises: [].} =
+proc hypotModulus(re {.noalias.}, im {.noalias.},
+    mag {.noalias.}: ptr UncheckedArray[float64], n: int) {.noinline, raises: [].} =
   ## `mag[i] = hypot(re[i], im[i])` for a window whose samples leave range.
   {.push boundChecks: off, overflowChecks: off.}
   for i in 0 ..< n:
     mag[i] = hypot(re[i], im[i])
   {.pop.}
 
-proc fkRows*(meta: ChunkMeta, cols, firstCol, nCols: int, rows = 0 .. int.high): int {.
+proc fkRows*(meta: ChunkMeta, cols, firstCol, nCols: int, rows = 0 ..
+    int.high): int {.
     raises: [].} =
   ## How many live rows of a block `cols` wide enter an f-k window
   ## `firstCol ..< firstCol + nCols` in `rows`: a live row with a sample at
@@ -287,6 +288,49 @@ func fkLeavesRange*[T: SampleType](b: RowBlock[T], meta: ChunkMeta, firstCol,
             return true
   false
 
+proc fkTimeWidth[T; L: static int](p: FkPlan[T], b: RowBlock[T],
+    meta: ChunkMeta, firstCol: int, live: ptr UncheckedArray[int], firstTrace,
+        count: int,
+    specRe, specIm: ptr UncheckedArray[T], ws: var Workspace) {.raises: [].} =
+  ## The time pass at a static width below `fftLanes`. The lane buffers stay
+  ## sized for `fftLanes`; a batch uses the first `n · L` samples.
+  let nFreq = p.timeFft.bins
+  let nTime = p.timeFft.len
+  let buf = ws.scratch(T, timeLaneElems(p), timeLaneAt(p))
+  var o = 0
+  template take(n: int): ptr UncheckedArray[T] =
+    let q = cast[ptr UncheckedArray[T]](addr buf[o])
+    o += n
+    q
+  let laneX = take(nTime * fftLanes)
+  let laneRe = take(nFreq * fftLanes)
+  let laneIm = take(nFreq * fftLanes)
+  var done = 0
+  while done < count:
+    let lane = min(L, count - done)
+    zeroMem(laneX, nTime * L * sizeof(T))
+    for l in 0 ..< lane:
+      let ti = firstTrace + done + l
+      let r = live[ti]
+      let src = b.rowPtr(r)
+      let last = min(meta.liveSamples(r, b.cols), firstCol + p.samples)
+      let tw = p.traceW[ti]
+      {.push boundChecks: off.}
+      for j in 0 ..< last - firstCol:
+        laneX[j * L + l] = src[firstCol + j] * p.timeW[j] * tw
+      {.pop.}
+    p.timeFft.forwardLanes(L, laneX.toOpenArray(0, nTime * L - 1),
+      laneRe.toOpenArray(0, nFreq * L - 1),
+      laneIm.toOpenArray(0, nFreq * L - 1), ws)
+    for l in 0 ..< lane:
+      let ti = firstTrace + done + l
+      {.push boundChecks: off.}
+      for k in 0 ..< nFreq:
+        specRe[ti * nFreq + k] = laneRe[k * L + l]
+        specIm[ti * nFreq + k] = laneIm[k * L + l]
+      {.pop.}
+    done += lane
+
 proc fkTimeRun*[T: SampleType](p: FkPlan[T], b: RowBlock[T], meta: ChunkMeta,
     firstCol: int, live: ptr UncheckedArray[int], firstTrace, count: int,
     specRe, specIm: ptr UncheckedArray[T], ws: var Workspace) {.raises: [].} =
@@ -294,10 +338,22 @@ proc fkTimeRun*[T: SampleType](p: FkPlan[T], b: RowBlock[T], meta: ChunkMeta,
   ## `fftLanes`; the pool splits those groups across workers. Traces
   ## `firstTrace ..< firstTrace + count` of `live` (row indices of traces
   ## that enter, in order) go into the shared spectrum, trace-major.
-  ## `firstTrace` is a multiple of `fftLanes`. A short tail is zero-padded
-  ## and transformed with `forwardLanes`, the serial path, not `forward`.
-  ## `ws` must hold `fkPoolScratch`. Nothing allocates.
+  ## `firstTrace` is a multiple of `fftLanes` (a multiple of `lanesFor`).
+  ## Inside the run, traces are transformed `lanesFor` at a time. A short
+  ## tail is zero-padded and transformed with `forwardLanes`, the serial
+  ## path, not `forward`. `ws` must hold `fkPoolScratch`. Nothing allocates.
   doAssert firstTrace mod fftLanes == 0, "a time run starts on a lane"
+  let width = lanesFor(p.timeFft)
+  if width != fftLanes:
+    case width
+    of 4:
+      fkTimeWidth[T, 4](p, b, meta, firstCol, live, firstTrace, count,
+        specRe, specIm, ws)
+    of 2:
+      fkTimeWidth[T, 2](p, b, meta, firstCol, live, firstTrace, count,
+        specRe, specIm, ws)
+    else: doAssert false, "lanesFor returned a width with no kernel"
+    return
   let nFreq = p.timeFft.bins
   let nTime = p.timeFft.len
   let buf = ws.scratch(T, timeLaneElems(p), timeLaneAt(p))
@@ -335,8 +391,8 @@ proc fkTimeRun*[T: SampleType](p: FkPlan[T], b: RowBlock[T], meta: ChunkMeta,
       {.pop.}
     done += lane
 
-proc fkFreqRun*[T: SampleType](p: FkPlan[T], specRe, specIm: ptr UncheckedArray[T],
-    firstFreq, count: int, amp: ptr UncheckedArray[float64], extreme: bool,
+proc fkFreqRun*[T: SampleType](p: FkPlan[T], specRe, specIm: ptr UncheckedArray[
+    T], firstFreq, count: int, amp: ptr UncheckedArray[float64], extreme: bool,
     ws: var Workspace) {.raises: [].} =
   ## One run of the spatial pass. The serial form calls it once, for every
   ## frequency; the pool splits frequencies across workers.
@@ -395,8 +451,9 @@ proc fkFreqRun*[T: SampleType](p: FkPlan[T], specRe, specIm: ptr UncheckedArray[
     for ik in 0 ..< nK:
       amp[ik * nFreq + jf] = mag[ik]
 
-proc fkAmplitudeInto*[T: SampleType](p: FkPlan[T], b: RowBlock[T], meta: ChunkMeta,
-    firstCol: int, amp: var openArray[float64], ws: var Workspace,
+proc fkAmplitudeInto*[T: SampleType](p: FkPlan[T], b: RowBlock[T],
+    meta: ChunkMeta, firstCol: int, amp: var openArray[float64],
+        ws: var Workspace,
     rows = 0 .. int.high, stop: StopCheck = nil): int =
   ## The f-k modulus of the window `firstCol ..< firstCol + samples` into
   ## `amp` (`nK·nFreq` values, frequency fastest, unscaled). Returns the live

@@ -18,7 +18,7 @@
 ## `windowLen` samples from `i·hop − windowLen div 2`, weighted by a Hann
 ## window (`sin²(π·(j + 1)/(windowLen + 1))`) and zero padded to `nfft` (by
 ## default the next power of two of the window). Samples outside the trace
-## count as zero. The frames go through the batched FFT, `fftLanes` at a time.
+## count as zero. The frames go through the batched FFT, `lanesFor` at a time.
 ##
 ## **Scale.** As `SpectrumPlan`'s: `|X[k]|·2/Σw` (`1/Σw` at 0 Hz and at
 ## Nyquist), `Σw` the weights of the frame's samples that lie inside the
@@ -60,8 +60,8 @@ type
 proc badPlan(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
 
-proc initSpectrogramPlan*(T: typedesc[SampleType], windowLen, hop: int, dtMs: float64,
-    samples: int, nfft = 0): SpectrogramPlan[T] =
+proc initSpectrogramPlan*(T: typedesc[SampleType], windowLen, hop: int,
+    dtMs: float64, samples: int, nfft = 0): SpectrogramPlan[T] =
   ## Frames of `windowLen` samples every `hop` samples of traces of up to
   ## `samples` samples at `dtMs`, zero padded to `nfft` (0: the next power of
   ## two of the window). Raises `ValueError` for `windowLen < 2`, `hop < 1`,
@@ -70,9 +70,11 @@ proc initSpectrogramPlan*(T: typedesc[SampleType], windowLen, hop: int, dtMs: fl
   if windowLen < 2: badPlan("windowLen must be ≥ 2, got " & $windowLen)
   if hop < 1: badPlan("hop must be ≥ 1, got " & $hop)
   if samples < 1: badPlan("samples must be ≥ 1, got " & $samples)
-  if not (dtMs > 0 and dtMs < Inf): badPlan("dtMs must be finite and positive, got " & $dtMs)
+  if not (dtMs > 0 and dtMs < Inf): badPlan(
+      "dtMs must be finite and positive, got " & $dtMs)
   let n = if nfft == 0: nextPowerOfTwo(windowLen) else: nfft
-  if n < windowLen: badPlan("nfft " & $n & " is shorter than the window (" & $windowLen & ")")
+  if n < windowLen: badPlan("nfft " & $n & " is shorter than the window (" &
+      $windowLen & ")")
   result.fft = initFftPlan(T, n) # raises for a length that is not smooth
   result.dtMs = dtMs
   result.samples = samples
@@ -132,8 +134,8 @@ proc laneMagnitude(re, im: ptr UncheckedArray[float32],
     mag[i] = sqrt(r * r + m * m)
   {.pop.}
 
-func leavesFloat64Range(x: ptr UncheckedArray[float64], n: int): bool {.noinline,
-    raises: [].} =
+func leavesFloat64Range(x: ptr UncheckedArray[float64],
+    n: int): bool {.noinline, raises: [].} =
   ## A sample is NaN, infinite, a subnormal, below 1e-100 or above 1e140.
   ## The sign bit is cleared first, so the bits compare as signed integers.
   ## A value inside that range cannot overflow a square or flush one, even
@@ -185,6 +187,72 @@ func amplitudesFinite*(x: ptr UncheckedArray[float64], n: int): bool {.noinline,
   {.pop.}
   bad == 0
 
+proc spectrogramWidth[T; L: static int](sg: SpectrogramPlan[T], x: openArray[T],
+    amp: var openArray[float64], ws: var Workspace, extreme: bool) {.raises: [].} =
+  ## `spectrogramInto` at a static width below `fftLanes`. Scratch stays
+  ## sized for `fftLanes`; a batch uses the first `n · L` time samples.
+  let n = sg.fft.len
+  let nb = sg.fft.bins
+  let W = sg.window.len
+  let at = sg.fft.workspaceSize.elems(T)
+  let buf = ws.scratch(T, fftLanes * (n + 2 * nb), at)
+  let re = cast[ptr UncheckedArray[T]](addr buf[n * fftLanes])
+  let im = cast[ptr UncheckedArray[T]](addr buf[n * fftLanes + nb * fftLanes])
+  var first = 0
+  while first < sg.frames:
+    let used = min(L, sg.frames - first)
+    var sw: array[L, float64]
+    zeroMem(buf, n * L * sizeof(T))
+    for l in 0 ..< used:
+      let start = (first + l) * sg.hop - W div 2
+      let a = max(0, -start)
+      let b = min(W, x.len - start)
+      for j in a ..< b:
+        buf[j * L + l] = x[start + j] * sg.window[j]
+        sw[l] += float64(sg.window[j])
+    sg.fft.forwardLanes(L, buf.toOpenArray(0, n * L - 1),
+      re.toOpenArray(0, nb * L - 1), im.toOpenArray(0, nb * L - 1), ws)
+    let count = nb * L
+    let held = min(count, (n * L * sizeof(T)) div sizeof(float64))
+    let mag = cast[ptr UncheckedArray[float64]](addr buf[0])
+    doAssert held >= 1 and count - held <= fftLanes
+    doAssert (nb - 1) * L <= held
+    var tail: array[fftLanes, float64]
+    when T is float64:
+      if extreme: hypotMagnitude(re, im, mag, held)
+      else: laneMagnitude(re, im, mag, held)
+    else:
+      laneMagnitude(re, im, mag, held)
+    if held < count:
+      when T is float64:
+        if extreme:
+          hypotMagnitude(cast[ptr UncheckedArray[float64]](addr re[held]),
+            cast[ptr UncheckedArray[float64]](addr im[held]),
+            cast[ptr UncheckedArray[float64]](addr tail[0]), count - held)
+        else:
+          laneMagnitude(cast[ptr UncheckedArray[float64]](addr re[held]),
+            cast[ptr UncheckedArray[float64]](addr im[held]),
+            cast[ptr UncheckedArray[float64]](addr tail[0]), count - held)
+      else:
+        laneMagnitude(cast[ptr UncheckedArray[T]](addr re[held]),
+          cast[ptr UncheckedArray[T]](addr im[held]),
+          cast[ptr UncheckedArray[float64]](addr tail[0]), count - held)
+    for l in 0 ..< used:
+      let row = (first + l) * nb
+      if not (sw[l] > 0):
+        for k in 0 ..< nb: amp[row + k] = 0
+      else:
+        let inv = 1.0 / sw[l]
+        let two = 2.0 * inv
+        amp[row] = mag[l] * inv
+        for k in 1 ..< nb - 1:
+          amp[row + k] = mag[k * L + l] * two
+        let last = (nb - 1) * L + l
+        let lastSide = if 2 * (nb - 1) == n: inv else: two
+        if last < held: amp[row + nb - 1] = mag[last] * lastSide
+        else: amp[row + nb - 1] = tail[last - held] * lastSide
+    first += used
+
 func workspaceSize*[T](sg: SpectrogramPlan[T]): WorkspaceSize {.raises: [].} =
   ## The scratch `spectrogramInto` needs.
   let extra = fftLanes * (sg.fft.len + 2 * sg.fft.bins)
@@ -206,10 +274,18 @@ proc spectrogramInto*[T: SampleType](sg: SpectrogramPlan[T], x: openArray[T],
   let nb = sg.fft.bins
   let W = sg.window.len
   let extreme = when T is float64:
-    x.len > 0 and leavesFloat64Range(cast[ptr UncheckedArray[float64]](addr x[0]), x.len)
+    x.len > 0 and leavesFloat64Range(cast[ptr UncheckedArray[float64]](addr x[
+        0]), x.len)
   else:
     false
   let at = sg.fft.workspaceSize.elems(T)
+  let width = lanesFor(sg.fft)
+  if width != fftLanes:
+    case width
+    of 4: spectrogramWidth[T, 4](sg, x, amp, ws, extreme)
+    of 2: spectrogramWidth[T, 2](sg, x, amp, ws, extreme)
+    else: doAssert false, "lanesFor returned a width with no kernel"
+    return
   let buf = ws.scratch(T, fftLanes * (n + 2 * nb), at)
   let re = cast[ptr UncheckedArray[T]](addr buf[n * fftLanes])
   let im = cast[ptr UncheckedArray[T]](addr buf[n * fftLanes + nb * fftLanes])
@@ -226,7 +302,8 @@ proc spectrogramInto*[T: SampleType](sg: SpectrogramPlan[T], x: openArray[T],
         buf[j * fftLanes + l] = x[start + j] * sg.window[j]
         sw[l] += float64(sg.window[j])
     sg.fft.forwardLanes(buf.toOpenArray(0, n * fftLanes - 1),
-      re.toOpenArray(0, nb * fftLanes - 1), im.toOpenArray(0, nb * fftLanes - 1), ws)
+      re.toOpenArray(0, nb * fftLanes - 1), im.toOpenArray(0, nb * fftLanes -
+          1), ws)
     # Time samples are dead. Their bytes hold unit-stride magnitudes; a
     # float32 buffer is a few lanes short of one bin, and those sit in `tail`.
     let count = nb * fftLanes
@@ -270,8 +347,8 @@ proc spectrogramInto*[T: SampleType](sg: SpectrogramPlan[T], x: openArray[T],
         else: amp[row + nb - 1] = tail[last - held] * lastSide
     first += used
 
-func averagedRow*[T: SampleType](x: ptr UncheckedArray[T], n: int): bool {.inline,
-    raises: [].} =
+func averagedRow*[T: SampleType](x: ptr UncheckedArray[T],
+    n: int): bool {.inline, raises: [].} =
   ## True when these input samples enter the power average. Exported for
   ## the pool form of `averageSpectrogramInto`, which calls this on the
   ## row's live input samples (`src`, `live`) before the transform. A
@@ -290,8 +367,8 @@ func averageWorkspace*[T](sg: SpectrogramPlan[T]): WorkspaceSize {.raises: [].} 
   result = sg.workspaceSize
   result.f64 += sg.frames * sg.fft.bins
 
-proc averageSpectrogramInto*[T: SampleType](sg: SpectrogramPlan[T], b: RowBlock[T],
-    meta: ChunkMeta, amp: var openArray[float64], ws: var Workspace,
+proc averageSpectrogramInto*[T: SampleType](sg: SpectrogramPlan[T], b: RowBlock[
+    T], meta: ChunkMeta, amp: var openArray[float64], ws: var Workspace,
     rows = 0 .. int.high, stop: StopCheck = nil): int =
   ## The power average of `spectrogramInto` over the live rows of `b` in
   ## `rows` (clipped to the block), into `amp` (`frames·bins` values, the
@@ -341,7 +418,8 @@ proc averageSpectrogramInto*[T: SampleType](sg: SpectrogramPlan[T], b: RowBlock[
     if stop != nil and stop(): return Stopped
     let src = b.rowPtr(r)
     if averagedRow(src, live):
-      sg.spectrogramInto(src.toOpenArray(0, live - 1), tmp.toOpenArray(0, nb - 1), ws)
+      sg.spectrogramInto(src.toOpenArray(0, live - 1), tmp.toOpenArray(0, nb -
+          1), ws)
       if amplitudesFinite(cast[ptr UncheckedArray[float64]](addr tmp[0]), nb):
         for k in 0 ..< nb: amp[k] += tmp[k] * tmp[k]
         inc used

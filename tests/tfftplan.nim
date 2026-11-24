@@ -48,7 +48,8 @@ proc main*() =
     doAssert not isFastLen(0) and not isFastLen(7) and not isFastLen(2001)
     doAssert nextFastLen(2001) == 2048 and nextFastLen(2001, even = false) == 2025
     doAssert nextFastLen(0) == 2 and nextFastLen(0, even = false) == 1
-    doAssert nextFastLen(7) == 8 and nextFastLen(11) == 12 and nextFastLen(13) == 16
+    doAssert nextFastLen(7) == 8 and nextFastLen(11) == 12 and nextFastLen(
+        13) == 16
     doAssert nextFastLen(14, even = false) == 15
     doAssert nextFastLen(4097) == 4320
     for n in 1..5000:
@@ -309,5 +310,75 @@ proc main*() =
       gatherLanes(rowBlock(x, 8, 8), 0, lanes)
     doAssertRaises AssertionDefect:
       gatherLanes(rowBlock(x, 8, 8), -1, x)
+
+  block lanes_for_edges:
+    # Fail-first: `lanesFor` forced to return 8 failed 65536 float64 and
+    # both types at 262144, and the plan overload.
+    doAssert lanesFor(1, float32) == 8
+    doAssert lanesFor(262143, float32) == 8
+    doAssert lanesFor(262144, float32) == 4
+    doAssert lanesFor(1, float64) == 8
+    doAssert lanesFor(65535, float64) == 8
+    doAssert lanesFor(65536, float64) == 4
+    doAssert lanesFor(262143, float64) == 4
+    doAssert lanesFor(262144, float64) == 2
+    doAssert lanesFor(262144, float32) <= fftLanes
+    doAssert lanesFor(262144, float64) <= fftLanes
+    let p = initFftPlan(float64, 65536)
+    doAssert p.lanesFor == lanesFor(p.len, float64)
+    doAssert p.lanesFor == 4
+
+  block lane_width_agrees_with_one_signal:
+    # Fail-first: `lanesFor` forced to 8 failed the `L < fftLanes` check at
+    # these lengths (two signals, so the batch stays cheap).
+    proc check[T](n: int, tol: float64) =
+      let p = initFftPlan(T, n)
+      let L = lanesFor(p)
+      doAssert L < fftLanes, "this length should narrow, got " & $L
+      var ws = initWorkspace()
+      ws.reserve(p.workspaceSize)
+      var x = newSeq[T](n)
+      for i in 0 ..< n: x[i] = T(sin(0.01 * float64(i + 1)))
+      var re, im = newSeq[T](p.bins)
+      p.forward(x, re, im, ws)
+      var peak = 1.0
+      for k in 0 ..< p.bins:
+        peak = max(peak, hypot(float64(re[k]), float64(im[k])))
+      var lx = newSeq[T](n * L)
+      for j in 0 ..< n:
+        lx[j * L] = x[j]
+        lx[j * L + 1] = x[j]
+      var lr, li = newSeq[T](p.bins * L)
+      p.forwardLanes(lx, lr, li, ws)
+      for k in 0 ..< p.bins:
+        let e0 = hypot(float64(lr[k * L] - re[k]), float64(li[k * L] - im[k]))
+        let e1 = hypot(float64(lr[k * L + 1] - re[k]),
+          float64(li[k * L + 1] - im[k]))
+        doAssert e0 <= tol * peak and e1 <= tol * peak,
+          "n = " & $n & " bin " & $k & ": " & $e0 & " " & $e1
+    check[float64](65536, 1e-12)
+    check[float32](262144, 1e-5)
+    check[float64](262144, 1e-12)
+
+  when not defined(release) and not defined(danger):
+    block lane_widths_match_in_debug:
+      # Fail-first: the width `case` forced to `forwardImpl[T, 8]` made a
+      # 2-lane buffer disagree with the one-trace transform.
+      let n = 32
+      let p = initFftPlan(float64, n)
+      var ws = initWorkspace()
+      ws.reserve(p.workspaceSize)
+      var x = newSeq[float64](n)
+      for i in 0 ..< n: x[i] = sin(0.2 * float64(i))
+      var re, im = newSeq[float64](p.bins)
+      p.forward(x, re, im, ws)
+      for lanes in [1, 2, 4, 8]:
+        var lx = newSeq[float64](n * lanes)
+        for j in 0 ..< n: lx[j * lanes] = x[j]
+        var lr, li = newSeq[float64](p.bins * lanes)
+        p.forwardLanes(lanes, lx, lr, li, ws)
+        for k in 0 ..< p.bins:
+          doAssert lr[k * lanes] == re[k] and li[k * lanes] == im[k],
+            "lanes " & $lanes & " bin " & $k
 
 when isMainModule: main()

@@ -46,7 +46,7 @@
 ## row of zeros counts, and lowers the average. A row with a NaN or infinite
 ## sample in its window is left out too, so it cannot blank the panel; the
 ## count of rows averaged is returned. The rows go through the batched FFT,
-## `fftLanes` at a time.
+## `lanesFor` traces at a time.
 ##
 ## **NaN.** `amplitudeInto` on a window holding a NaN gives NaN in every bin
 ## of that trace (its mean and its FFT are NaN); `toDbInto` maps a NaN
@@ -204,7 +204,8 @@ proc unwrapPhaseInto*(phaseDeg: openArray[float64], shown: openArray[bool],
       dst[i] = last + wrapStep(phaseDeg[i] - last)
       last = dst[i]
 
-func circularMeanDeg*(angles: openArray[float64]): tuple[meanDeg, resultant: float64] {.
+func circularMeanDeg*(angles: openArray[float64]): tuple[meanDeg,
+    resultant: float64] {.
     raises: [].} =
   ## The circular mean of `angles` (degrees) and the mean resultant length,
   ## from the sum of their unit vectors: `meanDeg` is its argument in
@@ -330,6 +331,46 @@ proc addLanePowers[T](re, im: ptr UncheckedArray[T], nLanes, stride, nb: int,
     acc[k] += s
   {.pop.}
 
+proc addPowerWidth[T; L: static int](sp: SpectrumPlan[T], b: RowBlock[T],
+    meta: ChunkMeta, firstCol, row0, row1: int, acc: var openArray[float64],
+    ws: var Workspace): int {.raises: [].} =
+  ## `addPowerRows` at a static width below `fftLanes`. Scratch stays sized
+  ## for `fftLanes`; the live batch uses the first `n · L` samples.
+  let nb = sp.fft.bins
+  let n = sp.fft.len
+  let at = sp.fft.workspaceSize.elems(T)
+  let xw = ws.scratch(T, n * fftLanes + 2 * nb * fftLanes, at)
+  let re = cast[ptr UncheckedArray[T]](addr xw[n * fftLanes])
+  let im = cast[ptr UncheckedArray[T]](addr xw[n * fftLanes + nb * fftLanes])
+  var lane = 0
+  var used = 0
+  var scale: array[L, float64]
+  template flush() =
+    if lane > 0:
+      for l in lane ..< L:
+        for j in 0 ..< n: xw[j * L + l] = T(0)
+      sp.fft.forwardLanes(L, xw.toOpenArray(0, n * L - 1),
+        re.toOpenArray(0, nb * L - 1), im.toOpenArray(0, nb * L - 1), ws)
+      addLanePowers(re, im, lane, L, nb,
+        cast[ptr UncheckedArray[float64]](addr scale[0]),
+        cast[ptr UncheckedArray[float64]](addr acc[0]))
+      lane = 0
+  for r in row0 .. row1:
+    if meta.isLive(r):
+      let live = meta.liveSamples(r, b.cols)
+      if live > firstCol:
+        let last = min(live, firstCol + sp.taper.len)
+        let src = b.rowPtr(r)
+        let sw = sp.windowInto(src.toOpenArray(firstCol, last - 1),
+          cast[ptr UncheckedArray[T]](addr xw[lane]), L)
+        if sw > 0:
+          scale[lane] = 1 / (sw * sw)
+          inc lane
+          inc used
+          if lane == L: flush()
+  flush()
+  used
+
 proc addPowerRows*[T: SampleType](sp: SpectrumPlan[T], b: RowBlock[T],
     meta: ChunkMeta, firstCol, row0, row1: int, acc: var openArray[float64],
     ws: var Workspace): int {.raises: [].} =
@@ -344,6 +385,12 @@ proc addPowerRows*[T: SampleType](sp: SpectrumPlan[T], b: RowBlock[T],
   let n = sp.fft.len
   doAssert acc.len == nb, "acc needs bins values"
   if row1 < row0 or nb == 0: return 0
+  let width = lanesFor(sp.fft)
+  if width != fftLanes:
+    case width
+    of 4: return addPowerWidth[T, 4](sp, b, meta, firstCol, row0, row1, acc, ws)
+    of 2: return addPowerWidth[T, 2](sp, b, meta, firstCol, row0, row1, acc, ws)
+    else: doAssert false, "lanesFor returned a width with no kernel"
   let at = sp.fft.workspaceSize.elems(T)
   let xw = ws.scratch(T, n * fftLanes + 2 * nb * fftLanes, at)
   let re = cast[ptr UncheckedArray[T]](addr xw[n * fftLanes])
@@ -432,8 +479,10 @@ type
     tmp: seq[float64]
     used: int
 
-proc initSpectrumAccumulator*(T: typedesc[SampleType], dtMs: float64, windowLen: int,
-    nfft = 0, taperFraction = 0.1, demean = true): SpectrumAccumulator[T] =
+proc initSpectrumAccumulator*(T: typedesc[SampleType], dtMs: float64,
+    windowLen: int,
+
+nfft = 0, taperFraction = 0.1, demean = true): SpectrumAccumulator[T] =
   ## An accumulator of windows of `windowLen` samples at `dtMs`, with the
   ## same taper, padding and demean as `initSpectrumPlan`. Raises `ValueError`
   ## as that does. Allocates the power sum; `add` does not.
@@ -475,7 +524,8 @@ proc clear*[T](acc: var SpectrumAccumulator[T]) {.raises: [].} =
   acc.used = 0
 
 proc add*[T: SampleType](acc: var SpectrumAccumulator[T], b: RowBlock[T],
-    meta: ChunkMeta, firstCol: int, ws: var Workspace, rows = 0 .. int.high): int =
+    meta: ChunkMeta, firstCol: int, ws: var Workspace, rows = 0 ..
+        int.high): int =
   ## Adds the window `averageAmplitudeInto` would average, as `amp²·rows`, to
   ## the power sum. Returns the rows added (0 when the window has none). The
   ## same `ValueError`s as `averageAmplitudeInto`. `ws` must hold
@@ -488,7 +538,8 @@ proc add*[T: SampleType](acc: var SpectrumAccumulator[T], b: RowBlock[T],
   n
 
 proc add*[T: SampleType](acc: var SpectrumAccumulator[T], samples: Tensor[T],
-    meta: ChunkMeta, firstCol: int, ws: var Workspace, rows = 0 .. int.high): int =
+    meta: ChunkMeta, firstCol: int, ws: var Workspace, rows = 0 ..
+        int.high): int =
   ## `add` on a `[rows, cols]` tensor.
   meta.checkShape(samples)
   acc.add(rowBlock(samples), meta, firstCol, ws, rows)

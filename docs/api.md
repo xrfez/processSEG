@@ -197,12 +197,14 @@ auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guid
 
 | Proc | What |
 |---|---|
-| `fftLanes` (8) | Traces per batch of the batched transforms. |
+| `fftLanes` (8) | Most traces a batch runs. `lanesFor` never returns more. Workspaces stay sized for this. |
+| `lanesFor(nfft, T)`, `lanesFor(plan)` | Width of a batched transform: float32 8 below 262144, else 4; float64 8 below 65536, 4 below 262144, else 2. |
 | `isFastLen(n)`, `nextFastLen(n, even = true)` | 2·3·5-smooth lengths; the next one up (even by default: about twice as fast). |
 | `FftPlan[T]`; `initFftPlan(T, n)`, `p.len`, `p.bins`, `p.workspaceSize(batched = true)` | A real FFT of length `n` (`ValueError` unless smooth); `n div 2 + 1` bins. |
 | `p.forward(x, re, im, ws)`, `p.inverse(re, im, x, ws)` | One trace: unscaled forward, inverse scaled by 1/n. |
-| `p.forwardLanes(x, re, im, ws)`, `p.inverseLanes(re, im, x, ws)` | `fftLanes` interleaved traces at once (SIMD across traces). |
-| `gatherLanes(b, first, x)`, `scatterLanes(x, b, first)` | Rows of a block into and out of the interleaved lane layout. |
+| `p.forwardLanes(x, re, im, ws)`, `p.inverseLanes(re, im, x, ws)` | `lanesFor(p)` interleaved traces at once (SIMD across traces). |
+| `p.forwardLanes(lanes, x, re, im, ws)`, `p.inverseLanes(lanes, re, im, x, ws)` | An explicit width 1, 2, 4 or 8 (not above `fftLanes`). |
+| `gatherLanes(b, first, x, lanes = fftLanes)`, `scatterLanes(x, b, first, lanes = fftLanes)` | Rows of a block into and out of the interleaved lane layout. |
 
 ## fft/spectrum: `SpectrumPlan`
 
@@ -271,7 +273,7 @@ auxiliary rows go to volts (`scaleAuxiliary`); failed rows are not touched. Guid
 | `TrendRemoval` (`trNone`, `trMean`, `trLinear`) | What is removed before padding and added back after, scaled by the gain at 0 Hz. |
 | `FilterPlan[T]`; `initFilterPlan(T, spec, dtMs, samples, trend = trLinear)` | A filter for traces up to `samples` long: zero pads (a response that rejects 0 Hz, with `trLinear`) or odd-reflection pads of `L`, a pad-only taper, an FFT of at least `samples + 2L` (zeros) or `samples + 4L` (reflections). Zero pads are cut to `samples` when `L` is longer than the trace (a 0.02 Hz low-cut: nfft 6144 for 2001 samples, not 50 000; the output within 0.4 % of the uncut one). |
 | `plan.requiredMargin`, `plan.samples`, `plan.nfft`, `plan.spec`, `plan.dtMs`, `plan.binHz`, `plan.gainAt(k)`, `plan.workspaceSize` | Its margin `L`, size and response. |
-| `applyFilter(plan, x \| b, meta \| samples, meta, ws)` | Filter one trace, or the live rows in place (`fftLanes` at a time). |
+| `applyFilter(plan, x \| b, meta \| samples, meta, ws)` | Filter one trace, or the live rows in place (`lanesFor` at a time). |
 
 ## filter/iir: `IirPlan` (Butterworth biquads)
 

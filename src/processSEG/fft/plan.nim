@@ -21,12 +21,14 @@
 ## trip is the identity. The imaginary parts of bin 0 and, for an even `n`,
 ## bin `n div 2` are taken as 0 by `inverse`. Bin `k` is at `k / (n·dt)` Hz.
 ##
-## **Batches across traces.** The batched path transforms `fftLanes` traces
-## at once, held interleaved: sample `j` of lane `l` is element
-## `j·fftLanes + l` of the lane buffer, and bin `k` of lane `l` is element
-## `k·fftLanes + l` of the spectrum buffers. Every inner loop then runs over
+## **Batches across traces.** `lanesFor` picks how many traces a length runs
+## at once (8, 4 or 2, never more than `fftLanes`). They are held
+## interleaved at that width: sample `j` of lane `l` is element
+## `j·lanes + l` of the lane buffer, and bin `k` of lane `l` is element
+## `k·lanes + l` of the spectrum buffers. Every inner loop then runs over
 ## contiguous lanes and compiles to packed SIMD. `gatherLanes` and
 ## `scatterLanes` move rows of a `RowBlock` in and out of that layout.
+## Workspaces stay sized for `fftLanes`, which covers every narrower width.
 ##
 ## The transforms do not allocate or raise. Buffers of the wrong length, and a
 ## plan not made by `initFftPlan`, are an `AssertionDefect` in every build
@@ -38,8 +40,31 @@ import parseSEG
 import ../core/[rows, workspace]
 
 const fftLanes* = 8
-  ## Traces per batch in the batched path (`forwardLanes`, `inverseLanes`).
-  ## Eight float32 lanes fill one AVX2 register.
+  ## Most traces a batched transform runs side by side. `lanesFor` picks the
+  ## width of a length and never returns more than this. Eight float32 lanes
+  ## fill one AVX2 register.
+
+func lanesFor*(nfft: int, T: typedesc[SampleType]): int {.raises: [].} =
+  ## Traces a batched transform of length `nfft` runs side by side, never
+  ## more than `fftLanes`.
+  ##
+  ## Eight lanes fill one AVX2 register and are fastest while the streams
+  ## fit the cache. On long transforms they do not, and a narrower batch is
+  ## faster (measured, one core, `-d:danger --opt:speed`): float64 at 8 lanes
+  ## is 12% slower than 4 at 65536, 47% at 131072, and 175% slower than 2 at
+  ## 262144; float32 is 34% slower than 4 at 262144. So float32 stays at 8
+  ## below 262144 and drops to 4; float64 stays at 8 below 65536, drops to 4
+  ## below 262144, then to 2. An optimised build does not give the same bits
+  ## at every width: the C compiler contracts multiply-adds per width.
+  when T is float32:
+    result = if nfft < 262144: 8 else: 4
+  elif T is float64:
+    if nfft < 65536: result = 8
+    elif nfft < 262144: result = 4
+    else: result = 2
+  else:
+    {.error: "lanesFor needs a sample type".}
+  if result > fftLanes: result = fftLanes
 
 const
   waySpan = 65536  # bytes of one way of an L2 cache (512 KiB, 8 ways)
@@ -137,6 +162,10 @@ proc initFftPlan*(T: typedesc[SampleType], n: int): FftPlan[T] =
 func len*[T](p: FftPlan[T]): int {.inline, raises: [].} =
   ## The real length `n`.
   p.n
+
+func lanesFor*[T: SampleType](p: FftPlan[T]): int {.inline, raises: [].} =
+  ## `lanesFor(p.len, T)`.
+  lanesFor(p.n, T)
 
 func bins*[T](p: FftPlan[T]): int {.inline, raises: [].} =
   ## The number of spectrum bins, `n div 2 + 1`.
@@ -573,6 +602,10 @@ proc badLen(what: string, got, want: int) {.noinline, noreturn.} =
 proc noPlan() {.noinline, noreturn.} =
   raise newException(AssertionDefect, "an FftPlan must come from initFftPlan")
 
+proc badLanes(lanes: int) {.noinline, noreturn.} =
+  raise newException(AssertionDefect, "a lane count must be 1, 2, 4 or 8 " &
+    "and not above fftLanes, got " & $lanes)
+
 template checkLen(what: string, a: openArray, want: int) =
   ## Always on: a wrong length would write past the end of a buffer.
   if a.len != want: badLen(what, a.len, want)
@@ -605,60 +638,94 @@ proc inverse*[T: SampleType](p: FftPlan[T], re, im: openArray[T],
   checkLen("im", im, p.bins)
   inverseImpl[T, 1](p, bufOf(re), bufOf(im), bufOf(x), ws)
 
+proc forwardLanes*[T: SampleType](p: FftPlan[T], lanes: int, x: openArray[T],
+    re, im: var openArray[T], ws: var Workspace) {.raises: [].} =
+  ## The spectra of `lanes` interleaved traces (`1`, `2`, `4` or `8`, and not
+  ## above `fftLanes`): `x.len == p.len · lanes`, `re.len == im.len ==
+  ## p.bins · lanes`. The width is a compile-time `static` on the kernel;
+  ## this `case` is the only place that picks it. `ws` must hold
+  ## `p.workspaceSize`.
+  checkPlan(p)
+  if lanes > fftLanes: badLanes(lanes)
+  checkLen("x", x, p.n * lanes)
+  checkLen("re", re, p.bins * lanes)
+  checkLen("im", im, p.bins * lanes)
+  case lanes
+  of 8: forwardImpl[T, 8](p, bufOf(x), bufOf(re), bufOf(im), ws)
+  of 4: forwardImpl[T, 4](p, bufOf(x), bufOf(re), bufOf(im), ws)
+  of 2: forwardImpl[T, 2](p, bufOf(x), bufOf(re), bufOf(im), ws)
+  of 1: forwardImpl[T, 1](p, bufOf(x), bufOf(re), bufOf(im), ws)
+  else: badLanes(lanes)
+
+proc inverseLanes*[T: SampleType](p: FftPlan[T], lanes: int, re, im: openArray[
+    T], x: var openArray[T], ws: var Workspace) {.raises: [].} =
+  ## The traces of `lanes` interleaved spectra, scaled by `1/n`; lengths and
+  ## the lane `case` as for `forwardLanes`.
+  checkPlan(p)
+  if lanes > fftLanes: badLanes(lanes)
+  checkLen("x", x, p.n * lanes)
+  checkLen("re", re, p.bins * lanes)
+  checkLen("im", im, p.bins * lanes)
+  case lanes
+  of 8: inverseImpl[T, 8](p, bufOf(re), bufOf(im), bufOf(x), ws)
+  of 4: inverseImpl[T, 4](p, bufOf(re), bufOf(im), bufOf(x), ws)
+  of 2: inverseImpl[T, 2](p, bufOf(re), bufOf(im), bufOf(x), ws)
+  of 1: inverseImpl[T, 1](p, bufOf(re), bufOf(im), bufOf(x), ws)
+  else: badLanes(lanes)
+
 proc forwardLanes*[T: SampleType](p: FftPlan[T], x: openArray[T],
     re, im: var openArray[T], ws: var Workspace) {.raises: [].} =
-  ## The spectra of `fftLanes` interleaved traces (module documentation):
-  ## `x.len == p.len · fftLanes`, `re.len == im.len == p.bins · fftLanes`.
-  ## `ws` must hold `p.workspaceSize`.
-  checkPlan(p)
-  checkLen("x", x, p.n * fftLanes)
-  checkLen("re", re, p.bins * fftLanes)
-  checkLen("im", im, p.bins * fftLanes)
-  forwardImpl[T, fftLanes](p, bufOf(x), bufOf(re), bufOf(im), ws)
+  ## The spectra of `lanesFor(p)` interleaved traces: `x.len == p.len ·
+  ## lanesFor(p)`, `re.len == im.len == p.bins · lanesFor(p)`. `ws` must
+  ## hold `p.workspaceSize`.
+  forwardLanes(p, lanesFor(p), x, re, im, ws)
 
 proc inverseLanes*[T: SampleType](p: FftPlan[T], re, im: openArray[T],
     x: var openArray[T], ws: var Workspace) {.raises: [].} =
-  ## The traces of `fftLanes` interleaved spectra, scaled by `1/n`; lengths
-  ## as for `forwardLanes`.
-  checkPlan(p)
-  checkLen("x", x, p.n * fftLanes)
-  checkLen("re", re, p.bins * fftLanes)
-  checkLen("im", im, p.bins * fftLanes)
-  inverseImpl[T, fftLanes](p, bufOf(re), bufOf(im), bufOf(x), ws)
+  ## The traces of `lanesFor(p)` interleaved spectra, scaled by `1/n`;
+  ## lengths as for `forwardLanes`.
+  inverseLanes(p, lanesFor(p), re, im, x, ws)
 
 proc gatherLanes*[T: SampleType](b: RowBlock[T], first: int,
-    x: var openArray[T]) {.raises: [].} =
-  ## Interleaves rows `first ..< first + fftLanes` of `b` into the lane
-  ## buffer `x` (`x.len = n · fftLanes`): each row's first `min(n, b.cols)`
-  ## samples, zero after them, and zero lanes for rows past `b.len`. An
-  ## `AssertionDefect` for a negative `first` or an `x.len` that is not a
-  ## multiple of `fftLanes`.
-  doAssert first >= 0 and x.len mod fftLanes == 0, "bad lane buffer or first row"
-  let n = x.len div fftLanes
+    x: var openArray[T], lanes = fftLanes) {.raises: [].} =
+  ## Interleaves rows `first ..< first + lanes` of `b` into the lane buffer
+  ## `x` (`x.len = n · lanes`; `lanes` is 1, 2, 4 or 8 and not above
+  ## `fftLanes`): each row's first `min(n, b.cols)` samples, zero after them,
+  ## and zero lanes for rows past `b.len`. An `AssertionDefect` for a bad
+  ## `lanes`, a negative `first`, or an `x.len` that is not a multiple of
+  ## `lanes`.
+  if lanes > fftLanes or
+      (lanes != 1 and lanes != 2 and lanes != 4 and lanes != 8):
+    badLanes(lanes)
+  doAssert first >= 0 and x.len mod lanes == 0, "bad lane buffer or first row"
+  let n = x.len div lanes
   let c = min(n, b.cols)
-  for l in 0..<fftLanes:
+  for l in 0 ..< lanes:
     let r = first + l
     if r < b.len:
       let src = b.rowPtr(r)
       {.push boundChecks: off.}
-      for j in 0..<c: x[j * fftLanes + l] = src[j]
-      for j in c..<n: x[j * fftLanes + l] = T(0)
+      for j in 0 ..< c: x[j * lanes + l] = src[j]
+      for j in c ..< n: x[j * lanes + l] = T(0)
       {.pop.}
     else:
-      for j in 0..<n: x[j * fftLanes + l] = T(0)
+      for j in 0 ..< n: x[j * lanes + l] = T(0)
 
 proc scatterLanes*[T: SampleType](x: openArray[T], b: RowBlock[T],
-    first: int) {.raises: [].} =
+    first: int, lanes = fftLanes) {.raises: [].} =
   ## The reverse of `gatherLanes`: writes lane `l` of `x` to row
   ## `first + l` of `b` (rows past `b.len` are skipped), its first
   ## `min(n, b.cols)` samples. Checks as for `gatherLanes`.
-  doAssert first >= 0 and x.len mod fftLanes == 0, "bad lane buffer or first row"
-  let n = x.len div fftLanes
+  if lanes > fftLanes or
+      (lanes != 1 and lanes != 2 and lanes != 4 and lanes != 8):
+    badLanes(lanes)
+  doAssert first >= 0 and x.len mod lanes == 0, "bad lane buffer or first row"
+  let n = x.len div lanes
   let c = min(n, b.cols)
-  for l in 0..<fftLanes:
+  for l in 0 ..< lanes:
     let r = first + l
     if r < b.len:
       let dst = b.rowPtr(r)
       {.push boundChecks: off.}
-      for j in 0..<c: dst[j] = x[j * fftLanes + l]
+      for j in 0 ..< c: dst[j] = x[j * lanes + l]
       {.pop.}

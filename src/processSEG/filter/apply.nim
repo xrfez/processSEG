@@ -79,7 +79,7 @@
 ## **Rows.** The block forms filter the live rows, each to its live length
 ## (`ChunkMeta.liveSamples`); dead, auxiliary and failed rows and the padding
 ## past a trace's end are left untouched. The rows go through the batched FFT,
-## `fftLanes` at a time; a row's result does not depend on the rows batched
+## `lanesFor` at a time; a row's result does not depend on the rows batched
 ## with it, so any split of the rows across threads gives the same samples. A
 ## NaN or Inf sample makes its own row NaN (its trend is NaN) and no other.
 ## Nothing allocates once the workspace is reserved.
@@ -270,8 +270,8 @@ proc packSample[T](d {.noalias.}: Buf[T], rows: LaneRows[T], i: int,
   for l in 0..<fftLanes:
     d[l] = T(float64(rows[l][i]) - (a[l] + b[l] * fi))
 
-proc reflectSample[T](d {.noalias.}, mirror {.noalias.}, edge {.noalias.}: Buf[T],
-    fall: T) {.inline.} =
+proc reflectSample[T](d {.noalias.}, mirror {.noalias.}, edge {.noalias.}: Buf[
+    T], fall: T) {.inline.} =
   for l in 0..<fftLanes:
     d[l] = (edge[l] + edge[l] - mirror[l]) * fall
 
@@ -288,8 +288,10 @@ proc packLanes[T](plan: FilterPlan[T], rows: LaneRows[T], n: int,
     let last = dst +@ ((p + n - 1) * L)
     for k in 1..p:
       let m = min(k, n - 1)
-      reflectSample(dst +@ ((p - k) * L), dst +@ ((p + m) * L), first, plan.fall[k - 1])
-      reflectSample(dst +@ ((p + n - 1 + k) * L), dst +@ ((p + n - 1 - m) * L), last,
+      reflectSample(dst +@ ((p - k) * L), dst +@ ((p + m) * L), first,
+          plan.fall[k - 1])
+      reflectSample(dst +@ ((p + n - 1 + k) * L), dst +@ ((p + n - 1 - m) * L),
+          last,
         plan.fall[k - 1])
     for j in (2 * p + n) * L..<plan.fft.len * L: dst[j] = T(0)
   else:
@@ -302,7 +304,8 @@ proc unpackSample[T](s {.noalias.}: Buf[T], rows: LaneRows[T], i: int,
   for l in 0..<fftLanes:
     rows[l][i] = T(float64(s[l]) + (ga[l] + gb[l] * fi))
 
-proc copySample[T](s {.noalias.}: Buf[T], rows: LaneRows[T], i: int) {.inline.} =
+proc copySample[T](s {.noalias.}: Buf[T], rows: LaneRows[T],
+    i: int) {.inline.} =
   for l in 0..<fftLanes:
     rows[l][i] = s[l]
 
@@ -361,10 +364,49 @@ proc applyFilter*[T: SampleType](plan: FilterPlan[T], x: var openArray[T],
 
 # -------------------------------------------------------------- block form --
 
-proc applyFilter*[T: SampleType](plan: FilterPlan[T], b: RowBlock[T], meta: ChunkMeta,
-    ws: var Workspace) =
+proc applyWidth[T; L: static int](plan: FilterPlan[T], b: RowBlock[T],
+    meta: ChunkMeta, ws: var Workspace) =
+  ## The block form at a static width below `fftLanes`. Scratch stays sized
+  ## for `fftLanes`; a batch uses the first `nfft · L` samples. `packInto`
+  ## already takes a stride, so a full batch does not need its own packer.
+  let nf = plan.fft.len
+  let nb = plan.fft.bins
+  let at = plan.fft.workspaceSize.elems(T)
+  let buf = ws.scratch(T, nf * fftLanes + 2 * nb * fftLanes, at)
+  let re = cast[ptr UncheckedArray[T]](addr buf[nf * fftLanes])
+  let im = cast[ptr UncheckedArray[T]](addr buf[nf * fftLanes + nb * fftLanes])
+  var lane = 0
+  var rowsOf: array[L, Buf[T]]
+  var lenOf: array[L, int]
+  var ta, tb: array[L, float64]
+  template flush() =
+    if lane > 0:
+      for l in 0 ..< lane:
+        plan.packInto(rowsOf[l], lenOf[l], ta[l], tb[l], buf +@ l, L)
+      for l in lane ..< L:
+        for j in 0 ..< nf: buf[j * L + l] = T(0)
+      plan.fft.forwardLanes(L, buf.toOpenArray(0, nf * L - 1),
+        re.toOpenArray(0, nb * L - 1), im.toOpenArray(0, nb * L - 1), ws)
+      gainRun(re, im, cast[Buf[T]](addr plan.gain[0]), nb, L)
+      plan.fft.inverseLanes(L, re.toOpenArray(0, nb * L - 1),
+        im.toOpenArray(0, nb * L - 1), buf.toOpenArray(0, nf * L - 1), ws)
+      for l in 0 ..< lane:
+        plan.unpackFrom(buf +@ l, L, ta[l], tb[l], rowsOf[l], lenOf[l])
+      lane = 0
+  for r in 0 ..< b.len:
+    let n = (if meta.isLive(r): meta.liveSamples(r, b.cols) else: 0)
+    if n > 0:
+      rowsOf[lane] = b.rowPtr(r)
+      lenOf[lane] = n
+      (ta[lane], tb[lane]) = trendOf(plan.trend, rowsOf[lane], n)
+      inc lane
+      if lane == L: flush()
+  flush()
+
+proc applyFilter*[T: SampleType](plan: FilterPlan[T], b: RowBlock[T],
+    meta: ChunkMeta, ws: var Workspace) =
   ## Filters the live rows of `b` in place, each to its live length (module
-  ## documentation), `fftLanes` rows at a time. `ws` must hold
+  ## documentation), `lanesFor` rows at a time. `ws` must hold
   ## `plan.workspaceSize`. Raises `ValueError`, before any sample changes,
   ## when `b` does not match `meta`, has more columns than `plan.samples`, or
   ## its rows' interval (`meta.dtMs`) is not the plan's.
@@ -376,6 +418,13 @@ proc applyFilter*[T: SampleType](plan: FilterPlan[T], b: RowBlock[T], meta: Chun
   if b.cols > plan.samples:
     badPlan("the block has " & $b.cols & " columns, the plan takes " &
       $plan.samples & " samples")
+  let width = lanesFor(plan.fft)
+  if width != fftLanes:
+    case width
+    of 4: applyWidth[T, 4](plan, b, meta, ws)
+    of 2: applyWidth[T, 2](plan, b, meta, ws)
+    else: doAssert false, "lanesFor returned a width with no kernel"
+    return
   let nf = plan.fft.len
   let nb = plan.fft.bins
   let at = plan.fft.workspaceSize.elems(T)
@@ -400,10 +449,12 @@ proc applyFilter*[T: SampleType](plan: FilterPlan[T], b: RowBlock[T], meta: Chun
         for l in lane..<fftLanes: # unused lanes are zero
           for j in 0..<nf: buf[j * fftLanes + l] = T(0)
       plan.fft.forwardLanes(buf.toOpenArray(0, nf * fftLanes - 1),
-        re.toOpenArray(0, nb * fftLanes - 1), im.toOpenArray(0, nb * fftLanes - 1), ws)
+        re.toOpenArray(0, nb * fftLanes - 1), im.toOpenArray(0, nb * fftLanes -
+            1), ws)
       plan.gainLanes(re, im)
       plan.fft.inverseLanes(re.toOpenArray(0, nb * fftLanes - 1),
-        im.toOpenArray(0, nb * fftLanes - 1), buf.toOpenArray(0, nf * fftLanes - 1), ws)
+        im.toOpenArray(0, nb * fftLanes - 1), buf.toOpenArray(0, nf * fftLanes -
+            1), ws)
       if uniform:
         plan.unpackLanes(buf, ta, tb, rowsOf, lenOf[0])
       else:

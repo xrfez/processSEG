@@ -53,7 +53,7 @@ import rows, types, workspace
 import ../pipeline
 import ../vibroseis/correlate
 import ../qc/[amplitude, firstbreak]
-from ../fft/plan import fftLanes
+from ../fft/plan import fftLanes, lanesFor
 import ../fft/spectrogram
 from ../fft/fk import FkPlan
 import ../fft/fk as fk
@@ -209,7 +209,9 @@ const runBytes = 256 * 1024 # of samples per run: the tile of `runPart`
 
 proc reset(q: var RowQueue, rows, cols, sampleBytes: int, batch = fftLanes) =
   ## A queue of `rows` rows of `cols` samples of `sampleBytes` bytes each,
-  ## in runs of whole batches of `batch` rows (an FFT's lanes by default).
+  ## in runs of whole batches of `batch` rows. The default is `fftLanes`,
+  ## a multiple of every `lanesFor` width (8, 4 and 2), so a run starts on
+  ## a lane of the width the FFT uses.
   q.rows = rows
   q.grain = max(batch, runBytes div max(1, cols * sampleBytes) div batch * batch)
   q.next.store(0)
@@ -366,7 +368,8 @@ proc ampJob[T](ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
     raiseAssert "checked by traceAmplitudeInto: " & e.msg
 
 proc traceAmplitudeInto*[T: SampleType](p: ProcessPool, b: RowBlock[T],
-    meta: ChunkMeta, params: AmplitudeParams, dst: var openArray[TraceAmplitude]) =
+    meta: ChunkMeta, params: AmplitudeParams, dst: var openArray[
+        TraceAmplitude]) =
   ## `qc/amplitude.traceAmplitudeInto` with the rows split across the
   ## workers, each with its own workspace (`traceAmplitudeWorkspace`,
   ## reserved by the worker); blocks until they are done. The same results
@@ -375,7 +378,8 @@ proc traceAmplitudeInto*[T: SampleType](p: ProcessPool, b: RowBlock[T],
   meta.checkShape(b)
   params.validate
   if dst.len != b.len:
-    raise newException(ValueError, "dst holds " & $dst.len & " values, the block has " &
+    raise newException(ValueError, "dst holds " & $dst.len &
+      " values, the block has " &
       $b.len & " rows")
   if b.len == 0: return
   var ctx = AmpCtx[T](params: params, src: b, meta: meta,
@@ -386,7 +390,8 @@ proc traceAmplitudeInto*[T: SampleType](p: ProcessPool, b: RowBlock[T],
   release p.state.call
 
 proc traceAmplitudeInto*[T: SampleType](p: ProcessPool, samples: Tensor[T],
-    meta: ChunkMeta, params: AmplitudeParams, dst: var openArray[TraceAmplitude]) =
+    meta: ChunkMeta, params: AmplitudeParams, dst: var openArray[
+        TraceAmplitude]) =
   ## The tensor form of the pooled amplitude QC.
   meta.checkShape(samples)
   p.traceAmplitudeInto(rowBlock(samples), meta, params, dst)
@@ -412,8 +417,8 @@ proc pickJob[T](ctx: pointer, worker: int, ws: var Workspace) {.nimcall,
   except ValueError as e:
     raiseAssert "checked by pickInto: " & e.msg
 
-proc pickInto*[T: SampleType](p: ProcessPool, plan: FirstBreakPlan[T], b: RowBlock[T],
-    meta: ChunkMeta, dst: var openArray[FirstBreakPick]) =
+proc pickInto*[T: SampleType](p: ProcessPool, plan: FirstBreakPlan[T],
+    b: RowBlock[T], meta: ChunkMeta, dst: var openArray[FirstBreakPick]) =
   ## `FirstBreakPlan.pickInto` (`qc/firstbreak`) with the rows split across
   ## the workers, each with its own workspace; blocks until they are done.
   ## The same picks, bit for bit, and the same errors (`checkPick`, raised
@@ -430,8 +435,8 @@ proc pickInto*[T: SampleType](p: ProcessPool, plan: FirstBreakPlan[T], b: RowBlo
   run(p.state, pickJob[T], addr ctx)
   release p.state.call
 
-proc pickInto*[T: SampleType](p: ProcessPool, plan: FirstBreakPlan[T], samples: Tensor[T],
-    meta: ChunkMeta, dst: var openArray[FirstBreakPick]) =
+proc pickInto*[T: SampleType](p: ProcessPool, plan: FirstBreakPlan[T],
+    samples: Tensor[T], meta: ChunkMeta, dst: var openArray[FirstBreakPick]) =
   ## The tensor form of the pooled first-break picking.
   meta.checkShape(samples)
   p.pickInto(plan, rowBlock(samples), meta, dst)
@@ -472,8 +477,8 @@ proc addPartial(src: ptr UncheckedArray[float64],
     dst[i] = dst[i] + src[i]
   {.pop.}
 
-proc meanSqrt(dst {.noalias.}: ptr UncheckedArray[float64], n: int, u: float64) {.noinline,
-    raises: [].} =
+proc meanSqrt(dst {.noalias.}: ptr UncheckedArray[float64], n: int,
+    u: float64) {.noinline, raises: [].} =
   {.push boundChecks: off, overflowChecks: off.}
   for i in 0 ..< n:
     dst[i] = sqrt(dst[i] / u)
@@ -494,8 +499,8 @@ template eachAvgSlot(c: untyped; body: untyped) =
       else: cast[ptr UncheckedArray[float64]](addr c.partial[slot * nbSlot])
     body
 
-template runAvgWaves(state: ptr PoolState; nb, span: int; amp: var openArray[float64];
-    launch: untyped): int =
+template runAvgWaves(state: ptr PoolState; nb, span: int; amp: var openArray[
+    float64];launch: untyped): int =
   ## Fixed batches of `avgBatchRows`, at most two waves of partials per
   ## worker, summed in batch order on this thread. `launch` runs one wave:
   ## it sees `batch0` and `nWave`, and the partials and counts are already
@@ -515,7 +520,8 @@ template runAvgWaves(state: ptr PoolState; nb, span: int; amp: var openArray[flo
       let kept = state.counts[s]
       if kept > 0:
         if nb > 0:
-          addPartial(cast[ptr UncheckedArray[float64]](addr state.partial[s * nb]),
+          addPartial(cast[ptr UncheckedArray[float64]](addr state.partial[s *
+              nb]),
             cast[ptr UncheckedArray[float64]](addr amp[0]), nb)
         usedWave += kept
     batch0 += nWave
@@ -560,8 +566,8 @@ proc avgJob[T](ctx: pointer, worker: int, ws: var Workspace) {.nimcall, gcsafe,
               inc kept
     c.counts[slot] = kept
 
-proc averageSpectrogramInto*[T: SampleType](p: ProcessPool, sg: SpectrogramPlan[T],
-    b: RowBlock[T], meta: ChunkMeta, amp: var openArray[float64],
+proc averageSpectrogramInto*[T: SampleType](p: ProcessPool, sg: SpectrogramPlan[
+    T], b: RowBlock[T], meta: ChunkMeta, amp: var openArray[float64],
     rows = 0 .. int.high): int =
   ## The power average of `spectrogramInto` over the live rows of `b` in
   ## `rows` (clipped to the block), the pool form of `averageSpectrogramInto`.
@@ -617,8 +623,8 @@ proc averageSpectrogramInto*[T: SampleType](p: ProcessPool, sg: SpectrogramPlan[
     release p.state.call
   used
 
-proc averageSpectrogramInto*[T: SampleType](p: ProcessPool, sg: SpectrogramPlan[T],
-    samples: Tensor[T], meta: ChunkMeta, amp: var openArray[float64],
+proc averageSpectrogramInto*[T: SampleType](p: ProcessPool, sg: SpectrogramPlan[
+    T], samples: Tensor[T], meta: ChunkMeta, amp: var openArray[float64],
     rows = 0 .. int.high): int =
   ## `averageSpectrogramInto` on a `[rows, cols]` tensor. Returns the rows
   ## used. The plan stays usable.
@@ -665,7 +671,8 @@ proc fkAmplitudeInto*[T: SampleType](p: ProcessPool, plan: FkPlan[T],
     b: RowBlock[T], meta: ChunkMeta, firstCol: int, amp: var openArray[float64],
     rows = 0 .. int.high): int =
   ## `FkPlan.fkAmplitudeInto` with the time FFTs split across the workers in
-  ## runs of `fftLanes` traces and the spatial pass split by frequency, the
+  ## runs of `fftLanes` traces (a multiple of `lanesFor`, which `fkTimeRun`
+  ## uses) and the spatial pass split by frequency, the
   ## modulus with that pass. Blocks until both passes are done. The same
   ## values, bit for bit, for any worker count: the float64 `hypot` decision
   ## is made once for the whole window before the jobs start, and each worker
@@ -706,6 +713,15 @@ proc fkAmplitudeInto*[T: SampleType](p: ProcessPool, plan: FkPlan[T],
     amp: cast[ptr UncheckedArray[float64]](addr amp[0]),
     extreme: fk.fkLeavesRange(b, meta, firstCol, nSamples, rows),
     scratch: fk.fkPoolScratch(plan))
+  # fftLanes is a multiple of every lanesFor width, so this grain stays a
+  # whole number of the batches fkTimeRun runs. Checked at each edge.
+  static:
+    doAssert fftLanes mod lanesFor(1, float32) == 0
+    doAssert fftLanes mod lanesFor(65535, float64) == 0
+    doAssert fftLanes mod lanesFor(65536, float64) == 0
+    doAssert fftLanes mod lanesFor(262143, float32) == 0
+    doAssert fftLanes mod lanesFor(262144, float32) == 0
+    doAssert fftLanes mod lanesFor(262144, float64) == 0
   ctx.queue.reset(entered, nSamples, sizeof(T), fftLanes)
   acquire p.state.call
   run(p.state, fkTimeJob[T], addr ctx)
@@ -721,7 +737,8 @@ proc fkAmplitudeInto*[T: SampleType](p: ProcessPool, plan: FkPlan[T],
   meta.checkShape(samples)
   p.fkAmplitudeInto(plan, rowBlock(samples), meta, firstCol, amp, rows)
 
-proc applyOneSided[T](sp: SpectrumPlan[T], amp: var openArray[float64]) {.raises: [].} =
+proc applyOneSided[T](sp: SpectrumPlan[T], amp: var openArray[
+    float64]) {.raises: [].} =
   ## `amp[k] *= sides(k)` after the shared mean, the one-sided scale the
   ## serial form applies with the square root.
   let nb = sp.bins

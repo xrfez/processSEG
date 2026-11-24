@@ -79,8 +79,8 @@ type
 proc badPlan(msg: string) {.noinline, noreturn.} =
   raise newException(ValueError, msg)
 
-proc initCorrelationPlan*[T, P: SampleType](_: typedesc[T], pilot: Pilot[P], dtMs: float64,
-    recordSamples: int, outSamples = 0, mode = cmCorrelate,
+proc initCorrelationPlan*[T, P: SampleType](_: typedesc[T], pilot: Pilot[P],
+    dtMs: float64, recordSamples: int, outSamples = 0, mode = cmCorrelate,
     epsPercent = 1.0, normalize = true): CorrelationPlan[T] =
   ## A plan correlating records of up to `recordSamples` samples at `dtMs`
   ## with `pilot`, into `outSamples` columns (0: the listen time,
@@ -92,14 +92,18 @@ proc initCorrelationPlan*[T, P: SampleType](_: typedesc[T], pilot: Pilot[P], dtM
   ## pilot start time (`t0Ms`) so far from the time break that no lag
   ## reaches the output.
   pilot.validate
-  if not (dtMs > 0 and dtMs < Inf): badPlan("dtMs must be finite and positive, got " & $dtMs)
+  if not (dtMs > 0 and dtMs < Inf): badPlan(
+      "dtMs must be finite and positive, got " & $dtMs)
   if not sameInterval(pilot.dtMs, dtMs):
-    badPlan("the pilot is sampled at " & $pilot.dtMs & " ms, the records at " & $dtMs &
+    badPlan("the pilot is sampled at " & $pilot.dtMs & " ms, the records at " &
+      $dtMs &
       " ms: resample the pilot first (resamplePilot)")
-  if recordSamples < 1: badPlan("recordSamples must be ≥ 1, got " & $recordSamples)
+  if recordSamples < 1: badPlan("recordSamples must be ≥ 1, got " &
+      $recordSamples)
   let outN = if outSamples == 0: recordSamples - pilot.len else: outSamples
   if outN < 1:
-    badPlan("the pilot (" & $pilot.len & " samples) is not shorter than the record (" &
+    badPlan("the pilot (" & $pilot.len &
+      " samples) is not shorter than the record (" &
       $recordSamples & "): no listen time; pass outSamples")
   if outSamples < 0 or outN > recordSamples:
     badPlan("outSamples must be in 0 .. recordSamples, got " & $outSamples)
@@ -109,7 +113,8 @@ proc initCorrelationPlan*[T, P: SampleType](_: typedesc[T], pilot: Pilot[P], dtM
   # rest a phase ramp.
   let s = pilot.t0Ms / dtMs
   if abs(s) >= float64(recordSamples + pilot.len):
-    badPlan("the pilot starts " & $pilot.t0Ms & " ms from the time break: no lag of a " &
+    badPlan("the pilot starts " & $pilot.t0Ms &
+      " ms from the time break: no lag of a " &
       $recordSamples & "-sample record reaches the output")
   let whole = int(round(s))
   let frac = s - float64(whole)
@@ -197,7 +202,8 @@ proc checkPlan[T](plan: CorrelationPlan[T]) {.inline.} =
 
 {.push boundChecks: off, overflowChecks: off.}
 
-proc mulKernel[T](re {.noalias.}, im {.noalias.}: Buf[T], mr, mi: T) {.noinline.} =
+proc mulKernel[T](re {.noalias.}, im {.noalias.}: Buf[T], mr,
+    mi: T) {.noinline.} =
   ## One bin of `fftLanes` spectra times the plan's multiplier there. Not
   ## inlined: on its own the loop is one vector operation, while inside the
   ## loop over the bins the compiler vectorized across bins, shuffling the
@@ -222,12 +228,15 @@ template runLanes(plan, x, re, im, ws: untyped) =
     let n = plan.fft.len
     let bins = plan.fft.bins
     plan.fft.forwardLanes(x.toOpenArray(0, n * fftLanes - 1),
-      re.toOpenArray(0, bins * fftLanes - 1), im.toOpenArray(0, bins * fftLanes - 1), ws)
+      re.toOpenArray(0, bins * fftLanes - 1), im.toOpenArray(0, bins *
+          fftLanes - 1), ws)
     for k in 0 ..< bins:
-      mulKernel(cast[typeof(re)](addr re[k * fftLanes]), cast[typeof(im)](addr im[k * fftLanes]),
+      mulKernel(cast[typeof(re)](addr re[k * fftLanes]), cast[typeof(im)](
+          addr im[k * fftLanes]),
         plan.mulRe[k], plan.mulIm[k])
     plan.fft.inverseLanes(re.toOpenArray(0, bins * fftLanes - 1),
-      im.toOpenArray(0, bins * fftLanes - 1), x.toOpenArray(0, n * fftLanes - 1), ws)
+      im.toOpenArray(0, bins * fftLanes - 1), x.toOpenArray(0, n * fftLanes -
+          1), ws)
 
 proc gatherLanes[T](buf: Buf[T], n: int, rows: array[fftLanes, Buf[T]],
     live: array[fftLanes, int], used: int) {.raises: [].} =
@@ -264,8 +273,8 @@ func lagSpans(plan: CorrelationPlan, cols: int): LagSpans {.inline.} =
   result.direct = clamp(-plan.shift, result.wrapped, cols)
   result.last = clamp(plan.recordSamples - plan.shift, result.direct, cols)
 
-proc scatterLanes[T](plan: CorrelationPlan[T], buf: Buf[T], rows: array[fftLanes, Buf[T]],
-    used, cols: int) {.raises: [].} =
+proc scatterLanes[T](plan: CorrelationPlan[T], buf: Buf[T], rows: array[
+    fftLanes, Buf[T]], used, cols: int) {.raises: [].} =
   ## The lags of `used` lanes out of the buffer into their output rows,
   ## sample by sample (one pass over the buffer, as the gather: 3.1 against
   ## 6.9 ms lane by lane on 2000 records).
@@ -316,8 +325,8 @@ proc correlateInto*[T: SampleType](plan: CorrelationPlan[T], x: openArray[T],
     buf.toOpenArray(0, n - 1), ws)
   if y.len > 0: plan.scatterOne(buf, cast[Buf[T]](addr y[0]), y.len)
 
-proc checkCorrelate*[T: SampleType](plan: CorrelationPlan[T], src, dst: RowBlock[T],
-    meta: ChunkMeta) =
+proc checkCorrelate*[T: SampleType](plan: CorrelationPlan[T], src,
+    dst: RowBlock[T], meta: ChunkMeta) =
   ## The checks of `correlateInto` on `src`, `dst` and `meta`, without
   ## correlating: raises `ValueError` for a block that does not match the
   ## meta, `src` wider than `recordSamples`, `dst` not `outSamples` wide,
@@ -326,23 +335,104 @@ proc checkCorrelate*[T: SampleType](plan: CorrelationPlan[T], src, dst: RowBlock
   meta.checkShape(src)
   meta.checkShape(dst)
   if src.cols > plan.recordSamples:
-    badPlan("the records are " & $src.cols & " samples, the plan takes " & $plan.recordSamples)
+    badPlan("the records are " & $src.cols & " samples, the plan takes " &
+        $plan.recordSamples)
   if dst.cols != plan.outSamples:
     badPlan("dst must be " & $plan.outSamples & " samples wide, got " & $dst.cols)
   if not sameInterval(meta.dtMs, plan.dtMs):
-    badPlan("the records are at " & $meta.dtMs & " ms, the plan at " & $plan.dtMs & " ms")
+    badPlan("the records are at " & $meta.dtMs & " ms, the plan at " &
+        $plan.dtMs & " ms")
   if meta.firstSample != 0:
     badPlan("correlation needs whole records from sample 0, got firstSample " &
       $meta.firstSample)
 
-proc correlateInto*[T: SampleType](plan: CorrelationPlan[T], src, dst: RowBlock[T],
-    meta: ChunkMeta, ws: var Workspace) =
+proc mulWidth[T; L: static int](re {.noalias.}, im {.noalias.}: Buf[T],
+    mr, mi: T) {.noinline.} =
+  ## `mulKernel` at a static width below `fftLanes`.
+  {.push boundChecks: off, overflowChecks: off.}
+  for l in 0 ..< L:
+    let a = re[l]
+    let b = im[l]
+    re[l] = a * mr - b * mi
+    im[l] = a * mi + b * mr
+  {.pop.}
+
+proc correlateWidth[T; L: static int](plan: CorrelationPlan[T], src,
+    dst: RowBlock[T], meta: ChunkMeta, ws: var Workspace) =
+  ## The block form at a static width below `fftLanes`. Scratch stays sized
+  ## for `fftLanes`; a batch uses the first `n · L` samples.
+  let n = plan.fft.len
+  let bins = plan.fft.bins
+  let at = plan.fft.workspaceSize.elems(T)
+  let buf = ws.scratch(T, fftLanes * (n + 2 * bins), at)
+  let re = cast[ptr UncheckedArray[T]](addr buf[n * fftLanes])
+  let im = cast[ptr UncheckedArray[T]](addr buf[n * fftLanes + bins * fftLanes])
+  template used(r: int): bool =
+    not meta.isFailed(r) and meta.keys(r).status != tsDead
+  var r = 0
+  while r < src.len:
+    var lanes, live: array[L, int]
+    var rows: array[L, Buf[T]]
+    var k = 0
+    while r < src.len and k < L:
+      if used(r):
+        lanes[k] = r
+        rows[k] = src.rowPtr(r)
+        live[k] = meta.liveSamples(r, src.cols)
+        inc k
+      else:
+        let d = dst.rowPtr(r)
+        for m in 0 ..< dst.cols: d[m] = T(0)
+      inc r
+    if k == 0: break
+    var shortest = (if k == L: int.high else: 0)
+    var longest = 0
+    for l in 0 ..< k:
+      shortest = min(shortest, live[l])
+      longest = max(longest, live[l])
+    let p = rows
+    let len = live
+    for j in 0 ..< shortest:
+      for l in 0 ..< L: buf[j * L + l] = p[l][j]
+    for j in shortest ..< longest:
+      for l in 0 ..< L:
+        buf[j * L + l] = (if j < len[l]: p[l][j] else: T(0))
+    if n > longest:
+      zeroMem(addr buf[longest * L], (n - longest) * L * sizeof(T))
+    plan.fft.forwardLanes(L, buf.toOpenArray(0, n * L - 1),
+      re.toOpenArray(0, bins * L - 1), im.toOpenArray(0, bins * L - 1), ws)
+    for bi in 0 ..< bins:
+      mulWidth[T, L](cast[Buf[T]](addr re[bi * L]), cast[Buf[T]](addr im[bi * L]),
+        plan.mulRe[bi], plan.mulIm[bi])
+    plan.fft.inverseLanes(L, re.toOpenArray(0, bins * L - 1),
+      im.toOpenArray(0, bins * L - 1), buf.toOpenArray(0, n * L - 1), ws)
+    for l in 0 ..< k: rows[l] = dst.rowPtr(lanes[l])
+    let s = plan.lagSpans(dst.cols)
+    let wrap = plan.shift + plan.fft.len
+    let drows = rows
+    for l in 0 ..< k:
+      for m in 0 ..< s.wrapped: drows[l][m] = T(0)
+      for m in s.last ..< dst.cols: drows[l][m] = T(0)
+    for m in s.wrapped ..< s.direct:
+      for l in 0 ..< k: drows[l][m] = buf[(m + wrap) * L + l]
+    for m in s.direct ..< s.last:
+      for l in 0 ..< k: drows[l][m] = buf[(m + plan.shift) * L + l]
+
+proc correlateInto*[T: SampleType](plan: CorrelationPlan[T], src, dst: RowBlock[
+    T], meta: ChunkMeta, ws: var Workspace) =
   ## Correlates the rows of `src` into `dst` (`outSamples` columns, the same
   ## rows; see the module documentation for which rows). Raises `ValueError`
   ## as `checkCorrelate`, before any sample changes. `ws` must hold
   ## `plan.workspaceSize`.
   plan.checkCorrelate(src, dst, meta)
   doAssert ws.fits(plan.workspaceSize), "reserve the plan's workspaceSize first"
+  let width = lanesFor(plan.fft)
+  if width != fftLanes:
+    case width
+    of 4: correlateWidth[T, 4](plan, src, dst, meta, ws)
+    of 2: correlateWidth[T, 2](plan, src, dst, meta, ws)
+    else: doAssert false, "lanesFor returned a width with no kernel"
+    return
   let n = plan.fft.len
   let bins = plan.fft.bins
   let at = plan.fft.workspaceSize.elems(T)
