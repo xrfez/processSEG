@@ -60,6 +60,20 @@ on data from anywhere. Two thin layers sit on top of it:
   report progress through a `Progress`-style hook that can cancel, and return in-memory
   results.
 
+## Shot times in GPS time; giving the leap-second table
+
+Navigation and source-controller logs give the time break as microseconds since the
+GPS epoch (1980-01-06T00:00:00 GPS), not as UTC. `initSliceShotGps` converts that with
+the leap-second table in use and keeps the UTC microseconds (`timeUs`), so the cut
+does not lose them in a float64 second (about a quarter microsecond coarse near today).
+`initSliceShot` still takes UTC POSIX seconds and plans exactly as before.
+
+The table is one process-wide table shared with parseSEG. `useLeapTable` installs a
+`LeapTable`; `useLeapTableNif` installs the text of a `.nif` document and returns its
+problems (this library does not read the file). `defaultLeapTable` is the shipped list.
+Restore it when a tool is done: every converter in the process uses the table you
+installed. Copies are not reclaimed, so do not swap in a loop.
+
 ## Cutting one record from a continuous trace
 
 A viewer cutting one record from a long continuous trace should not read that row from

@@ -1,8 +1,9 @@
 # processSEG API reference
 
 `import processSEG` gives the surface listed here, module by module in the order of
-`src/processSEG.nim`. It does not re-export parseSEG: import both (`import parseSEG,
-processSEG`) for files, `TraceKeys`, `TraceRows` and the tensor API. This page is the
+`src/processSEG.nim`. It does not re-export parseSEG, except the leap-second table
+(`core/leaptime`): that table is one process-wide table shared with parseSEG. Import
+both (`import parseSEG, processSEG`) for files, `TraceKeys`, `TraceRows` and the tensor API. This page is the
 reference, one line per name or overload group; for task-oriented guides with tested
 examples see [`guide/`](guide/README.md), and for the contract with a viewer (who reads the
 file, threads, stale buffers, zoom windows) see [`integration.md`](integration.md). The
@@ -81,7 +82,8 @@ These hold throughout; a row below only mentions what departs from them.
 - **Threads.** Plans, metas and blocks are immutable or raw views with no
   reference-counted parts: any number of threads may share one plan, each with its own
   `Workspace` and disjoint rows (`RowBlock.sub`, `ChunkMeta.sub`). Nothing touches a
-  global except the plan `generation` counter.
+  global except the plan `generation` counter and the leap-second table
+  (`useLeapTable`, the same table parseSEG uses).
 
 ## core/types: `ChunkMeta`
 
@@ -771,11 +773,26 @@ Guide: [vibrator QC](guide/vibrator-qc.md); the viewer's plot → call table:
 | `WindowStats`, `WindowSummary`; `track.windowStats(limits, windowMs = 500, minFill = 0.5, originMs = NaN)` | The controller-style statistics of a track: per window aligned to the sweep's start, the mean \|phase\|, mean fundamental, largest peak and mean THD; over the sweep their average (mean of the windows) and worst window with its start time. Judged, measured points only; a window cut short is kept when its points span `minFill` of it. `ValueError` for a bad window length or fill. |
 | `UnitSignature[T]` (`signals`, `reference`, `tracks`, `units`, `summaries`, `flags`, `judged`, `reversed`, `weightedSum`); `vibratorWorkspace(tp)`; `tp.analyzeVibrators(b \| samples, meta, units, limits, results, ws)` | Every measure of every unit of a record: each signal, in its polarity, tracked against the unit's reference, the generated force, the summaries over the judged part (limits on the two ground forces), per-point flags, which points are judged, and the signals reversed. Sized on the first call, refilled without allocating after. `ValueError` (before any result changes) for a block that does not fit, another interval, a window, rows wider than the plan, limits `validate` refuses, a unit without a reference, a row outside the block, a sensitivity on the reference, on a row not in volts or of another quantity, one mass without the other, an automatic polarity on the reference, on M or B without the generated force or on one of them only, or M and B in different units. |
 
+## core/leaptime: GPS time and the leap-second table
+
+The table is one process-wide table shared with parseSEG (`useLeapTable` here is the
+same proc). This library does not read a file: pass the `.nif` text. Copies are not
+reclaimed, so do not swap in a loop. A float64 second near today is about a quarter
+microsecond coarse; `utcUsOfGps` keeps the microsecond.
+
+| Proc | What |
+|---|---|
+| `LeapDate` (`year`, `month`, `day`), `LeapSecond` (`year`, `month`, `day`, `gpsMinusUtc`), `LeapTable` (`entries`, `checkedTo`) | A UTC date, one GPS−UTC offset, and the table: offsets in date order, complete through the end of `checkedTo`. |
+| `parseLeapTable(nifText)` | Parses a leap-second document. Problems (malformed NIF, a bad date, a step other than ±1) are returned, never raised. `table` may be partial when `problems` is not empty. |
+| `useLeapTable(table)`, `useLeapTableNif(nifText)`, `currentLeapTable()`, `defaultLeapTable()` | Installs a table for every converter in the process, or parses and installs when there are no problems (`useLeapTableNif` returns the problems; empty means in use; a bad text leaves the table unchanged). `currentLeapTable` is the one in use; `defaultLeapTable` is the shipped list (IERS, complete through 2026-06-30), not whatever was installed. `useLeapTable` raises `ValueError` when the table would not parse cleanly. |
+| `withLeap(table, date, step = 1)`, `leapKnownAt(utcUs)` | A copy with one leap at 00:00:00 UTC on the first of `date` (`step` ±1). Raises `ValueError` for an empty table, a date that is not a later first of a month, or a step other than ±1. `leapKnownAt` is false after `checkedTo`; converters still use the last offset. |
+| `gpsUsToUtcSeconds(gpsUs)`, `utcUsOfGps(gpsUs)` | UTC POSIX seconds, and UTC microseconds since 1970, of a GPS-epoch microsecond time. The seconds are about a quarter microsecond coarse near today; the microseconds are exact. An input within one day of either `int64` end saturates. |
+
 ## continuous/slice: continuous recordings into records
 
 | Proc | What |
 |---|---|
-| `SliceShot` (`time`, `id`, `srcLine`, `srcPoint`, `srcX`, `srcY`, `srcZ`, `srcIndex`); `initSliceShot(time, id, srcLine = NaN, ..., srcIndex = 0)` | A source event: UTC POSIX seconds and record number, and its station (point index 0: unknown) and position when known. |
+| `SliceShot` (`time`, `timeUs`, `timeUsKnown`, `id`, `srcLine`, `srcPoint`, `srcX`, `srcY`, `srcZ`, `srcIndex`); `initSliceShot(time, id, srcLine = NaN, ..., srcIndex = 0)`; `initSliceShotGps(gpsUs, id, ...)` | A source event. `initSliceShot` takes UTC POSIX seconds and does not set `timeUsKnown` (a float64 second near today is about a quarter microsecond coarse), so those shots plan exactly as before. `initSliceShotGps` takes microseconds since the GPS epoch and sets `timeUs` (exact UTC microseconds) and `timeUsKnown`; the planner uses them. Station and position when known (point index 0: unknown). |
 | `SliceWindow` (`startMs`, `lengthMs`) | The window at each shot: start relative to the shot (may be negative), length a whole number of samples. |
 | `SliceOrder` (`soReceiverGathers`, `soShotRecords`), `SliceAlign` (`saNearest`, `saLinear`, `saCubic`, `saSinc`) | Output order; sub-sample window starts kept (`saNearest`, a quick look) or shifted out. `saSinc` is a Kaiser-windowed sinc (`SincHalf` taps each side): use it before correlation. A margin the segment does not cover is zero, so the first and last half-length `saSinc` samples mix in those zeros. |
 | `SliceStreams`; `initSliceStreams(meta, [times, [receivers]])` | Once per dataset: the receivers of the segment rows and each segment's place on its receiver's sample grid (two sorts: 130 to 260 ms for a million rows). Times default to `TraceKeys.time`, receivers to the station (`stationKey(rcvLine, rcvPoint, rcvIndex)`: line and point to 1/100, with the point index), then `channel` and `component`; segments are never stitched across receivers. A value with no pointer into the meta: keep it, and plan from it on any thread. `ValueError` for mismatched array lengths, `dtMs` under 1e-4 ms, or a row of more than 2⁴⁸ samples. |
