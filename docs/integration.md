@@ -60,6 +60,14 @@ on data from anywhere. Two thin layers sit on top of it:
   report progress through a `Progress`-style hook that can cancel, and return in-memory
   results.
 
+  A viewer cutting one record from a long continuous trace should not read that row from
+  sample 0. `planSlices` names the columns; `pieceSource` is how many to read and where they
+  start (the alignment margin is already in the piece, clipped at the segment's ends, and a
+  clipped margin is a gap piece that `addPiece` zero-fills, the same fill as `extractInto`).
+  `finishSliceTrace` applies the shift and writes the output row. The overlap tail of an
+  earlier segment is not in any piece: compare it with `checkSliceOverlap` only when both
+  runs were read, or the check stays `osNotRead`.
+
 ## Data contract
 
 **One data model, owned by parseSEG.** No header value is copied into a processSEG object.

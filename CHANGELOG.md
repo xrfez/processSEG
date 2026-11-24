@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `continuous/slice`: cut one trace from the columns it names (`pieceSource`, `beginSliceTrace`, `addPiece`, `finishSliceTrace`, `checkSliceOverlap`, `prepareSliceReport`) instead of holding the row from sample 0. The alignment margin is already in the piece; a margin the segment does not cover is a gap piece, zero-filled. `extractInto` is that path over a block already in memory (the same bits).
+
 ## 0.13.0
 
 - Batched FFTs use `lanesFor`: float32 stays at 8 lanes below 262144 and drops to 4; float64 stays at 8 below 65536, drops to 4 below 262144, then to 2. `fftLanes` is still the maximum, and workspace sizes stay sized for it. An optimised build already gave different last bits per width, so sizes whose lane count changes can differ in the last place from the previous release. Below the thresholds the width is still 8.

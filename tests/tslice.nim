@@ -398,6 +398,130 @@ proc main*() =
         doAssert dst[0, j] == T(streamValue(90 + j)) and dst[0, 10 + j] == 0
         doAssert dst[1, j] == 0 and dst[1, 10 + j] == T(streamValue(200 + j))
 
+    block piecewise_matches_extract:
+      # Seen failing when the copy placed samples at `dst` instead of
+      # `dst + margin` (the alignment margin dropped): a fractional linear
+      # window no longer matched `extractInto`.
+      # Receiver 1 overlaps itself by 3 samples; receiver 2 is short. Shots
+      # sit before the first sample, on a segment boundary, and past the last.
+      let s = segmentsOf[T]([(0, 100), (97, 80)], point = 1).join(
+        segmentsOf[T]([(0, 40)], point = 2))
+      let meta = initChunkMeta(rowsOf(s.keys, s.counts), dtMs = Dt)
+      let shots = [shotAt(-20), shotAt(0), shotAt(90.4), shotAt(160), shotAt(500)]
+
+      proc traceAt(plan: SlicePlan, recv, shot: int): int =
+        if plan.order == soReceiverGathers: recv * plan.shotCount + shot
+        else: shot * plan.receiverCount + recv
+
+      proc cutPieces(seg: Segments[T], plan: SlicePlan, meta: ChunkMeta,
+          report: var SliceReport, overlaps: bool): Tensor[T] =
+        result = zeros[T](plan.len, plan.samples)
+        report = initSliceReport(plan)
+        var ws = initWorkspace()
+        ws.reserve(sliceWorkspace(T, plan))
+        var hold = newSeq[T](1)
+        let src = rowBlock(seg.data)
+        let dstb = rowBlock(result)
+        for t in 0 ..< plan.len:
+          for pc in plan.pieces(t):
+            if pc.count > hold.len: hold.setLen(pc.count)
+        doAssert allocsIn(
+          block:
+            prepareSliceReport(plan, report)
+            for trace in 0 ..< plan.len:
+              beginSliceTrace(plan, trace, report)
+              for pc in plan.pieces(trace):
+                let width = if pc.row >= 0: src.cols else: 0
+                let (first, count) = pieceSource(plan, pc, width)
+                if pc.row >= 0 and pc.count > 0 and pc.first >= 0 and pc.first < width:
+                  # The piece already includes the margin: do not subtract it.
+                  doAssert first == pc.first, "pieceSource subtracted the margin"
+                  doAssert count <= pc.count
+                  doAssert first >= pc.first - plan.margin
+                  doAssert first + count <= pc.first + pc.count + plan.margin
+                  doAssert first + count <= width
+                let failed = pc.row >= 0 and not meta.isLive(pc.row)
+                if count == 0:
+                  addPiece(plan, trace, pc, hold.toOpenArray(0, -1), dstb.row(trace),
+                    report, ws, failed = failed)
+                else:
+                  for j in 0 ..< count: hold[j] = src.rowPtr(pc.row)[first + j]
+                  addPiece(plan, trace, pc, hold.toOpenArray(0, count - 1),
+                    dstb.row(trace), report, ws, failed = failed)
+              finishSliceTrace(plan, trace, dstb.row(trace), report, ws)
+            if overlaps:
+              for i, o in plan.overlaps:
+                if meta.isLive(o.earlier) and meta.isLive(o.later) and o.samples > 0 and
+                    o.first + o.samples <= src.cols:
+                  checkSliceOverlap(plan, i, toOpenArray(src.rowPtr(o.earlier), o.first,
+                    o.first + o.samples - 1), toOpenArray(src.rowPtr(o.later), 0,
+                    o.samples - 1), report)
+        ) == 0
+
+      proc sameReport(a, b: SliceReport, plan: SlicePlan) =
+        for t in 0 ..< plan.len:
+          doAssert a.gapSamples(t) == b.gapSamples(t)
+          var ga, gb: seq[SliceGap]
+          for g in a.gaps(t): ga.add g
+          for g in b.gaps(t): gb.add g
+          doAssert ga == gb
+        for i in 0 ..< plan.overlaps.len:
+          doAssert a.overlapCheck(i) == b.overlapCheck(i)
+
+      for order in [soReceiverGathers, soShotRecords]:
+        for align in [saNearest, saLinear, saCubic]:
+          let plan = planSlices(meta, shots, window(40), order, align)
+          let span = traceAt(plan, 0, 2)
+          doAssert plan.fraction(span) != 0
+          var nData = 0
+          for pc in plan.pieces(span):
+            if pc.row >= 0: inc nData
+          doAssert nData == 2, "a shot spanning two segments"
+          var report: SliceReport
+          let full = cut(s, meta, plan, report)
+          var pieceReport: SliceReport
+          let piece = cutPieces(s, plan, meta, pieceReport, overlaps = true)
+          doAssert piece == full, $order & " " & $align
+          sameReport(pieceReport, report, plan)
+          doAssert report.gapSamples(traceAt(plan, 0, 0)) > 0
+          doAssert report.gapSamples(traceAt(plan, 0, 4)) == plan.samples
+
+      # A row that fails at extract time is a gap on both paths.
+      let rows = rowsOf(s.keys, s.counts)
+      let failedPlan = planSlices(meta, [shotAt(90.4)], window(20), align = saCubic)
+      let failedMeta = initChunkMeta(rows, dtMs = Dt, failed = @[1])
+      var failedReport: SliceReport
+      let failedFull = cut(s, failedMeta, failedPlan, failedReport)
+      var failedPiece: SliceReport
+      doAssert cutPieces(s, failedPlan, failedMeta, failedPiece, overlaps = true) == failedFull
+      sameReport(failedPiece, failedReport, failedPlan)
+
+      # Both overlap runs given: a mismatch agrees. Not given: osNotRead, as a
+      # block narrower than the trimmed tail.
+      var bad = segmentsOf[T]([(0, 100), (97, 80)])
+      bad.data[1, 0] = bad.data[1, 0] + 1
+      let badMeta = initChunkMeta(rowsOf(bad.keys, bad.counts), dtMs = Dt)
+      let badPlan = planSlices(badMeta, [shotAt(90)], window(20), align = saLinear)
+      var badReport: SliceReport
+      discard cut(bad, badMeta, badPlan, badReport)
+      doAssert badReport.overlapCheck(0).status == osMismatch
+      var badPiece: SliceReport
+      discard cutPieces(bad, badPlan, badMeta, badPiece, overlaps = true)
+      doAssert badPiece.overlapCheck(0) == badReport.overlapCheck(0)
+      var unread: SliceReport
+      discard cutPieces(bad, badPlan, badMeta, unread, overlaps = false)
+      doAssert unread.overlapCheck(0).status == osNotRead
+      let narrowPlan = planSlices(badMeta, [shotAt(0)], window(10))
+      doAssert narrowPlan.overlaps[0].first + narrowPlan.overlaps[0].samples >
+        narrowPlan.maxColumn
+      var narrow = zeros[T](bad.data.shape[0], narrowPlan.maxColumn)
+      for r in 0 ..< narrow.shape[0]:
+        for c in 0 ..< narrow.shape[1]: narrow[r, c] = bad.data[r, c]
+      var narrowReport: SliceReport
+      discard cut(Segments[T](keys: bad.keys, counts: bad.counts, data: narrow),
+        badMeta, narrowPlan, narrowReport)
+      doAssert narrowReport.overlapCheck(0).status == osNotRead
+
   suite[float32]()
   suite[float64]()
 

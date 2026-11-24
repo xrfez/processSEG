@@ -1,5 +1,6 @@
 ## Cutting continuous recordings into records at source times
-## (`SliceStreams`, `SlicePlan`, `extractInto`).
+## (`SliceStreams`, `SlicePlan`, `extractInto`, or one trace from the columns
+## `pieceSource` names).
 ##
 ## Nodes record continuously; a file stores each receiver's stream as
 ## consecutive segments, one trace row per segment. `initSliceStreams` works
@@ -8,9 +9,11 @@
 ## every (receiver, shot) pair, which rows and columns make up the window
 ## `shot time + startMs ..< + lengthMs`; `extractInto` copies and stitches
 ## them into a new `[traces, samples]` tensor (a window can straddle segment
-## boundaries, so this is not in place). Data in, no files: the caller reads
-## the segments with parseSEG, and writes the records with `sliceKeys`
-## (decision D14).
+## boundaries, so this is not in place). A shot late in a long segment need
+## not hold the whole row: `pieceSource`, `addPiece` and `finishSliceTrace`
+## cut one trace from the columns the plan names. Data in, no files: the
+## caller reads the segments with parseSEG, and writes the records with
+## `sliceKeys` (decision D14).
 ##
 ## ```nim
 ## # keys and samples of the segments, read with parseSEG
@@ -110,6 +113,33 @@
 ## **Order.** `soReceiverGathers`: trace `r · shots + s` (one receiver, all
 ## shots); `soShotRecords`: trace `s · receivers + r`. Shots keep the
 ## caller's order; every pair is a trace, all gap if no data reaches it.
+##
+## **One trace, from the columns it names.** `extractInto` reads a block
+## from sample 0 of every needed row out to `maxColumn`. A shot late in a
+## long segment then holds hours of samples to cut seconds. Cut that trace
+## from the columns the plan names. `pieceSource` is how many source samples
+## a piece needs and where they start: the piece already includes the
+## alignment margin (`saLinear` 1, `saCubic` 2; `saNearest` 0), clipped where
+## the segment does not cover it, so the read starts at `SlicePiece.first`
+## (the window column minus the margin, already clipped) and does not
+## subtract `margin` again. A margin the segment does not cover is its own
+## gap piece (`row = -1`). `addPiece` zero-fills a gap, and a row the caller
+## marks failed, the same fill `extractInto` uses, so samples next to it mix
+## in those zeros when the shift interpolates. `finishSliceTrace` applies the
+## same shift and writes the output row, and the same gap entries. The
+## earlier row's trimmed overlap tail is in no piece: `checkSliceOverlap`
+## writes `osMatch` or `osMismatch` when both of those runs were given, and
+## the check stays `osNotRead` until then. `extractInto` is this path over a
+## block already in memory, so the two agree to the bit.
+##
+## ```nim
+## beginSliceTrace(plan, trace, report)
+## for pc in plan.pieces(trace):
+##   let src = pieceSource(plan, pc, rowLen)  # margin included, clipped
+##   # read src.count samples at column src.first of that segment
+##   addPiece(plan, trace, pc, samples, row, report, ws)
+## finishSliceTrace(plan, trace, row, report, ws)
+## ```
 
 import std/[algorithm, bitops, math]
 import parseSEG
@@ -706,7 +736,9 @@ func gapSamples*(plan: SlicePlan, trace: int): int {.inline, raises: [].} =
 
 iterator pieces*(plan: SlicePlan, trace: int): SlicePiece =
   ## The pieces of output trace `trace`, in column order, gaps included
-  ## (`row = -1`): which columns of which rows a reader needs.
+  ## (`row = -1`): which columns of which rows a reader needs. `first` already
+  ## includes the alignment margin, clipped at the segment's ends;
+  ## `pieceSource` is how many of those columns to read.
   for i in plan.spanStart[trace] ..< plan.spanStart[trace + 1]:
     yield plan.spans[i]
 
@@ -795,8 +827,8 @@ func neededIndex(plan: SlicePlan, row: int): int {.inline, raises: [].} =
   else: plan.neededRank[row shr 6] + countSetBits(word and (bit - 1))
 
 func sliceWorkspace*(T: typedesc[SampleType], plan: SlicePlan): WorkspaceSize =
-  ## The scratch `extractInto` needs: none with `saNearest`, one padded row
-  ## otherwise.
+  ## The scratch `extractInto`, `addPiece` and `finishSliceTrace` need: none
+  ## with `saNearest`, one padded row otherwise.
   let n = if plan.align == saNearest: 0 else: plan.samples + 2 * plan.margin
   when T is float32: WorkspaceSize(f32: n)
   else: WorkspaceSize(f64: n)
@@ -836,12 +868,173 @@ func mismatches*(report: SliceReport): int {.raises: [].} =
   for c in report.checks:
     if c.status == osMismatch: inc result
 
+func pieceSource*(plan: SlicePlan, pc: SlicePiece, rowSamples: int): tuple[
+    first, count: int] {.inline, raises: [].} =
+  ## How many source samples piece `pc` needs and where they start in a row of
+  ## `rowSamples` columns: `pc.first ..< pc.first + pc.count` clipped to
+  ## `[0, rowSamples)`. The piece already includes the alignment margin
+  ## (`plan.margin`: 0, 1 or 2), clipped where the segment does not cover it,
+  ## so this does not subtract `margin` again. A gap piece (`row = -1`), or a
+  ## piece with nothing inside the row, needs no samples: `(0, 0)`. A margin
+  ## the segment does not cover is its own gap piece; `addPiece` zero-fills
+  ## it, the same fill `extractInto` uses. `rowSamples` below 0 is an empty row.
+  if pc.row < 0 or pc.count <= 0 or rowSamples <= 0: return (0, 0)
+  let a = max(pc.first, 0)
+  let b = min(pc.first + pc.count, rowSamples)
+  if b <= a: (0, 0) else: (a, b - a)
+
+proc checkReport(plan: SlicePlan, report: SliceReport) =
+  if report.gapSamples.len != plan.len or report.checks.len != plan.overlaps.len or
+      report.capacity < plan.spans.len:
+    badSlice("the report was not sized for this plan (initSliceReport)")
+
+proc checkTrace(plan: SlicePlan, trace: int, report: SliceReport) =
+  if trace < 0 or trace >= plan.len:
+    badSlice("trace " & $trace & " is outside 0 ..< " & $plan.len)
+  checkReport(plan, report)
+
+template placePiece(plan: SlicePlan, trace: int, pc: SlicePiece, src: pointer,
+    srcLen: int, gap: bool, target: ptr UncheckedArray, shift: int,
+    report: var SliceReport) =
+  # Columns `placeAt ..< placeAt + count` of `target`, as whole runs. A loop
+  # over the samples keeps its overflow checks in a `-d:release` build, which
+  # keeps the compiler from vectorizing it: 3.8 ms against 2.1 ms for 2000
+  # traces of 3000 float32 (`-d:danger` takes 2.1 ms either way).
+  let placeAt = pc.dst + shift
+  if not gap and srcLen > 0:
+    copyMem(addr target[placeAt], src, srcLen * sizeof(target[0]))
+  if gap or srcLen < pc.count:
+    let zeroFrom = if gap: 0 else: srcLen
+    if pc.count > zeroFrom:
+      zeroMem(addr target[placeAt + zeroFrom],
+        (pc.count - zeroFrom) * sizeof(target[0]))
+  if gap:
+    let gapLo = max(pc.dst, 0)
+    let gapHi = min(pc.dst + pc.count, plan.samples)
+    if gapHi > gapLo:
+      report.gapSamples[trace] += gapHi - gapLo
+      let gapLast = report.gaps.len - 1
+      if gapLast >= report.gapStart[trace] and
+          report.gaps[gapLast].first + report.gaps[gapLast].count == gapLo:
+        report.gaps[gapLast].count += gapHi - gapLo
+      else:
+        report.gaps.add SliceGap(first: gapLo, count: gapHi - gapLo)
+
+template shiftPlaced(plan: SlicePlan, trace: int, buf: ptr UncheckedArray,
+    outRow: ptr UncheckedArray) =
+  let shiftN = plan.samples
+  let shiftM = plan.margin
+  if plan.fraction[trace] != 0:
+    let shiftInterp = if plan.align == saCubic: siCubic else: siLinear
+    shiftSamples(toOpenArray(buf, 0, shiftN + 2 * shiftM - 1),
+      plan.fraction[trace], shiftInterp)
+  copyMem(outRow, addr buf[shiftM], shiftN * sizeof(buf[0]))
+
+proc paddedRow[T: SampleType](plan: SlicePlan, dst: var openArray[T],
+    ws: var Workspace): tuple[p: ptr UncheckedArray[T], shift: int] =
+  if dst.len != plan.samples:
+    badSlice("dst must be " & $plan.samples & " samples, got " & $dst.len)
+  if plan.align == saNearest:
+    (cast[ptr UncheckedArray[T]](addr dst[0]), 0)
+  else:
+    let width = plan.samples + 2 * plan.margin
+    doAssert ws.fits(sliceWorkspace(T, plan)), "reserve sliceWorkspace(T, plan) first"
+    (ws.scratch(T, width), plan.margin)
+
+proc prepareSliceReport*(plan: SlicePlan, report: var SliceReport) =
+  ## Clears `report` for another fill of `plan`: no gaps, every overlap
+  ## `osNotRead`. Allocates nothing. Raises `ValueError` when `report` was
+  ## not sized for `plan`.
+  checkReport(plan, report)
+  report.gaps.setLen(0)
+  for i in 0 .. report.gapStart.high: report.gapStart[i] = 0
+  for i in 0 ..< report.gapSamples.len: report.gapSamples[i] = 0
+  for i in 0 ..< report.checks.len:
+    report.checks[i] = SliceOverlapCheck(status: osNotRead)
+
+proc beginSliceTrace*(plan: SlicePlan, trace: int, report: var SliceReport) =
+  ## Opens output trace `trace` on `report`: its gap runs start at the runs
+  ## already recorded, and its gap count is 0. Fill traces in order (or one
+  ## trace, after `prepareSliceReport`). Raises `ValueError` for a trace
+  ## outside the plan or a report not sized for it. Allocates nothing.
+  checkTrace(plan, trace, report)
+  report.gapStart[trace] = report.gaps.len
+  report.gapSamples[trace] = 0
+
+proc addPiece*[T: SampleType](plan: SlicePlan, trace: int, pc: SlicePiece,
+    samples: openArray[T], dst: var openArray[T], report: var SliceReport,
+    ws: var Workspace, failed = false) =
+  ## Places piece `pc` of trace `trace`. `samples` are the source columns
+  ## from `pieceSource` (starting at its `first`); a short tail is zero-filled
+  ## and is not a gap. A gap piece (`row = -1`) or `failed` is zero-filled and
+  ## reported, the same fill `extractInto` uses for a margin the segment does
+  ## not cover or a row that is not live. With `saNearest` the piece is written
+  ## into `dst`; otherwise into the padded row of `ws` (`sliceWorkspace`), and
+  ## `finishSliceTrace` writes `dst`. Raises `ValueError` for a bad trace,
+  ## report, `dst`, piece write, or `samples` longer than the piece. An
+  ## `AssertionDefect` when `ws` was not reserved. Allocates nothing.
+  checkTrace(plan, trace, report)
+  if samples.len > pc.count:
+    badSlice("piece samples are " & $samples.len & ", the piece holds " & $pc.count)
+  let (target, shift) = paddedRow(plan, dst, ws)
+  let a = pc.dst + shift
+  let width = plan.samples + 2 * shift
+  if pc.count > 0 and (a < 0 or a > width - pc.count):
+    badSlice("piece writes " & $pc.count & " columns at " & $a &
+      ", outside 0 ..< " & $width)
+  let none: pointer = nil
+  if failed or pc.row < 0:
+    placePiece(plan, trace, pc, none, 0, true, target, shift, report)
+  else:
+    let src = if samples.len == 0: none else: cast[pointer](addr samples[0])
+    placePiece(plan, trace, pc, src, samples.len, false, target, shift, report)
+
+proc finishSliceTrace*[T: SampleType](plan: SlicePlan, trace: int,
+    dst: var openArray[T], report: var SliceReport, ws: var Workspace) =
+  ## Closes trace `trace`: applies the same shift as `extractInto` (none with
+  ## `saNearest`) and writes the output row into `dst`. The gap runs of this
+  ## trace end at the runs recorded so far. Raises `ValueError` for a bad
+  ## trace, report or `dst`. An `AssertionDefect` when `ws` was not reserved.
+  ## Allocates nothing.
+  checkTrace(plan, trace, report)
+  let (target, shift) = paddedRow(plan, dst, ws)
+  if shift != 0:
+    shiftPlaced(plan, trace, target, cast[ptr UncheckedArray[T]](addr dst[0]))
+  report.gapStart[trace + 1] = report.gaps.len
+
+proc checkSliceOverlap*[T: SampleType](plan: SlicePlan, i: int, earlier,
+    later: openArray[T], report: var SliceReport) =
+  ## Compares the two runs of overlap `i` (each `plan.overlaps[i].samples`
+  ## long: the earlier row from its `first`, the later row from column 0) and
+  ## writes `osMatch` or `osMismatch`. A NaN equals a NaN. The earlier row's
+  ## trimmed tail is in no piece, so this stays `osNotRead` until both runs
+  ## are given. Raises `ValueError` for an overlap outside the plan, a run
+  ## shorter than the overlap, or a report not sized for the plan. Allocates
+  ## nothing.
+  if i < 0 or i >= plan.overlaps.len:
+    badSlice("overlap " & $i & " is outside 0 ..< " & $plan.overlaps.len)
+  checkReport(plan, report)
+  let n = plan.overlaps[i].samples
+  if earlier.len < n or later.len < n:
+    badSlice("overlap " & $i & " needs " & $n & " samples, got " & $earlier.len &
+      " and " & $later.len)
+  var c = SliceOverlapCheck(status: osMatch)
+  for j in 0 ..< n:
+    let x = earlier[j]
+    let y = later[j]
+    if x != y and not (x.isNaN and y.isNaN):
+      inc c.differing
+      c.maxAbsDiff = max(c.maxAbsDiff, abs(float64(x) - float64(y)))
+  if c.differing > 0: c.status = osMismatch
+  report.checks[i] = c
+
 proc extractInto*[T: SampleType](plan: SlicePlan, data, dst: RowBlock[T], meta: ChunkMeta,
     report: var SliceReport, ws: var Workspace) =
   ## Cuts the traces of `plan` from the segments `data` into `dst`
   ## (`plan.len` rows of `plan.samples`), zero-filling and reporting gaps, and
-  ## compares overlaps (see the module documentation). `data` and `meta` hold
-  ## either every row of the planning meta, or only the rows
+  ## compares overlaps (see the module documentation). This is `addPiece` and
+  ## `finishSliceTrace` over a block already in memory: the same bits. `data`
+  ## and `meta` hold either every row of the planning meta, or only the rows
   ## `plan.rowsNeeded`, in that order: read from a file, those are the traces
   ## `plan.tracesNeeded` (`chunkMeta(f, plan.tracesNeeded)`). A row not live
   ## in `meta` (failed) is a gap. `ws` must hold `sliceWorkspace(T, plan)`
@@ -868,9 +1061,7 @@ proc extractInto*[T: SampleType](plan: SlicePlan, data, dst: RowBlock[T], meta: 
   if dst.len != plan.len or dst.cols != plan.samples:
     badSlice("dst must be " & $plan.len & " × " & $plan.samples & ", got " & $dst.len &
       " × " & $dst.cols)
-  if report.gapSamples.len != plan.len or report.checks.len != plan.overlaps.len or
-      report.capacity < plan.spans.len:
-    badSlice("the report was not sized for this plan (initSliceReport)")
+  checkReport(plan, report)
   let n = plan.samples
   let m = plan.margin
   let width = n + 2 * m
@@ -878,7 +1069,6 @@ proc extractInto*[T: SampleType](plan: SlicePlan, data, dst: RowBlock[T], meta: 
   if plan.align != saNearest:
     doAssert ws.fits(sliceWorkspace(T, plan)), "reserve sliceWorkspace(T, plan) first"
     buf = ws.scratch(T, width)
-  let interp = if plan.align == saCubic: siCubic else: siLinear
 
   template dataRow(row: int): int =
     (if compact: plan.neededIndex(row) else: row)
@@ -886,7 +1076,7 @@ proc extractInto*[T: SampleType](plan: SlicePlan, data, dst: RowBlock[T], meta: 
   report.gaps.setLen(0)
   for trace in 0 ..< plan.len:
     report.gapStart[trace] = report.gaps.len
-    var gapTotal = 0
+    report.gapSamples[trace] = 0
     let outRow = dst.rowPtr(trace)
     # Into the padded scratch row, or straight into dst.
     let target = if buf != nil: buf else: outRow
@@ -894,53 +1084,32 @@ proc extractInto*[T: SampleType](plan: SlicePlan, data, dst: RowBlock[T], meta: 
     for i in plan.spanStart[trace] ..< plan.spanStart[trace + 1]:
       let pc = plan.spans[i]
       let r = if pc.row >= 0: dataRow(pc.row) else: -1
-      let a = pc.dst + shift
-      # Columns `a ..< a + count` of `target`, as whole runs. A loop over the
-      # samples keeps its overflow checks in a `-d:release` build, which
-      # keeps the compiler from vectorizing it: 3.8 ms against 2.1 ms for
-      # 2000 traces of 3000 float32 (`-d:danger` takes 2.1 ms either way).
-      if r >= 0 and meta.isLive(r):
-        if pc.count > 0:
-          copyMem(addr target[a], addr data.rowPtr(r)[pc.first], pc.count * sizeof(T))
+      let none: pointer = nil
+      if r >= 0 and meta.isLive(r) and pc.count > 0:
+        placePiece(plan, trace, pc, cast[pointer](addr data.rowPtr(r)[pc.first]),
+          pc.count, false, target, shift, report)
+      elif r >= 0 and meta.isLive(r):
+        placePiece(plan, trace, pc, none, 0, false, target, shift, report)
       else:
-        if pc.count > 0: zeroMem(addr target[a], pc.count * sizeof(T))
-        # The gap's columns inside the window, merged with the previous run.
-        let g0 = max(pc.dst, 0)
-        let g1 = min(pc.dst + pc.count, n)
-        if g1 > g0:
-          gapTotal += g1 - g0
-          let last = report.gaps.len - 1
-          if last >= report.gapStart[trace] and
-              report.gaps[last].first + report.gaps[last].count == g0:
-            report.gaps[last].count += g1 - g0
-          else:
-            report.gaps.add SliceGap(first: g0, count: g1 - g0)
-    if buf != nil:
-      if plan.fraction[trace] != 0:
-        shiftSamples(toOpenArray(buf, 0, width - 1), plan.fraction[trace], interp)
-      copyMem(outRow, addr buf[m], n * sizeof(T))
-    report.gapSamples[trace] = gapTotal
+        placePiece(plan, trace, pc, none, 0, true, target, shift, report)
+    if buf != nil: shiftPlaced(plan, trace, buf, outRow)
   report.gapStart[plan.len] = report.gaps.len
 
   for i, o in plan.overlaps:
-    var c = SliceOverlapCheck(status: osNotRead)
     if plan.neededIndex(o.earlier) >= 0 and plan.neededIndex(o.later) >= 0:
       let re = dataRow(o.earlier)
       let rl = dataRow(o.later)
       # The earlier row's trimmed tail is in no piece: the block may be
       # narrower than it.
       if meta.isLive(re) and meta.isLive(rl) and o.first + o.samples <= data.cols:
-        let a = data.rowPtr(re)
-        let b = data.rowPtr(rl)
-        c.status = osMatch
-        for j in 0 ..< o.samples:
-          let x = a[o.first + j]
-          let y = b[j]
-          if x != y and not (x.isNaN and y.isNaN):
-            inc c.differing
-            c.maxAbsDiff = max(c.maxAbsDiff, abs(float64(x) - float64(y)))
-        if c.differing > 0: c.status = osMismatch
-    report.checks[i] = c
+        if o.samples == 0:
+          report.checks[i] = SliceOverlapCheck(status: osMatch)
+        else:
+          checkSliceOverlap(plan, i,
+            toOpenArray(data.rowPtr(re), o.first, o.first + o.samples - 1),
+            toOpenArray(data.rowPtr(rl), 0, o.samples - 1), report)
+        continue
+    report.checks[i] = SliceOverlapCheck(status: osNotRead)
 
 proc extractInto*[T: SampleType](plan: SlicePlan, data: Tensor[T], dst: var Tensor[T],
     meta: ChunkMeta, report: var SliceReport, ws: var Workspace) =
