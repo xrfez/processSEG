@@ -1,8 +1,11 @@
 ## processSEG: seismic processing on top of parseSEG.
 ##
 ## This umbrella module re-exports the whole public API of processSEG. It does
-## not re-export parseSEG: callers import it themselves for files, tensors and
-## views (`import parseSEG, processSEG`), so the two packages stay separate:
+## not re-export parseSEG, except the leap-second table (`core/leaptime`):
+## that table is one process-wide table shared with parseSEG, so a caller
+## does not import parseSEG for it. Callers still import parseSEG for files,
+## tensors and views (`import parseSEG, processSEG`), so the two packages stay
+## separate:
 ## - `processSEG/core/types`: `ChunkMeta`, the metadata of a block of rows;
 ##   `StopCheck`, a caller's abandon check for a long kernel, and `Stopped`;
 ## - `processSEG/core/rows`: `RowBlock`, zero-copy rows of a tensor or buffer;
@@ -13,6 +16,9 @@
 ##   units (`Sensitivity`, `Descale`, `FileScale`);
 ## - `processSEG/core/calibrate`: recorded values to volts or physical units per row
 ##   (`Calibration`, `CalibrationPlan`, `calibrate`, `resolveInto`);
+## - `processSEG/core/leaptime`: the leap-second table shared with parseSEG
+##   (`useLeapTable`, `useLeapTableNif`) and GPS time (`gpsUsToUtcSeconds`,
+##   `utcUsOfGps`);
 ## - `processSEG/fft/plan`: `FftPlan`, real mixed-radix FFTs, batched across traces;
 ## - `processSEG/fft/spectrum`: `SpectrumPlan`, amplitude spectra and dB for display;
 ## - `processSEG/fft/hilbert`: `HilbertPlan`, the Hilbert transform and the envelope of a trace;
@@ -79,6 +85,7 @@
 ##   `addNoise`, `linearMs`, `hyperbolicMs`, `addLinear`, `addHyperbola`).
 
 import processSEG/core/[types, rows, workspace, basic, mute, shift, timeshift, units, calibrate]
+import processSEG/core/leaptime
 import processSEG/fft/[plan, spectrum, hilbert, spectrogram, fk]
 import processSEG/filter/[design, apply, iir]
 import processSEG/gain/[gain, curves, stats]
@@ -101,4 +108,4 @@ export types, rows, workspace, basic, mute, plan, spectrum, hilbert, spectrogram
     shotfit, breakfit, filescales
 export taper, sweep, pilot, correlate, vstack, slice, patch, fold, record, amplitude, units,
     calibrate, sweeptrack, sweepedge, crosscorrelate, matchpeak, vibqc, recfilter, synth,
-    exclusion, signalend
+    exclusion, signalend, leaptime
