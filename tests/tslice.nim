@@ -2,7 +2,7 @@
 ## A synthetic stream with known samples is split into segments (rows), and
 ## every window is checked against a direct slice of the unsegmented stream.
 
-import std/[algorithm, assertions, math, os, random]
+import std/[algorithm, assertions, math, os, random, strutils]
 import parseSEG, processSEG
 import utils/allocs
 
@@ -835,5 +835,44 @@ proc main*() =
       let dst = cut(s, meta, plan, report)
       for t, k in starts: checkDirect(dst, t, k, "trial " & $trial)
       doAssert report.mismatches == 0
+
+  block piece_length_must_match_pieceSource:
+    # Seen failing when the length check only rejected a long buffer
+    # (`samples.len > pc.count`) and zero-filled a short tail: a data piece
+    # of 20 given 15 samples was accepted and the tail was not a gap.
+    let s = segmentsOf[float32]([(0, 100)])
+    let meta = initChunkMeta(rowsOf(s.keys, s.counts), dtMs = Dt)
+    let plan = planSlices(meta, [shotAt(10)], window(20))
+    var pc0: SlicePiece
+    for pc in plan.pieces(0): pc0 = pc
+    doAssert pc0.row == 0 and pc0.count == 20
+    let asked = pieceSource(plan, pc0, 100).count
+    doAssert asked == 20
+    var report = initSliceReport(plan)
+    var ws = initWorkspace()
+    ws.reserve(sliceWorkspace(float32, plan))
+    var dst = newSeq[float32](plan.samples)
+    for i in 0 ..< dst.len: dst[i] = 7
+    let hold = newSeq[float32](15)
+    prepareSliceReport(plan, report)
+    beginSliceTrace(plan, 0, report)
+    var msg = ""
+    try:
+      addPiece(plan, 0, pc0, hold, dst, report, ws)
+    except ValueError as e:
+      msg = e.msg
+    doAssert msg.find("trace 0") >= 0, msg
+    doAssert msg.find("15") >= 0 and msg.find("20") >= 0, msg
+    doAssert msg.find("row 0") >= 0 and msg.find("first " & $pc0.first) >= 0, msg
+    for v in dst: doAssert v == 7, "a short piece must write nothing"
+    doAssert report.gapSamples(0) == 0 and report.gapCount(0) == 0
+    # Longer than asked already raised; the message names the same facts.
+    msg = ""
+    try:
+      addPiece(plan, 0, pc0, newSeq[float32](21), dst, report, ws)
+    except ValueError as e:
+      msg = e.msg
+    doAssert msg.find("trace 0") >= 0 and msg.find("21") >= 0 and msg.find("20") >= 0, msg
+    for v in dst: doAssert v == 7
 
 when isMainModule: main()

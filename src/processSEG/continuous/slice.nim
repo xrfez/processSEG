@@ -965,16 +965,23 @@ proc addPiece*[T: SampleType](plan: SlicePlan, trace: int, pc: SlicePiece,
     samples: openArray[T], dst: var openArray[T], report: var SliceReport,
     ws: var Workspace, failed = false) =
   ## Places piece `pc` of trace `trace`. `samples` are the source columns
-  ## from `pieceSource` (starting at its `first`); a short tail is zero-filled
-  ## and is not a gap. A gap piece (`row = -1`) or `failed` is zero-filled and
-  ## reported, the same fill `extractInto` uses for a margin the segment does
-  ## not cover or a row that is not live. With `saNearest` the piece is written
-  ## into `dst`; otherwise into the padded row of `ws` (`sliceWorkspace`), and
+  ## from `pieceSource` (starting at its `first`). A data piece (`row >= 0`)
+  ## must be given exactly the count `pieceSource` returned for a row that
+  ## covers the piece (`pc.count`); any other length raises `ValueError`
+  ## naming the trace, the piece and both counts, and nothing is written. A
+  ## gap piece (`row = -1`) or `failed` is zero-filled and reported, the same
+  ## fill `extractInto` uses for a margin the segment does not cover or a row
+  ## that is not live. With `saNearest` the piece is written into `dst`;
+  ## otherwise into the padded row of `ws` (`sliceWorkspace`), and
   ## `finishSliceTrace` writes `dst`. Raises `ValueError` for a bad trace,
-  ## report, `dst`, piece write, or `samples` longer than the piece. An
-  ## `AssertionDefect` when `ws` was not reserved. Allocates nothing.
+  ## report, `dst` or piece write. An `AssertionDefect` when `ws` was not
+  ## reserved. Allocates nothing.
   checkTrace(plan, trace, report)
-  if samples.len > pc.count:
+  if pc.row >= 0 and samples.len != pc.count:
+    badSlice("trace " & $trace & " piece row " & $pc.row & " first " & $pc.first &
+      " dst " & $pc.dst & " count " & $pc.count & ": " & $samples.len &
+      " samples, pieceSource asked for " & $pc.count)
+  elif samples.len > pc.count:
     badSlice("piece samples are " & $samples.len & ", the piece holds " & $pc.count)
   let (target, shift) = paddedRow(plan, dst, ws)
   let a = pc.dst + shift
