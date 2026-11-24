@@ -127,27 +127,30 @@
 ## subtract `margin` again. A margin the segment does not cover is its own
 ## gap piece (`row = -1`). `addPiece` zero-fills a gap, and a row the caller
 ## marks failed, the same fill `extractInto` uses, so samples next to it mix
-## in those zeros when the shift interpolates. `finishSliceTrace` applies the
-## same shift and writes the output row, and the same gap entries. `addPiece`
-## and `finishSliceTrace` take the same `dst`: a different row raises
-## `ValueError` and leaves the report as it was. With `saNearest` the pieces
-## are already in that row, so finishing it is a no-op; otherwise `finish`
-## copies the scratch row into it. Call
-## `beginSliceTrace`, then that trace's pieces in the iterator's order, each
-## once, then `finishSliceTrace`. Traces themselves may be cut in any order
-## (each thread with its own report). A call out of that order raises
-## `ValueError` and leaves the report as it was. The
-## earlier row's trimmed overlap tail is in no piece: `checkSliceOverlap`
-## writes `osMatch` or `osMismatch` when both of those runs were given, and
-## the check stays `osNotRead` until then. `extractInto` is this path over a
-## block already in memory, so the two agree to the bit.
+## in those zeros when the shift interpolates. A failed row is recorded apart
+## from coverage gaps (`failedPieces`). `finishSliceTrace` applies the same
+## shift and writes the output row, and the same gap entries. `addPiece` and
+## `finishSliceTrace` take the same `dst`: a different row raises `ValueError`
+## and leaves the report as it was. With `saNearest` the pieces are already
+## in that row, so finishing it is a no-op; otherwise `finish` copies the
+## scratch row into it. Call `prepareSliceReport`, then `beginSliceTrace`,
+## then that trace's pieces in the iterator's order, each once, then
+## `finishSliceTrace`. Traces themselves may be cut in any order (each thread
+## with its own report). A call out of that order raises `ValueError` and
+## leaves the report as it was. The earlier row's trimmed overlap tail is in
+## no piece: `checkSliceOverlap` writes `osMatch` or `osMismatch` when both of
+## those runs were given, and the check stays `osNotRead` until then.
+## `extractInto` is this path over a block already in memory, so the two agree
+## to the bit.
 ##
 ## ```nim
+## prepareSliceReport(plan, report)
 ## beginSliceTrace(plan, trace, report)
 ## for pc in plan.pieces(trace):
 ##   let src = pieceSource(plan, pc, rowLen)  # margin included, clipped
 ##   # read src.count samples at column src.first of that segment
 ##   addPiece(plan, trace, pc, samples, row, report, ws)
+## checkSliceOverlap(plan, i, earlier, later, report)
 ## finishSliceTrace(plan, trace, row, report, ws)
 ## ```
 

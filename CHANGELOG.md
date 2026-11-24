@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- `continuous/slice`: cut one trace from the columns it names (`pieceSource`, `beginSliceTrace`, `addPiece`, `finishSliceTrace`, `checkSliceOverlap`, `prepareSliceReport`) instead of holding the row from sample 0. The alignment margin is already in the piece; a margin the segment does not cover is a gap piece, zero-filled. `extractInto` is that path over a block already in memory (the same bits).
+- `continuous/slice`: cut one trace from the columns it names (`pieceSource`, `beginSliceTrace`, `addPiece`, `finishSliceTrace`, `checkSliceOverlap`, `prepareSliceReport`) instead of holding the row from sample 0. The alignment margin is already in the piece; a margin the segment does not cover is a gap piece, zero-filled. A data piece must be exactly the length `pieceSource` names. Pieces of one trace go in iterator order; traces may be cut in any order. `addPiece` and `finishSliceTrace` must share the output row. A failed read is zero-filled and recorded apart from coverage gaps (`failedSamples`, `failedCount`, `failedPieces`). `extractInto` is the same cut over a block already in memory (the same bits).
 
 ## 0.13.0
 

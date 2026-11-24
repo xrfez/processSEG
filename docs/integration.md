@@ -60,13 +60,37 @@ on data from anywhere. Two thin layers sit on top of it:
   report progress through a `Progress`-style hook that can cancel, and return in-memory
   results.
 
-  A viewer cutting one record from a long continuous trace should not read that row from
-  sample 0. `planSlices` names the columns; `pieceSource` is how many to read and where they
-  start (the alignment margin is already in the piece, clipped at the segment's ends, and a
-  clipped margin is a gap piece that `addPiece` zero-fills, the same fill as `extractInto`).
-  `finishSliceTrace` applies the shift and writes the output row. The overlap tail of an
-  earlier segment is not in any piece: compare it with `checkSliceOverlap` only when both
-  runs were read, or the check stays `osNotRead`.
+## Cutting one record from a continuous trace
+
+A viewer cutting one record from a long continuous trace should not read that row from
+sample 0. `planSlices` names the columns; `pieceSource` is how many to read and where they
+start (the alignment margin is already in the piece, clipped at the segment's ends, and a
+clipped margin is a gap piece that `addPiece` zero-fills, the same fill as `extractInto`).
+A data piece must be exactly that length. A row the caller marks failed is zero-filled too,
+and recorded apart from coverage gaps. `addPiece` and `finishSliceTrace` take the same
+output row. Pieces of one trace go in the iterator's order; traces may be cut in any order,
+each thread with its own report. `finishSliceTrace` applies the shift and writes the output
+row. The overlap tail of an earlier segment is not in any piece: compare it with
+`checkSliceOverlap` only when both runs were read, or the check stays `osNotRead`.
+
+```nim
+let plan = planSlices(streams, shots, window)
+var ws = initWorkspace()
+ws.reserve(sliceWorkspace(float32, plan))
+var report = initSliceReport(plan)
+prepareSliceReport(plan, report)
+var row = newSeq[float32](plan.samples)
+for trace in 0 ..< plan.len:
+  beginSliceTrace(plan, trace, report)
+  for pc in plan.pieces(trace):
+    let src = pieceSource(plan, pc, rowLen)   # margin included, clipped
+    # read src.count samples at column src.first of that segment
+    addPiece(plan, trace, pc, samples, row, report, ws)
+  checkSliceOverlap(plan, i, earlier, later, report)  # optional
+  finishSliceTrace(plan, trace, row, report, ws)
+  for gap in report.gaps(trace): discard
+  for miss in report.failedPieces(trace): discard
+```
 
 ## Data contract
 
