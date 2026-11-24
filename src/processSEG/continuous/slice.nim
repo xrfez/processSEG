@@ -94,7 +94,7 @@
 ## error is not a hole in the recording. With interpolation the samples next
 ## to either mix in its zeros. With `saSinc` that mix reaches `SincHalf`
 ## samples into the trace: where a segment does not cover the margin, the
-## first and last `SincHalf` output samples RING (they oscillate around the
+## first and last `SincHalf` output samples ring (they oscillate around the
 ## true value, because the missing input is zero), and are not a band-limited
 ## shift of the recorded samples alone.
 ##
