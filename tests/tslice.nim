@@ -611,6 +611,35 @@ proc main*() =
         badMeta, narrowPlan, narrowReport)
       doAssert narrowReport.overlapCheck(0).status == osNotRead
 
+    block default_times_of_a_first_sample_origin:
+      # Broken by taking a first-sample time as the time zero: with a 4 ms set
+      # start every sample came out two samples (at 2 ms) late.
+      for origin in [toFirstSample, toRecordTimeZero]:
+        for t0Ms in [0.0, 4.0]:
+          let s = segmentsOf[T]([(0, 100), (100, 100)])
+          var keys = s.keys
+          for i, k in keys.mpairs:
+            # The instant of the row's sample 0 is timeOf(100 * i).
+            k.t0Ms = t0Ms
+            if origin == toFirstSample:
+              k.noteRecordedTime(origin, 0)
+            else:
+              k.time -= t0Ms / 1000 # time zero: sample 0 is at time + t0Ms
+              k.noteRecordedTime(origin, 0)
+          let meta = initChunkMeta(rowsOf(keys, s.counts), dtMs = Dt)
+          let msg = $origin & ", t0 " & $t0Ms
+          # The streams of the keys (every place the default times are used) ...
+          let streams = initSliceStreams(meta)
+          let shots = [shotAt(40), shotAt(130)]
+          for plan in [planSlices(meta, shots, window(30)),
+              planSlices(streams, shots, window(30))]:
+            doAssert plan.untimed.len == 0 and plan.timingIssues.len == 0, msg
+            var report: SliceReport
+            let dst = cut(s, meta, plan, report)
+            checkDirect(dst, 0, 40, msg)
+            checkDirect(dst, 1, 130, msg)
+            doAssert report.gapSamples(0) == 0 and report.gapSamples(1) == 0, msg
+
   suite[float32]()
   suite[float64]()
 

@@ -49,8 +49,12 @@
 ## length (`liveSamples`) and a time: by default `TraceKeys.time` (UTC POSIX
 ## seconds, float64: about 0.24 µs resolution today), or a caller array (SEG-Y
 ## bytes 157-168 hold whole seconds, so better times often come from
-## elsewhere). The time is the trace's time zero, as `TraceKeys.time`: column
-## 0 of the row is at `time + sampleTimeMs(row, 0) / 1000`. Rows with a NaN
+## elsewhere). The time is the trace's time zero: column 0 of the row is at
+## `time + sampleTimeMs(row, 0) / 1000`. The default time is `TraceKeys.time`
+## when that is a time zero, and `time - t0Ms / 1000` when its `timeOrigin` is
+## `toFirstSample` (the instant of sample 0, as a SEG-D Rev 3 Timestamp block
+## gives it), so column 0 lands on that instant. A caller array is taken as
+## time zeros and is not corrected. Rows with a NaN
 ## or infinite time (or `t0Ms`), or one beyond ±1e11 s (year 5000), are not
 ## used and are listed in `plan.untimed`; dead, auxiliary and failed rows
 ## are not used either (their span is a gap). Nor is a row whose keys give
@@ -505,15 +509,24 @@ proc defaultReceivers(meta: ChunkMeta): seq[int] =
     if i > 0 and cmpReceiver(ids[idx[i - 1]], ids[row]) != 0: inc id
     result[row] = id
 
+func timeZeroOf(k: TraceKeys): float64 =
+  # `TraceKeys.time` is the time zero, except when it is the instant of sample 0
+  # (`toFirstSample`, a SEG-D Rev 3 Timestamp block): then back off `t0Ms`.
+  # A NaN `t0Ms` gives a NaN time: the row is untimed, as it is for a time zero.
+  if k.timeOrigin == toFirstSample: k.time - k.t0Ms / 1000
+  else: k.time
+
 proc keyTimes(meta: ChunkMeta): seq[float64] =
   result = newSeq[float64](meta.len)
-  for row in 0 ..< meta.len: result[row] = meta.keys(row).time
+  for row in 0 ..< meta.len: result[row] = timeZeroOf(meta.keys(row))
 
 proc initSliceStreams*(meta: ChunkMeta, times: openArray[float64],
     receivers: openArray[int]): SliceStreams =
   ## The streams of the segments of `meta` (rows of continuous data), once
   ## per dataset: `times[row]` is the row's time zero in UTC POSIX seconds
-  ## (as `TraceKeys.time`; NaN: not used) and `receivers[row]` its receiver
+  ## (as `TraceKeys.time` of a time-zero origin, or the instant of sample 0
+  ## less `t0Ms / 1000`; used as given, not corrected; NaN: not used) and
+  ## `receivers[row]` its receiver
   ## (any id; equal ids are one stream). `planSlices(streams, shots, ...)`
   ## then lays out any shots at the cost of their traces alone. Make it
   ## again when the rows or their keys change.
@@ -537,7 +550,9 @@ proc initSliceStreams*(meta: ChunkMeta, times: openArray[float64]): SliceStreams
 proc initSliceStreams*(meta: ChunkMeta): SliceStreams =
   ## `initSliceStreams` with the times and receivers from the keys:
   ## `TraceKeys.time` and the station (`rcvLine`, `rcvPoint`, `rcvIndex`),
-  ## then `channel` and `component`.
+  ## then `channel` and `component`. Each row's time is its time zero:
+  ## `TraceKeys.time`, less `t0Ms / 1000` when the key's `timeOrigin` is
+  ## `toFirstSample` (the time is then the instant of sample 0).
   streamsOf(meta, keyTimes(meta), defaultReceivers(meta))
 
 type
@@ -780,7 +795,8 @@ proc planSlices*(meta: ChunkMeta, times: openArray[float64], receivers: openArra
 proc planSlices*(meta: ChunkMeta, times: openArray[float64], shots: openArray[SliceShot],
     window: SliceWindow, order = soReceiverGathers, align = saNearest): SlicePlan =
   ## `planSlices` in one call with caller times and the receivers from the
-  ## keys (`initSliceStreams(meta, times)`).
+  ## keys (`initSliceStreams(meta, times)`)
+  ## `times` are time zeros, used as given (see `initSliceStreams`).
   checkPerRow(times.len, meta.len, "times")
   checkInterval(meta.dtMs)
   let samples = windowSamples(window, meta.dtMs)
@@ -791,7 +807,8 @@ proc planSlices*(meta: ChunkMeta, times: openArray[float64], shots: openArray[Sl
 proc planSlices*(meta: ChunkMeta, shots: openArray[SliceShot], window: SliceWindow,
     order = soReceiverGathers, align = saNearest): SlicePlan =
   ## `planSlices` in one call with the times and receivers from the keys
-  ## (`initSliceStreams(meta)`).
+  ## (`initSliceStreams(meta)`): each row's time zero is `TraceKeys.time`, less
+  ## `t0Ms / 1000` when its `timeOrigin` is `toFirstSample`.
   checkInterval(meta.dtMs)
   let samples = windowSamples(window, meta.dtMs)
   checkShots(shots)
