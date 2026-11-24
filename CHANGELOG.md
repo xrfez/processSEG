@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.1
+
+- Slicing: the default trace times of a SEG-D Rev 3 file whose traces carry a time stamp (a first-sample time) are brought to time zero before the trace's start time is added; slices of such a file with a non-zero channel set start time were placed off by that start time. Times passed by the caller are used as given.
+
 ## 0.14.0
 
 - `core/leaptime`: the GPS−UTC leap-second table, one process-wide table shared with parseSEG (`useLeapTable`, `useLeapTableNif`, `currentLeapTable`, `defaultLeapTable`, `parseLeapTable`, `withLeap`, `leapKnownAt`). `gpsUsToUtcSeconds` and `utcUsOfGps` convert microseconds since the GPS epoch. A float64 second near today is about a quarter microsecond coarse.

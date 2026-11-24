@@ -795,7 +795,7 @@ proc planSlices*(meta: ChunkMeta, times: openArray[float64], receivers: openArra
 proc planSlices*(meta: ChunkMeta, times: openArray[float64], shots: openArray[SliceShot],
     window: SliceWindow, order = soReceiverGathers, align = saNearest): SlicePlan =
   ## `planSlices` in one call with caller times and the receivers from the
-  ## keys (`initSliceStreams(meta, times)`)
+  ## keys (`initSliceStreams(meta, times)`).
   ## `times` are time zeros, used as given (see `initSliceStreams`).
   checkPerRow(times.len, meta.len, "times")
   checkInterval(meta.dtMs)
